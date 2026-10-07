@@ -13,3 +13,5 @@ tests 的法语样本仅兼容 fixture，不是 Chef 拥有的正式课程。所
 Web 真源补充：通用页面/播放器/管理员界面与完整 Web/SSR/浏览器回归在 packages/web；apps/web仅独立合成兼容测试壳。产品提供 Product品牌配置并直接引用固定框架 appDirectory，不创建页面包装副本或在产品重建业务逻辑。路由类型与构建产物忽略，不提交到框架或产品。法国v1、现有Cookie/草稿仍兼容待后续迁移，不能把前端抽取宣称完整多产品隔离。
 
 运维/TTS/离线对齐与回归真源在scripts；产品仅保留兼容转发入口。当前保留法语样本和legacy序列化标识，不声称粤语能力。对齐私有模型/输出根是调用工作区（可CHEF_WORKSPACE_ROOT显式指定），固定模型/runtime JSON仍来自源码旁。测试Docker演练必须隔离随机资源，不读取生产配置。
+
+独立账号迁移补充：chef-identity与产品会话范围校验已经落地，配置/限制见docs/identity-service.md。学习服务消费者、产品settings/schema/权限分离仍未完成；禁止把新二进制或账号DTO去settings当作完整迁移，不在未验证产品数据隔离前更新生产路由。账号实现继续只属于Chef，产品仅配置和部署装配。

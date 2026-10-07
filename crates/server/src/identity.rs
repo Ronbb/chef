@@ -525,20 +525,7 @@ pub fn router_with_media_root(
     secure: bool,
     root: std::path::PathBuf,
 ) -> Router {
-    let session_layer = SessionManagerLayer::new(PgSessionStore::new(backend.db.clone()))
-        .with_name(if secure {
-            "__Host-brioche.sid"
-        } else {
-            "brioche.sid"
-        })
-        .with_secure(secure)
-        .with_http_only(true)
-        .with_same_site(SameSite::Lax)
-        .with_expiry(Expiry::OnInactivity(time::Duration::days(14)));
-    let auth_layer = AuthManagerLayerBuilder::new(backend.clone(), session_layer)
-        .with_data_key(AUTH_KEY)
-        .build();
-    Router::new()
+    let routes = Router::new()
         .route("/api/v1/auth/csrf", get(csrf::bootstrap))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
@@ -551,7 +538,76 @@ pub fn router_with_media_root(
         .merge(crate::library::router())
         .merge(crate::dashboard::router())
         .merge(crate::admin::router(root.clone()))
-        .merge(crate::preview::router(root))
+        .merge(crate::preview::router(root));
+    protect_routes(
+        routes,
+        backend,
+        policy,
+        secure,
+        crate::product::ProductId::Brioche,
+    )
+}
+
+/// Identity process exposes account data only, without learning or content routes.
+pub fn account_router(
+    backend: Backend,
+    policy: CsrfPolicy,
+    secure: bool,
+    product: crate::product::ProductId,
+) -> Router {
+    let routes = Router::new()
+        .route("/api/v1/auth/csrf", get(csrf::bootstrap))
+        .route("/api/v1/auth/login", post(account_login))
+        .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/accept-invite", post(account_accept))
+        .route("/api/v1/auth/reset-password", post(reset))
+        .route("/api/v1/account", get(account_me));
+    protect_routes(routes, backend, policy, secure, product)
+}
+
+async fn account_login(
+    auth: AuthSession,
+    request: Json<LoginRequest>,
+) -> Result<Json<crate::identity_service::AccountAuthResult>, AppError> {
+    let Json(result) = login(auth, request).await?;
+    Ok(Json(result.into()))
+}
+async fn account_accept(
+    auth: AuthSession,
+    backend: State<Backend>,
+    request: Json<AcceptInviteRequest>,
+) -> Result<Json<crate::identity_service::AccountAuthResult>, AppError> {
+    let Json(result) = accept(auth, backend, request).await?;
+    Ok(Json(result.into()))
+}
+async fn account_me(
+    auth: AuthSession,
+) -> Result<Json<crate::identity_service::AccountProfile>, AppError> {
+    Ok(Json(account_identity(auth)?))
+}
+pub(crate) fn account_identity(
+    auth: AuthSession,
+) -> Result<crate::identity_service::AccountProfile, AppError> {
+    Ok(auth.user.ok_or(AppError::Unauthorized)?.profile().into())
+}
+pub(crate) fn protect_routes(
+    routes: Router<Backend>,
+    backend: Backend,
+    policy: CsrfPolicy,
+    secure: bool,
+    product: crate::product::ProductId,
+) -> Router {
+    let session_layer =
+        SessionManagerLayer::new(PgSessionStore::for_product(backend.db.clone(), product))
+            .with_name(product.cookie_name(secure))
+            .with_secure(secure)
+            .with_http_only(true)
+            .with_same_site(SameSite::Lax)
+            .with_expiry(Expiry::OnInactivity(time::Duration::days(14)));
+    let auth_layer = AuthManagerLayerBuilder::new(backend.clone(), session_layer)
+        .with_data_key(AUTH_KEY)
+        .build();
+    routes
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(policy),
             csrf::protect,

@@ -15,7 +15,7 @@ cargo run --locked -p brioche-course-contract --example export -- --output /your
 
 首次检出执行 `git submodule update --init --recursive`，课程兼容测试使用独立 `brioche-courses` 的固定提交；不把正式课程复制进框架。少量已提交的法语例子和图片是兼容 fixture。产品库只拥有品牌、配置、入口与部署装配，不维护引擎业务副本。
 
-后端抽取不等于多产品迁移完成：账号逻辑目前仍和学习 API 同一运行进程，独立身份服务、产品数据库隔离和语言中立适配尚未完成。通用 Web 已迁入 Chef，共享实现继续执行独立测试。必须继续完成这些工作及产品兼容回归，才能声称完整多语言框架复用。
+后端抽取不等于多产品迁移完成：生产账号逻辑仍和学习 API 同一运行进程；已增加独立账号进程和产品会话边界，学习 API 接入、产品数据库隔离和语言中立适配尚未完成。通用 Web 已迁入 Chef，共享实现继续执行独立测试。必须继续完成这些工作及产品兼容回归，才能声称完整多语言框架复用。
 
 拆分设计和验收范围见 [架构说明](docs/architecture.md)。秘密、生产账号、私有声音档案与恢复密钥不得提交。
 
@@ -26,3 +26,5 @@ cargo run --locked -p brioche-course-contract --example export -- --output /your
 产品通过 `Product` 配置提供名称、文字标志、首页文案、图标、语言和颜色/字体变量，Vite 将 `@chef/product` 明确绑定到自己的 `product.ts`。React Router 直接以固定框架源码为 appDirectory，TS rootDirs 对齐产品内生成的路由类型；生成类型/构建缓存不提交。产品只维护配置、品牌静态资源和构建/部署入口，不包装或复制每个业务页面。部署产物仍是正常 React Router SSR，不绕过 `.server` 代码分离检查。
 
 这次迁移继续兼容法语 v1 字段、旧账号 Cookie 和草稿格式；它们尚未完成产品化/语言中立改造。独立身份服务、产品数据库与客户端草稿隔离、粤语适配仍须继续实施，不能只改品牌就将 Hargow 接到 Brioche 的现行 API。
+
+独立账号服务的配置、真实隔离验证和剩余迁移边界见 [账号服务说明](docs/identity-service.md)。产品仓库只提供装配，不复制服务端逻辑。

@@ -44,3 +44,7 @@ http-body-util = "0.1"
 [[bin]]
 name = "chef-server"
 path = "src/main.rs"
+
+[[bin]]
+name = "chef-identity"
+path = "src/identity_main.rs"

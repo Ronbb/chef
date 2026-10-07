@@ -1,0 +1,15 @@
+.git
+**/.git
+.local
+.env
+.env.*
+node_modules
+**/node_modules
+target
+**/target
+**/build
+**/.react-router
+**/__pycache__
+AGENTS.local.md
+*.key
+*.pem

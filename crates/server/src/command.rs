@@ -790,7 +790,7 @@ pub async fn run() -> Result<()> {
     }
     Ok(())
 }
-async fn shutdown() {
+pub async fn shutdown() {
     #[cfg(unix)]
     {
         let mut terminate =
