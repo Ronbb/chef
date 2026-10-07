@@ -29,6 +29,7 @@ pub struct Change {
 pub(crate) struct Operator {
     pub(crate) product: ProductId,
     pub(crate) actor: i64,
+    pub(crate) remote: Option<crate::learning_identity::RemoteAuthorization>,
 }
 impl Operator {
     pub(crate) fn audit_actor(&self) -> String {
@@ -42,9 +43,20 @@ impl Operator {
         if self.product != ProductId::Brioche {
             return Err(AppError::Forbidden);
         }
-        lock_operator(tx, self.product, self.actor)
+        if let Some(remote) = &self.remote {
+            // Both services share one PostgreSQL database. Membership writers take
+            // this same database-wide transaction lock before changing grants.
+            tx.execute_unprepared(
+                "SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))",
+            )
             .await
-            .map(|_| ())
+            .map_err(|_| AppError::Unavailable)?;
+            remote.recheck().await
+        } else {
+            lock_operator(tx, self.product, self.actor)
+                .await
+                .map(|_| ())
+        }
     }
 }
 pub(crate) async fn require_operator<C: ConnectionTrait>(
@@ -55,7 +67,11 @@ pub(crate) async fn require_operator<C: ConnectionTrait>(
     if read(db, product, actor).await?.role != "operator" {
         return Err(AppError::Forbidden);
     }
-    Ok(Operator { product, actor })
+    Ok(Operator {
+        product,
+        actor,
+        remote: None,
+    })
 }
 pub(crate) async fn lock_operator<C: ConnectionTrait>(
     tx: &C,

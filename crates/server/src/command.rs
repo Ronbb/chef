@@ -744,6 +744,14 @@ pub async fn run() -> Result<()> {
         Err(_) => bail!("Invalid identity endpoint configuration"),
     };
     let remote_identity = remote_origin.is_some();
+    let content_url = match std::env::var("CONTENT_DATABASE_URL") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => bail!("Invalid content database configuration"),
+    };
+    if content_url.is_some() && !remote_identity {
+        bail!("Independent content database requires remote identity mode");
+    }
     if remote_identity && db.is_none() {
         bail!("Remote identity requires database mode");
     }
@@ -771,7 +779,32 @@ pub async fn run() -> Result<()> {
                 crate::product::ProductId::Brioche,
                 secure,
             )?;
-            crate::learning_identity::router(db.clone(), client)?
+            let learning = crate::learning_identity::router(db.clone(), client.clone())?;
+            if let Some(url) = content_url {
+                let mut options = ConnectOptions::new(url);
+                options
+                    .sqlx_logging(false)
+                    .max_connections(4)
+                    .connect_timeout(std::time::Duration::from_secs(5))
+                    .acquire_timeout(std::time::Duration::from_secs(5));
+                crate::database_scope::apply(
+                    &mut options,
+                    Some(
+                        &std::env::var("CONTENT_DATABASE_SCHEMA")
+                            .map_err(|_| anyhow::anyhow!("CONTENT_DATABASE_SCHEMA is required"))?,
+                    ),
+                )?;
+                let content_db = Database::connect(options)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("Content database connection unavailable"))?;
+                learning.merge(crate::admin::independent_router(
+                    content_db,
+                    client,
+                    crate::media::media_root(),
+                )?)
+            } else {
+                learning
+            }
         } else {
             crate::schema_split::require_combined(db).await?;
             let backend = crate::identity::Backend::new(db.clone()).await?;

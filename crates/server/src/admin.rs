@@ -1,7 +1,8 @@
 //! Operator controls reuse content transactions; author snapshots remain immutable.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
+    admin_auth::AdminAuth,
+    identity::Backend,
     learning::{exec, field, one, owner},
 };
 use axum::{
@@ -16,7 +17,7 @@ use brioche_course_contract::{
 use sea_orm::{ConnectionTrait, DbBackend, IsolationLevel, Statement, TransactionTrait};
 use serde_json::Value;
 
-pub fn router(root: std::path::PathBuf) -> Router<Backend> {
+pub fn router(root: std::path::PathBuf, db: sea_orm::DatabaseConnection) -> Router<Backend> {
     Router::new()
         .merge(crate::character_voices::router())
         .merge(crate::admin_assets::router())
@@ -30,15 +31,46 @@ pub fn router(root: std::path::PathBuf) -> Router<Backend> {
         .merge(crate::speech_alignments::router())
         .merge(crate::speech_package::router())
         .merge(crate::lesson_audio_reviews::router())
+        .merge(crate::account_admin::router(
+            crate::product::ProductId::Brioche,
+        ))
+        .merge(content_router(db, root.clone(), true))
+        .layer(axum::Extension(root))
+        .layer(axum::Extension(std::sync::Arc::new(
+            tokio::sync::Semaphore::new(2),
+        )))
+}
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+    include_accounts: bool,
+}
+pub fn independent_router(
+    db: sea_orm::DatabaseConnection,
+    client: crate::learning_identity::Client,
+    root: std::path::PathBuf,
+) -> anyhow::Result<Router> {
+    anyhow::ensure!(
+        client.product() == crate::product::ProductId::Brioche,
+        "Content tenant migration incomplete"
+    );
+    Ok(crate::learning_identity::protect(
+        content_router(db, root, false),
+        client,
+    ))
+}
+pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+    root: std::path::PathBuf,
+    include_accounts: bool,
+) -> Router<S> {
+    Router::new()
         .route("/api/v1/operator/overview", get(overview))
         .route("/api/v1/operator/history", get(history))
         .route(
             "/api/v1/operator/documents/{kind}/check",
             post(check_document).layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024)),
         )
-        .merge(crate::account_admin::router(
-            crate::product::ProductId::Brioche,
-        ))
         .route(
             "/api/v1/operator/lessons/{id}/revisions/{revision}/review",
             post(review),
@@ -60,6 +92,10 @@ pub fn router(root: std::path::PathBuf) -> Router<Backend> {
         .layer(axum::Extension(std::sync::Arc::new(
             tokio::sync::Semaphore::new(2),
         )))
+        .with_state(Store {
+            db,
+            include_accounts,
+        })
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -68,12 +104,12 @@ struct HistoryQuery {
     before_key: Option<String>,
 }
 async fn history(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Query(query): Query<HistoryQuery>,
 ) -> Result<Json<brioche_course_contract::AdminHistory>, AppError> {
     use brioche_course_contract::{AdminHistory, AdminHistoryCursor, AdminHistoryItem};
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     if query.before_time.is_some() != query.before_key.is_some() {
         return Err(AppError::InvalidInput);
     }
@@ -91,7 +127,12 @@ async fn history(
     {
         return Err(AppError::InvalidInput);
     }
-    let rows = backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, r#"
+    let account_events = if backend.include_accounts {
+        "UNION ALL SELECT 'account:'||id, CASE WHEN action='invite' AND details->>'role'='operator' THEN 'inviteOperator' ELSE action END, target_email, 'user:'||actor_id, reason, created_at FROM account_admin_audit WHERE product_id='brioche'"
+    } else {
+        ""
+    };
+    let rows = backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, format!(r#"
         WITH events AS (
             SELECT 'review:'||lesson_id||':'||revision||':'||version AS key,
                 CASE WHEN approved THEN 'approve' ELSE 'reject' END AS action,
@@ -101,8 +142,7 @@ async fn history(
             SELECT 'content:'||id, action, COALESCE(release_id,lesson_id||' v'||revision,'未指定对象'), actor, reason, created_at FROM content_audit
             UNION ALL
             SELECT 'import:'||lesson_id||':'||revision, 'import', lesson_id||' v'||revision, actor, reason, created_at FROM lesson_import_audit
-            UNION ALL
-            SELECT 'account:'||id, CASE WHEN action='invite' AND details->>'role'='operator' THEN 'inviteOperator' ELSE action END, target_email, 'user:'||actor_id, reason, created_at FROM account_admin_audit WHERE product_id='brioche'
+            {account_events}
             UNION ALL
             SELECT 'voice:'||character_id||':'||character_revision||':'||revision, 'voiceProfile', character_id||' v'||character_revision||' / voice v'||revision, 'user:'||actor_id, reason, created_at FROM character_voice_profiles
             UNION ALL
@@ -141,7 +181,7 @@ async fn history(
         SELECT key,action,target,actor,reason,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
         FROM events WHERE $1::timestamptz IS NULL OR (created_at,key COLLATE "C") < ($1::timestamptz,$2::text COLLATE "C")
         ORDER BY created_at DESC,key COLLATE "C" DESC LIMIT 21
-    "#, vec![query.before_time.into(), query.before_key.into()])).await.map_err(|_|AppError::Unavailable)?;
+    "#), vec![query.before_time.into(), query.before_key.into()])).await.map_err(|_|AppError::Unavailable)?;
     let has_more = rows.len() > 20;
     let mut items = Vec::new();
     for row in rows.into_iter().take(20) {
@@ -165,14 +205,14 @@ async fn history(
     Ok(Json(AdminHistory { items, next }))
 }
 async fn check_document(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path(kind): Path<String>,
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminDocumentRequest>,
 ) -> Result<Json<brioche_course_contract::AdminDocumentCheck>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     reason(&request.reason)?;
     let release = match kind.as_str() {
         "lesson" => false,
@@ -217,12 +257,12 @@ async fn check_document(
     Ok(Json(report))
 }
 async fn import_lesson(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminDocumentRequest>,
 ) -> Result<Json<AdminImportResult>, AppError> {
-    let operator = require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     reason(&request.reason)?;
     let _permit = permits.try_acquire().map_err(|_| AppError::RateLimited)?;
     let source = tokio::task::spawn_blocking(move || {
@@ -244,19 +284,20 @@ async fn import_lesson(
                     .downcast_ref::<AppError>()
                     .map_or(AppError::InvalidInput, |error| match error {
                         AppError::Forbidden => AppError::Forbidden,
+                        AppError::Unauthorized => AppError::Unauthorized,
                         _ => AppError::Unavailable,
                     })
             })?;
     Ok(Json(imported))
 }
 async fn stage(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminDocumentRequest>,
 ) -> Result<Json<String>, AppError> {
-    let operator = require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     reason(&request.reason)?;
     let _permit = permits.try_acquire().map_err(|_| AppError::RateLimited)?;
     let manifest: crate::content::ReleaseManifest = tokio::task::spawn_blocking(move || {
@@ -332,11 +373,11 @@ impl OverviewQuery {
     }
 }
 async fn overview(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Query(query): Query<OverviewQuery>,
 ) -> Result<Json<AdminOverview>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     query.validate()?;
     let tx = backend
         .db
@@ -434,12 +475,12 @@ async fn overview(
     Ok(Json(result))
 }
 async fn review(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path((id, rev)): Path<(String, u32)>,
     Json(request): Json<AdminReviewRequest>,
 ) -> Result<Json<AdminReviewRequest>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     revision(&id, rev)?;
     reason(&request.reason)?;
     let actor = owner(&auth)?;
@@ -448,7 +489,7 @@ async fn review(
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    crate::voice_references::lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     one(
         &tx,
         "SELECT generation FROM content_state WHERE singleton FOR UPDATE",
@@ -511,12 +552,12 @@ async fn review(
     }))
 }
 async fn activate(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     Json(request): Json<AdminActivateRequest>,
 ) -> Result<Json<String>, AppError> {
-    let operator = require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     reason(&request.reason)?;
     let result = crate::content::activate_operator(
         &backend.db,
@@ -530,12 +571,12 @@ async fn activate(
     Ok(Json(result.to_string()))
 }
 async fn withdraw(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path((id, rev)): Path<(String, u32)>,
     Json(request): Json<AdminWithdrawRequest>,
 ) -> Result<Json<String>, AppError> {
-    let operator = require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     revision(&id, rev)?;
     reason(&request.reason)?;
     let result = crate::content::withdraw_operator(

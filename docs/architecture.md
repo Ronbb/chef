@@ -1,5 +1,7 @@
 # 学习框架、多语言产品与课程拆分
 
+远端内容消费者实施补充：核心课程后台已使用独立数据库状态和可信请求证明，身份/成员只通过identity API获取，写事务在同一数据库的account-admin锁内重新核验后再取得内容锁。CONTENT_DATABASE_URL/CONTENT_DATABASE_SCHEMA装配单独课程连接，不扩大学习角色权限；账号历史归身份API。课程权限模板与实际分离schema回归属于Chef。媒体/语音后台仍legacy，Hargow和完整租户仍待迁移，不更新生产。
+
 物理schema实施补充：迁移32和所有者维护命令已在临时数据库真正将七张身份表移至独立schema；完整数据、会话与跨schema学习外键保持，实际两个受限服务连接可工作。布局不可变，旧组合服务和迁移入口拒绝已分离布局。维护/授权/测试真源全部属于Chef，产品无迁移副本。生产尚未执行，远端内容后台、后续schema感知迁移、完整租户与粤语仍未完成；详见database-schema-split.md。
 
 运行身份权限实施补充：Chef提供identity-grants.sql专用角色模板及IDENTITY_DATABASE_SCHEMA/DATABASE_SCHEMA可信单schema配置。真实身份HTTP与学习HTTP分别使用禁止互访数据的非所有者连接验证；身份审计只追加不修改，学习角色不能访问身份或修改课程。它补齐运行角色边界和将来schema迁移入口，当前表仍在同一测试schema、内容后台仍legacy；不宣称已完成物理schema迁移或生产双服务。产品不新增数据库权限/身份实现副本。

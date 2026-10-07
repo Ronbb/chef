@@ -22,6 +22,9 @@ pub struct Client {
     permits: std::sync::Arc<tokio::sync::Semaphore>,
 }
 impl Client {
+    pub(crate) fn product(&self) -> ProductId {
+        self.product
+    }
     pub fn new(origin: &str, key: &str, product: ProductId, secure: bool) -> anyhow::Result<Self> {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut endpoint =
@@ -137,6 +140,42 @@ impl Client {
 pub struct LearningAuth {
     pub(crate) identity: SessionIdentity,
 }
+
+/// Never deserialized or logged; request-local credentials only, no authorization cache.
+#[derive(Clone)]
+pub(crate) struct RemoteAuthorization {
+    client: Client,
+    headers: HeaderMap,
+    method: String,
+    identity: SessionIdentity,
+}
+impl RemoteAuthorization {
+    pub(crate) fn actor(&self) -> i64 {
+        self.identity
+            .account
+            .id
+            .parse()
+            .expect("verified account ID")
+    }
+    pub(crate) fn operator(&self) -> Result<crate::product_memberships::Operator, AppError> {
+        if self.identity.membership.role != "operator" {
+            return Err(AppError::Forbidden);
+        }
+        Ok(crate::product_memberships::Operator {
+            product: self.identity.product,
+            actor: self.actor(),
+            remote: Some(self.clone()),
+        })
+    }
+    pub(crate) async fn recheck(&self) -> Result<(), AppError> {
+        let identity = self.client.verify(&self.headers, &self.method).await?;
+        if identity.account.id != self.identity.account.id || identity.membership.role != "operator"
+        {
+            return Err(AppError::Forbidden);
+        }
+        Ok(())
+    }
+}
 impl<S: Send + Sync> FromRequestParts<S> for LearningAuth {
     type Rejection = AppError;
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, AppError> {
@@ -187,6 +226,19 @@ async fn gate(State(client): State<Client>, mut request: Request, next: Next) ->
         .await;
     let mut response = match result {
         Ok(identity) => {
+            let mut headers = HeaderMap::new();
+            for name in ["cookie", "origin", "x-csrf-token"] {
+                for value in request.headers().get_all(name) {
+                    headers.append(name, value.clone());
+                }
+            }
+            let method = request.method().as_str().to_owned();
+            request.extensions_mut().insert(RemoteAuthorization {
+                client: client.clone(),
+                headers,
+                method,
+                identity: identity.clone(),
+            });
             request.extensions_mut().insert(LearningAuth { identity });
             next.run(request).await
         }
@@ -274,6 +326,9 @@ pub fn router(db: sea_orm::DatabaseConnection, client: Client) -> anyhow::Result
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
         .with_state(LearningStore::new(db))
         .route_layer(axum::middleware::from_fn_with_state(client, gate)))
+}
+pub(crate) fn protect(router: Router, client: Client) -> Router {
+    router.route_layer(axum::middleware::from_fn_with_state(client, gate))
 }
 
 #[cfg(test)]

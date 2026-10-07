@@ -1,5 +1,17 @@
 # 独立账号服务：迁移中的可运行边界
 
+## 远端课程管理消费者
+
+验证：常规Rust工作区与16项隔离PG回归通过；补充实际独立审批后，最终5项后台/schema分离PG回归及全目标Clippy/fmt/diff通过。实际内容角色不能读取身份/成员/学习设置或修改课程正文，却能导入、审批、暂存、激活、撤回和读取内容历史。错误CSRF/普通学习者403，内容入口不装配账号管理；用pg_locks确认请求在授权锁等待后撤销成员，旧请求重新核验得到403且无课程写入。身份服务停止后请求503，无权限回退。注册素材为仓库测试SVG，临时目录核对范围后删除，无生产数据或提供方调用。
+
+课程检查、导入、审批、目录暂存/激活、撤回、概览和内容历史路由已从身份Backend状态分离，legacy和独立入口复用同一实现。AdminAuth接受服务器内部远端证明或legacy真实AuthSession，不从请求载荷构造actor/product。远端证明保留请求范围的身份客户端、会话和原method/Origin/CSRF，不序列化、不记录日志、不作授权缓存；每次入口仍执行有界、失败关闭的身份内省。全局账号role不授予课程权限。
+
+写事务先取得account-admin事务锁，再重新内省原请求，确认账号未替换、当前产品成员仍operator，然后取得原有内容锁并写入。身份成员修改也先取得相同数据库的account-admin锁，因此已过入口校验但仍等待写锁的旧证明不能绕过撤销。该机制要求身份、学习和内容连接指向同一实际PostgreSQL数据库；schema与登录角色可以分离，不能改为另一个数据库或集群。[PostgreSQL锁文档](https://www.postgresql.org/docs/current/view-pg-locks.html)说明advisory锁只在同一数据库内协调。
+
+远端身份模式配置IDENTITY_INTERNAL_URL；可额外配置CONTENT_DATABASE_URL和必填CONTENT_DATABASE_SCHEMA装配核心课程后台的独立运行连接，不复用学习角色的权限。只有CONTENT_DATABASE_URL而没有远端身份时启动拒绝；不配置内容连接则不开放这些管理路由。运行连接的数据库口令仍私有。infra/database/content-grants.sql明确授予核心课程所需INSERT、只更新published/目录状态、内容历史SELECT及审计序列USAGE，撤销身份和学习事实权限。内容历史不查询身份审计；账号审计由身份服务的/operator/accounts/history提供，legacy综合历史仍兼容。
+
+目前远端入口仍限Brioche；Hargow构造拒绝。录音、媒体、角色音色、声音任务/试听、对齐和音频包后台仍使用legacy路由，完整管理员UI/网关装配与后续schema感知迁移、产品租户数据和生产部署尚待完成。这一步没有升级生产或产品框架pin。
+
 ## 实际身份schema移动（迁移32）
 
 迁移32新增不可变布局，显式维护命令split-identity-schema在所有者事务内移动七张身份表到全新schema，保留记录、ID、会话、序列、约束、外键及审计。两个运行角色和授权模板支持分别配置身份/学习schema；旧组合服务与迁移入口在已分离布局明确拒绝，32回滚保护身份数据。[操作和验证边界](database-schema-split.md)包含实际命令及权限参数。独立服务配置本身仍不自动搬迁表。

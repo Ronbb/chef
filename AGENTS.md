@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+远端课程后台补充：admin核心课程路由使用无身份Backend的Store和AdminAuth，legacy复用；远端Operator仅由已验证请求生成，写事务先取得同一PostgreSQL数据库的account-admin锁，再向identity复核原method/Origin/CSRF/账号/产品成员，随后锁内容。禁止只用入口缓存权限或用globalrole。CONTENT_DATABASE_URL和必填CONTENT_DATABASE_SCHEMA可装配独立课程运行连接，必须与identity/learning同一实际数据库，缺少远端身份时拒绝；不配置则不开放该后台。content-grants只支持核心课程写入与内容历史读取，无身份/学习事实权限。录音/媒体/音色等后台仍需迁移，Hargow内容仍明确拒绝，不能切生产或宣称完整后台已独立。
+
 实际schema分离补充：迁移32只创建不可变chef_schema_layout；split-identity-schema是迁移所有者维护命令，要求精确32版本、单schema连接与七表所有权，事务内创建全新身份schema并移动七表，保留ID/序列/外键/会话/审计。迁移完成后禁用旧combined serve/migrate，32回滚拒绝删除已分离布局。授权模板必须显式传入身份和学习两个schema；产品不得复制迁移或授权实现。隔离真实迁移/CLI/双服务回归已覆盖，生产仍不能切换：远端内容后台、后续schema感知迁移、完整产品事实与Hargow未完成。操作边界见docs/database-schema-split.md。
 
 运行数据库配置补充：IDENTITY_DATABASE_SCHEMA只用于独立身份进程，DATABASE_SCHEMA用于学习/兼容CLI；仅允许单个小写ASCII标识符，不能由Host、请求或客户端产品选择。缺省沿用旧部署连接默认值。identity-grants.sql提供专用非所有者身份角色权限，审计仅SELECT/INSERT，禁止访问学习/内容；实际HTTP回归必须使用该模板和真实角色，不以所有者连接代替。配置与角色验证不是物理schema迁移，内容后台仍需迁出本地AuthSession后才能切生产。

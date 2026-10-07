@@ -9,9 +9,12 @@ use chef_engine::{
 use http_body_util::BodyExt;
 use sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement,
+    TransactionTrait,
 };
 use sea_orm_migration::MigratorTrait;
 use tower::ServiceExt;
+#[path = "support/assets.rs"]
+mod assets;
 mod support;
 const KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const ORIGIN: &str = "http://brioche.example.test";
@@ -243,6 +246,13 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
 
     let id_role = format!("{source}_id_login");
     let learning_role = format!("{source}_learn_login");
+    let content_role = format!("{source}_content_login");
+    owner
+        .execute_unprepared(&format!(
+            "CREATE ROLE {content_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE"
+        ))
+        .await
+        .unwrap();
     owner.execute_unprepared(&format!("CREATE ROLE {id_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE; CREATE ROLE {learning_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE")).await.unwrap();
     for (template, schema, role) in [
         (
@@ -254,6 +264,11 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             include_str!("../../../infra/database/learning-grants.sql"),
             source.as_str(),
             learning_role.as_str(),
+        ),
+        (
+            include_str!("../../../infra/database/content-grants.sql"),
+            source.as_str(),
+            content_role.as_str(),
         ),
     ] {
         let grants = template
@@ -275,6 +290,15 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     };
     let identity = connect(&role_url(&id_role), &target).await;
     let learning = connect(&role_url(&learning_role), &source).await;
+    let content = connect(&role_url(&content_role), &source).await;
+    for sql in [
+        format!("SELECT * FROM \"{target}\".users LIMIT 0"),
+        format!("SELECT * FROM \"{target}\".product_memberships LIMIT 0"),
+        "SELECT * FROM product_user_settings LIMIT 0".into(),
+        "UPDATE lesson_revisions SET server_document='{}' WHERE false".into(),
+    ] {
+        assert!(content.execute_unprepared(&sql).await.is_err());
+    }
     assert!(
         identity
             .execute_unprepared(&format!(
@@ -344,6 +368,10 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         false,
     )
     .unwrap();
+    let root = assets::fixture_assets(&owner, &source).await;
+    let content_app =
+        chef_engine::admin::independent_router(content.clone(), client.clone(), root.clone())
+            .unwrap();
     let remote = chef_engine::learning_identity::router(learning.clone(), client)
         .unwrap()
         .merge(chef_engine::independent_learning_router(
@@ -395,10 +423,163 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let invalid = learning.execute_unprepared("INSERT INTO product_user_settings(product_id,user_id,settings) VALUES('brioche',999999,'{}')")
         .await.unwrap_err();
     assert!(invalid.to_string().contains("foreign key constraint"));
+    for path in ["/api/v1/operator/overview", "/api/v1/operator/history"] {
+        assert_eq!(
+            request(&content_app, "GET", path, None, &mut cookie, &mut csrf)
+                .await
+                .0,
+            200
+        );
+        assert_eq!(
+            request(
+                &content_app,
+                "GET",
+                path,
+                None,
+                &mut next_cookie,
+                &mut next_csrf
+            )
+            .await
+            .0,
+            403
+        );
+    }
+    assert_eq!(
+        request(
+            &content_app,
+            "GET",
+            "/api/v1/operator/accounts",
+            None,
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        404
+    );
+    let mut imported_source = chef_engine::development_source().unwrap();
+    imported_source["id"] = "split-admin-lesson".into();
+    imported_source["assetRefs"] = assets::fixture_refs();
+    imported_source["editorial"]["status"] = "draft".into();
+    let document = serde_json::json!({"document":serde_json::to_string(&imported_source).unwrap(),"reason":"Independent content import"});
+    let mut bad_csrf = "wrong-csrf".to_owned();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/lessons/import",
+            Some(document.clone()),
+            &mut cookie,
+            &mut bad_csrf
+        )
+        .await
+        .0,
+        403
+    );
+    let (status, result) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/lessons/import",
+        Some(document.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{result}");
+    let (status,result)=request(&content_app,"POST","/api/v1/operator/lessons/split-admin-lesson/revisions/1/review",Some(serde_json::json!({"version":0,"approved":true,"reason":"Independent editorial approval"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 200, "{result}");
+    let manifest = serde_json::json!({"id":"split-admin-release","schemaVersion":"1.0","levels":[{"id":imported_source["levelId"],"label":"A1","units":[{"id":imported_source["unitId"],"titleZh":"Breakfast","lessons":[{"lessonId":"split-admin-lesson","revision":1}]}]}]});
+    let (status, result) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/releases/stage",
+        Some(serde_json::json!({"document":manifest.to_string(),"reason":"Independent staging"})),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{result}");
+    let (_, overview) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/overview",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    let (status,result)=request(&content_app,"POST","/api/v1/operator/releases/activate",Some(serde_json::json!({"releaseId":"split-admin-release","generation":overview["generation"],"reason":"Independent activation"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 200, "{result}");
+    let (status, result) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/lessons/split-admin-lesson/revisions/1/withdraw",
+        Some(serde_json::json!({"generation":result,"reason":"Independent withdrawal"})),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{result}");
+    // Revoke after the first HTTP verification while the write waits on the same
+    // database advisory lock used by identity membership mutations.
+    let held = owner.begin().await.unwrap();
+    held.execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
+        .await
+        .unwrap();
+    imported_source["id"] = "split-revoked-import".into();
+    let copy = content_app.clone();
+    let mut blocked_cookie = cookie.clone();
+    let mut blocked_csrf = csrf.clone();
+    let blocked = tokio::spawn(async move {
+        request(&copy,"POST","/api/v1/operator/lessons/import",Some(serde_json::json!({"document":imported_source.to_string(),"reason":"Must not retain revoked authorization"})),&mut blocked_cookie,&mut blocked_csrf).await
+    });
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+            "SELECT EXISTS(SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE l.locktype='advisory' AND NOT l.granted AND a.usename=$1) AS waiting",[content_role.clone().into()])).await.unwrap().unwrap();
+        if row.try_get::<bool>("", "waiting").unwrap() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Content write did not reach authorization lock"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    held.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        format!("UPDATE \"{target}\".product_memberships SET role='learner',version=version+1 WHERE product_id='brioche' AND user_id=$1"),[account.into()])).await.unwrap();
+    held.commit().await.unwrap();
+    assert_eq!(blocked.await.unwrap().0, 403);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM lesson_revisions WHERE lesson_id='split-revoked-import'")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     task.abort();
     let _ = task.await;
+    assert_eq!(
+        request(
+            &content_app,
+            "GET",
+            "/api/v1/operator/overview",
+            None,
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        503
+    );
+    content.close().await.unwrap();
+    assert!(
+        root.canonicalize()
+            .unwrap()
+            .starts_with(std::env::temp_dir().canonicalize().unwrap())
+    );
+    assert_eq!(
+        root.file_name().unwrap(),
+        format!("brioche-media-{source}").as_str()
+    );
+    std::fs::remove_dir_all(&root).unwrap();
     learning.close().await.unwrap();
     identity.close().await.unwrap();
     owner.close().await.unwrap();
-    admin.execute_unprepared(&format!("DROP SCHEMA {source} CASCADE; DROP SCHEMA {target} CASCADE; DROP SCHEMA {collision} CASCADE; DROP ROLE {id_role}; DROP ROLE {learning_role}")).await.unwrap();
+    admin.execute_unprepared(&format!("DROP SCHEMA {source} CASCADE; DROP SCHEMA {target} CASCADE; DROP SCHEMA {collision} CASCADE; DROP ROLE {id_role}; DROP ROLE {learning_role}; DROP ROLE {content_role}")).await.unwrap();
 }

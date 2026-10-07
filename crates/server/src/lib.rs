@@ -1,6 +1,7 @@
 mod account_admin;
 pub mod admin;
 mod admin_assets;
+mod admin_auth;
 mod admin_recordings;
 pub mod admin_speech_plans;
 pub mod audio;

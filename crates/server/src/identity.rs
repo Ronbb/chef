@@ -630,7 +630,7 @@ pub fn router_with_media_root(
         .merge(crate::learning_store::routes().with_state(
             crate::learning_store::LearningStore::new(backend.db.clone()),
         ))
-        .merge(crate::admin::router(root.clone()))
+        .merge(crate::admin::router(root.clone(), backend.db.clone()))
         .merge(crate::preview::router(root))
         .layer(axum::Extension(crate::product::ProductId::Brioche));
     protect_routes(
