@@ -1,5 +1,13 @@
 # 独立账号服务：迁移中的可运行边界
 
+## 独立课程音频打包和授权
+
+speech_package与lesson_audio_reviews的HTTP接口已进入共享内容服务，状态只含内容db。打包/导入在开始及交付/写入事务内用Operator复核原请求，最终锁内容并比对快照；保留两媒体槽准入、PCM拼接/实际哈希和时间轴验证、固定报告hash/新revision、录音+draft课源+package记录原子登记以及精确重试。音频审核保留heard、expectedLessonHash和版本CAS，不改变旧审核。
+
+`POST /api/v1/operator/lessons/{id}/revisions/{revision}/direct-publication`复用原所有者直接授权kernel，输入Rust契约AdminDirectPublication（expectedLessonHash、reason、对象evidence，序列化证据最多65536字节）。它记录独立授权审计，不生成heard声明，也不单独激活课程目录；新音频仍要求真实媒体/课源校验。本机authorize_local在入口构造本地Operator，HTTP使用原请求证明，均在授权锁内复核。
+
+内容角色仅新增speech_package_imports、lesson_audio_reviews及lesson_direct_publications INSERT。真实分离schema/最小角色验证完整模拟包导出与原子导入、固定版本/list/精确重试/冲突、未发布的新课、有证据且无heard的直接授权、后续拒绝使旧授权失效、音频审核版本及二十二类等待后撤权403；无额外包/审核/直接事件或合成。模拟时间/人工字段只测试协议，不声称生产人工听音。私有课程预览、布局感知后续迁移、完整产品租户/粤语及生产装配仍需实施。
+
 ## 独立音频导出与对齐
 
 speech_export与speech_alignments的HTTP路由已进入共享内容服务，以AdminAuth和内容db状态运行，本机CLI只在入口取本地Operator并复用kernel。导出在开始打包与最终交付两个事务核验原请求，交付前取得内容锁并重新比较快照，保留private/no-store、归档大小限制、原始和规范化媒体哈希验证。对齐导入/审核在授权锁内核验，保留固定引擎/报告版本/归档SHA/课源音频/字词范围、不可变请求和精确重试。

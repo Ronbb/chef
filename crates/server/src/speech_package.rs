@@ -1,9 +1,9 @@
 //! Private assembly artifacts and atomic draft imports. Neither operation publishes a course.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{exec, field, one, owner},
-    voice_references::{hex, lock_operator},
+    admin_auth::AdminAuth,
+    learning::{exec, field, one},
+    voice_references::hex,
 };
 use axum::{
     Extension, Json, Router,
@@ -26,7 +26,13 @@ use std::{
 };
 
 const MAX_PACKAGE: usize = 128 * 1024 * 1024;
-pub fn router() -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route(
             "/api/v1/operator/speech-alignments/{id}/package",
@@ -40,6 +46,7 @@ pub fn router() -> Router<Backend> {
             "/api/v1/operator/speech-alignments/{id}/packages",
             get(list),
         )
+        .with_state(Store { db })
 }
 fn import_error(error: anyhow::Error) -> AppError {
     if error.is::<sea_orm::DbErr>() {
@@ -82,24 +89,24 @@ async fn replay(
     ))
 }
 async fn import(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminSpeechPackageImport>,
 ) -> Result<Json<AdminSpeechPackageResult>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     settings(&request.package)?;
     if !hex(&id, 32) || !hex(&request.id, 32) {
         return Err(AppError::InvalidInput);
     }
-    let actor = owner(&auth)?;
+    let actor = operator.actor;
     let tx =
         b.db.begin_with_config(Some(IsolationLevel::RepeatableRead), None)
             .await
             .map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     if let Some(result) = replay(&tx, &id, actor, &request).await? {
         tx.commit().await.map_err(|_| AppError::Unavailable)?;
         return Ok(Json(result));
@@ -133,7 +140,7 @@ async fn import(
     .await
     .map_err(|_| AppError::Unavailable)??;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     exec(
         &tx,
         "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
@@ -186,12 +193,12 @@ struct Cursor {
     after: Option<String>,
 }
 async fn list(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
     Query(query): Query<Cursor>,
 ) -> Result<Json<AdminSpeechPackageResults>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let after = query.after.unwrap_or_default();
     if !hex(&id, 32) || (!after.is_empty() && !hex(&after, 32)) {
         return Err(AppError::InvalidInput);
@@ -274,16 +281,16 @@ async fn snapshot(
     Ok(snapshot)
 }
 async fn export(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminSpeechPackageRequest>,
 ) -> Result<Response, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     settings(&request)?;
-    let actor = owner(&auth)?;
+    let actor = operator.actor;
     // Assembly holds originals, decoded PCM and the archive in memory. Reserve
     // both shared media slots so two maximum-sized packages cannot overlap.
     let _permit = permits
@@ -293,6 +300,7 @@ async fn export(
         b.db.begin_with_config(Some(IsolationLevel::RepeatableRead), None)
             .await
             .map_err(|_| AppError::Unavailable)?;
+    operator.lock_content(&tx).await?;
     let original = snapshot(&tx, &id, &request).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     let expected = original.clone();
@@ -301,7 +309,7 @@ async fn export(
         .await
         .map_err(|_| AppError::Unavailable)??;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     exec(
         &tx,
         "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",

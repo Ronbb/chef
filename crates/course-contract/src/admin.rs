@@ -709,6 +709,16 @@ pub struct AdminLessonAudioReview {
     pub heard: bool,
     pub reason: String,
 }
+
+/// Explicit owner authorization; evidence is bounded and never a hearing declaration.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdminDirectPublication {
+    pub expected_lesson_hash: String,
+    pub reason: String,
+    #[ts(type = "Record<string, unknown>")]
+    pub evidence: serde_json::Value,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdminLessonAudioStatus {

@@ -1911,6 +1911,281 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     .await;
     assert_eq!(status, 200, "{list}");
     assert_eq!(list["items"][0]["acceptedCount"], 1);
+    // Complete only synthetic timing decisions for the isolated assembly fixture.
+    for c in alignment["clips"].as_array().unwrap().iter().skip(1) {
+        let body = serde_json::json!({"expectedReportHash":alignment["reportHash"],"accepted":true,"heard":true,"timingsChecked":true,"words":c["words"],"reason":"Synthetic alignment protocol decision"});
+        let path = format!(
+            "{alignment_route}/{alignment_id}/clips/{}/review",
+            c["clipId"].as_str().unwrap()
+        );
+        assert_eq!(
+            request(
+                &content_app,
+                "POST",
+                &path,
+                Some(body),
+                &mut cookie,
+                &mut csrf
+            )
+            .await
+            .0,
+            200
+        );
+    }
+    let package_path = format!("{alignment_route}/{alignment_id}/package");
+    let mut package_request = serde_json::json!({"expectedReportHash":alignment["reportHash"],"lessonRevision":lesson.revision+1,"gapMs":250,"rightsConfirmed":true,"source":"Synthetic protocol recording","license":"Synthetic fixture permission only","creator":"Isolated test","creditZh":"Synthetic fixture","reason":"Independent package assembly"});
+    for (session, token) in [
+        (next_cookie.as_str(), next_csrf.as_str()),
+        (cookie.as_str(), "bad-csrf"),
+    ] {
+        assert_eq!(
+            content_app
+                .clone()
+                .oneshot(json_write(&package_path, &package_request, session, token))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            403
+        );
+    }
+    let response = content_app
+        .clone()
+        .oneshot(json_write(&package_path, &package_request, &cookie, &csrf))
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let mut archive = tar::Archive::new(std::io::Cursor::new(&bytes));
+    let mut package_members = std::collections::BTreeMap::new();
+    for entry in archive.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let name = entry.path().unwrap().to_string_lossy().into_owned();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+        assert!(package_members.insert(name, bytes).is_none());
+    }
+    let assembled: serde_json::Value =
+        serde_json::from_slice(&package_members["lesson.json"]).unwrap();
+    assert_eq!(assembled["revision"], lesson.revision + 1);
+    assert_eq!(assembled["editorial"]["status"], "draft");
+    let assembled_lesson = chef_engine::project_source(assembled).unwrap();
+    assembled_lesson.validate().unwrap();
+    assert!(!assembled_lesson.audio.is_empty());
+    package_request["lessonRevision"] = (lesson.revision + 2).into();
+    let import_path = format!("{package_path}/import");
+    let package_import =
+        serde_json::json!({"id":"66666666666666666666666666666666","package":package_request});
+    for (session, token) in [
+        (next_cookie.as_str(), next_csrf.as_str()),
+        (cookie.as_str(), "bad-csrf"),
+    ] {
+        assert_eq!(
+            content_app
+                .clone()
+                .oneshot(json_write(&import_path, &package_import, session, token))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            403
+        );
+    }
+    let (status, imported) = request(
+        &content_app,
+        "POST",
+        &import_path,
+        Some(package_import.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{imported}");
+    assert!(imported["recordingCount"].as_u64().unwrap() > 0);
+    assert_eq!(imported["revision"], lesson.revision + 2);
+    let (status, retry) = request(
+        &content_app,
+        "POST",
+        &import_path,
+        Some(package_import.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(retry, imported);
+    let mut changed = package_import.clone();
+    changed["package"]["reason"] = "Changed immutable package".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &import_path,
+            Some(changed),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let (status, packages) = request(
+        &content_app,
+        "GET",
+        &format!("{alignment_route}/{alignment_id}/packages"),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(packages["items"], serde_json::json!([imported]));
+    let audio_path = format!(
+        "/api/v1/operator/lessons/{}/revisions/{}/audio-review",
+        lesson.id,
+        lesson.revision + 2
+    );
+    let (status, audio) = request(
+        &content_app,
+        "GET",
+        &audio_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{audio}");
+    assert_eq!(audio["published"], false);
+    assert_eq!(audio["required"], true);
+    let direct_path = format!(
+        "/api/v1/operator/lessons/{}/revisions/{}/direct-publication",
+        lesson.id,
+        lesson.revision + 2
+    );
+    let direct_request = serde_json::json!({"expectedLessonHash":audio["lessonHash"],"reason":"Synthetic owner authorization, no listening assertion","evidence":{"kind":"isolated-test-only"}});
+    let audio_request = serde_json::json!({"expectedLessonHash":audio["lessonHash"],"version":0,"accepted":false,"heard":false,"reason":"Synthetic subsequent rejection"});
+    for (path, body) in [
+        (&direct_path, &direct_request),
+        (&audio_path, &audio_request),
+    ] {
+        for (session, token) in [
+            (next_cookie.as_str(), next_csrf.as_str()),
+            (cookie.as_str(), "bad-csrf"),
+        ] {
+            assert_eq!(
+                content_app
+                    .clone()
+                    .oneshot(json_write(path, body, session, token))
+                    .await
+                    .unwrap()
+                    .status()
+                    .as_u16(),
+                403
+            );
+        }
+    }
+    let (status, authorized) = request(
+        &content_app,
+        "POST",
+        &direct_path,
+        Some(direct_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{authorized}");
+    assert_eq!(authorized["directAuthorized"], true);
+    assert_eq!(authorized["accepted"], true);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &direct_path,
+            Some(direct_request.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    let (status, rejected) = request(
+        &content_app,
+        "POST",
+        &audio_path,
+        Some(audio_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{rejected}");
+    assert_eq!(rejected["version"], 1);
+    let (_, current) = request(
+        &content_app,
+        "GET",
+        &audio_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(current["directAuthorized"], false);
+    assert_eq!(current["accepted"], false);
+    let audio_accept = serde_json::json!({"expectedLessonHash":audio["lessonHash"],"version":1,"accepted":true,"heard":true,"reason":"Synthetic final audio decision"});
+    let mut invalid = audio_accept.clone();
+    invalid["heard"] = false.into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &audio_path,
+            Some(invalid),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    let (status, accepted) = request(
+        &content_app,
+        "POST",
+        &audio_path,
+        Some(audio_accept.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{accepted}");
+    assert_eq!(accepted["accepted"], true);
+    assert_eq!(accepted["version"], 2);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &audio_path,
+            Some(audio_accept.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &audio_path,
+            Some(audio_request),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
     // Revoke after the first HTTP verification while the write waits on the same
     // database advisory lock used by identity membership mutations.
     imported_source["id"] = "split-revoked-import".into();
@@ -1932,6 +2207,10 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     revoked_clip["expectedPreviousId"] = "ffffffffffffffffffffffffffffffff".into();
     let mut revoked_alignment = alignment_request;
     revoked_alignment["id"] = "77777777777777777777777777777777".into();
+    let mut revoked_package = package_import;
+    revoked_package["id"] = "55555555555555555555555555555555".into();
+    revoked_package["package"]["lessonRevision"] = (lesson.revision + 3).into();
+    let revoked_package_export = revoked_package["package"].clone();
     for pending in [
         course_request,
         asset_upload("split-revoked-upload", &cookie, &csrf),
@@ -1970,6 +2249,10 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             .unwrap(),
         json_write(alignment_route, &revoked_alignment, &cookie, &csrf),
         json_write(&alignment_review_path, &alignment_review, &cookie, &csrf),
+        json_write(&package_path, &revoked_package_export, &cookie, &csrf),
+        json_write(&import_path, &revoked_package, &cookie, &csrf),
+        json_write(&audio_path, &audio_accept, &cookie, &csrf),
+        json_write(&direct_path, &direct_request, &cookie, &csrf),
     ] {
         let held = owner.begin().await.unwrap();
         held.execute_unprepared(
@@ -2167,7 +2450,14 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_alignments) AS reports,(SELECT count(*) FROM speech_alignment_reviews) AS reviews")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "reports").unwrap(), 1);
-    assert_eq!(row.try_get::<i64>("", "reviews").unwrap(), 1);
+    assert_eq!(
+        row.try_get::<i64>("", "reviews").unwrap(),
+        keys.len() as i64
+    );
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_package_imports) AS packages,(SELECT count(*) FROM lesson_audio_reviews) AS decisions,(SELECT count(*) FROM lesson_direct_publications) AS direct")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "packages").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "decisions").unwrap(), 2);
+    assert_eq!(row.try_get::<i64>("", "direct").unwrap(), 1);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_auditions WHERE id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') + (SELECT count(*) FROM voice_audition_events WHERE audition_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') AS n")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     task.abort();

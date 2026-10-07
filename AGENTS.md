@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立打包与课音频授权补充：speech_package和lesson_audio_reviews采用db-only Store/AdminAuth进入共享content_router；打包/导入前后Operator.lock_content复核原请求，最终content_state快照比对，保持原子录音+新draft课源+package审计、fixedhash/CAS/精确重试。课音频read/review事务授权迁出身份Backend；新增direct-publication POST复用原本机授权kernel，CLI只在边界取proof，AdminDirectPublication真源Rust生成TS，审核与直接授权分开，不伪造heard。内容角色仅新增package_imports/audio_reviews/direct_publications INSERT。实际受限schema验证完整模拟包导出/原子导入/列表/幂等/无公开新课、无heard的直接授权/后续拒绝失效旧授权/音频审核版本/二十二类等待后撤权403，无额外包/决定/调用。人工字段与时间均fixture，非真实生产审批。其余私有预览、布局感知迁移、完整租户/语言中立/粤语/生产装配仍待完成，不更新生产pin。
+
 独立导出/对齐补充：speech_export/speech_alignments使用db-only Store/AdminAuth进入共享content_router，CLI仅在边界构造本地Operator。导出打包前/交付前均lock_content复核原请求，交付前content_state锁重新比对snapshot；保持私有no-store/128MiB/原始与规范化音频hash验证。对齐导入/审核事务先lock_content，固定引擎/报告hash/原课音频/words/sourceArchiveSHA/CAS/精确重试不变。内容角色仅新增speech_alignments/reviews INSERT，无身份表/UPDATEDELETE。实际受限schema模拟完整计划课音频后验证tar完整hash/对齐导入和审核/列表读取/幂等/协议字段及十八类等待撤权403零额外报告/决定/合成；合成时间/人工字段仅测试fixture，非真实对齐/审听。余下打包/发布/私有课程预览/完整租户/粤语仍待迁移，不更新生产pin。
 
 独立课程语音片段补充：speech_clips共享路由采用db-only Store/AdminAuth；HTTP生成/审核传Operator到kernel，事务先lock_content再content_state。CLI只在边界构造本地proof，worker仅内容db。保留先登记submitted再调用、未知不自动重试、固定计划hash/previous CAS、精确重试、音频哈希验证和复用审计；审核仍为显式协议，不自动伪造heard。内容角色新增clips/events/reviews SELECT/INSERT，无身份权限或片段UPDATE/DELETE。真实分离schema模拟WAV验证生成/私有读取/列表/精确重试不重发/改参409/审核精确重试/复用ready与继承决定，十五类请求等待后撤权拒绝且零额外记录/调用。合成heard只是测试fixture；余下导出/对齐/打包/发布/私有预览、完整租户与粤语仍待迁移，保持生产pin。

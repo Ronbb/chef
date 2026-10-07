@@ -1,24 +1,37 @@
 //! Separate owner publication authorization and optional human listening declarations.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{exec, field, hash, one, owner},
+    admin_auth::AdminAuth,
+    identity::Backend,
+    learning::{exec, field, hash, one},
 };
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
-    routing::get,
+    routing::{get, post},
 };
 use brioche_course_contract::{AdminLessonAudioReview, AdminLessonAudioStatus};
 use sea_orm::{ConnectionTrait, TransactionTrait};
 use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
 
-pub fn router() -> Router<Backend> {
-    Router::new().route(
-        "/api/v1/operator/lessons/{id}/revisions/{revision}/audio-review",
-        get(read).post(review),
-    )
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
+    Router::new()
+        .route(
+            "/api/v1/operator/lessons/{id}/revisions/{revision}/audio-review",
+            get(read).post(review),
+        )
+        .route(
+            "/api/v1/operator/lessons/{id}/revisions/{revision}/direct-publication",
+            post(authorize),
+        )
+        .with_state(Store { db })
 }
 pub(crate) fn required(source: &Value) -> bool {
     source["audio"].as_array().is_some_and(|a| !a.is_empty())
@@ -82,21 +95,56 @@ async fn status(
 }
 
 /// Owner-authorized publication is a separate audit event, never a hearing declaration.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DirectPublication {
-    pub expected_lesson_hash: String,
-    pub reason: String,
-    pub evidence: Value,
-}
+pub use brioche_course_contract::AdminDirectPublication as DirectPublication;
 pub async fn authorize_local(
     b: &Backend,
     actor: i64,
     id: &str,
     revision: u32,
     root: &std::path::Path,
+    request: DirectPublication,
+) -> Result<AdminLessonAudioStatus, AppError> {
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
+        actor,
+    )
+    .await?;
+    authorize_for_operator(
+        &Store { db: b.db.clone() },
+        &operator,
+        id,
+        revision,
+        root,
+        request,
+    )
+    .await
+}
+async fn authorize(
+    auth: AdminAuth,
+    State(b): State<Store>,
+    Path((id, revision)): Path<(String, u32)>,
+    Extension(root): Extension<PathBuf>,
+    Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
+    Json(request): Json<DirectPublication>,
+) -> Result<Json<AdminLessonAudioStatus>, AppError> {
+    let operator = auth.require_operator().await?;
+    let _permit = permits
+        .try_acquire_many_owned(2)
+        .map_err(|_| AppError::RateLimited)?;
+    Ok(Json(
+        authorize_for_operator(&b, &operator, &id, revision, &root, request).await?,
+    ))
+}
+async fn authorize_for_operator(
+    b: &Store,
+    operator: &crate::product_memberships::Operator,
+    id: &str,
+    revision: u32,
+    root: &std::path::Path,
     mut request: DirectPublication,
 ) -> Result<AdminLessonAudioStatus, AppError> {
+    let actor = operator.actor;
     crate::admin::revision(id, revision)?;
     crate::admin::reason(&request.reason)?;
     if !crate::voice_references::hex(&request.expected_lesson_hash, 64)
@@ -112,7 +160,7 @@ pub async fn authorize_local(
     crate::admin::reason(&request.reason)?;
     let request_json = serde_json::to_value(&request).map_err(|_| AppError::InvalidInput)?;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    crate::voice_references::lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     exec(
         &tx,
         "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
@@ -165,25 +213,25 @@ async fn source(
     Ok((field(&row, "server_document")?, field(&row, "published")?))
 }
 async fn read(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path((id, rev)): Path<(String, u32)>,
 ) -> Result<Json<AdminLessonAudioStatus>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let (source, published) = source(&b.db, &id, rev, false).await?;
     let mut current = status(&b.db, &id, rev, &source).await?;
     current.published = published;
     Ok(Json(current))
 }
 async fn review(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path((id, rev)): Path<(String, u32)>,
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminLessonAudioReview>,
 ) -> Result<Json<AdminLessonAudioStatus>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     crate::admin::revision(&id, rev)?;
     crate::admin::reason(&request.reason)?;
     if !crate::voice_references::hex(&request.expected_lesson_hash, 64)
@@ -191,12 +239,12 @@ async fn review(
     {
         return Err(AppError::InvalidInput);
     }
-    let actor = owner(&auth)?;
+    let actor = operator.actor;
     let _permit = permits
         .try_acquire_many_owned(2)
         .map_err(|_| AppError::RateLimited)?;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    crate::voice_references::lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     exec(
         &tx,
         "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",

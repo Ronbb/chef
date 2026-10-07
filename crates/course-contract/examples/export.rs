@@ -33,6 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Catalog::export_all(&config)?;
     brioche_course_contract::AdminOverview::export_all(&config)?;
     brioche_course_contract::AdminLessonAudioReview::export_all(&config)?;
+    brioche_course_contract::AdminDirectPublication::export_all(&config)?;
     brioche_course_contract::AdminLessonAudioStatus::export_all(&config)?;
     brioche_course_contract::AdminLessonCursor::export_all(&config)?;
     brioche_course_contract::AdminReviewRequest::export_all(&config)?;
