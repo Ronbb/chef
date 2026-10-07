@@ -18,6 +18,58 @@ mod assets;
 mod support;
 const KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const ORIGIN: &str = "http://brioche.example.test";
+#[derive(Default)]
+struct EnrollmentFixture {
+    creates: std::sync::atomic::AtomicUsize,
+    queries: std::sync::atomic::AtomicUsize,
+}
+#[async_trait::async_trait]
+impl chef_engine::qwen::Transport for EnrollmentFixture {
+    async fn create(
+        &self,
+        prefix: &str,
+        _: &str,
+    ) -> Result<chef_engine::qwen::Receipt, chef_engine::qwen::ProviderError> {
+        self.creates
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(chef_engine::qwen::Receipt {
+            voice_id: format!("{}-{prefix}-fixture", chef_engine::qwen::MODEL),
+            request_id: "fixture-create".into(),
+        })
+    }
+    async fn query(
+        &self,
+        _: &str,
+    ) -> Result<chef_engine::qwen::Details, chef_engine::qwen::ProviderError> {
+        self.queries
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(chef_engine::qwen::Details {
+            model: chef_engine::qwen::MODEL.into(),
+            status: "OK".into(),
+            request_id: "fixture-query".into(),
+        })
+    }
+}
+async fn settled_job(
+    app: &Router,
+    path: &str,
+    cookie: &mut String,
+    csrf: &mut String,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let (status, value) = request(app, "GET", path, None, cookie, csrf).await;
+        assert_eq!(status, 200, "{value}");
+        if !["submitted", "checking"].contains(&value["status"].as_str().unwrap()) {
+            return value;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Enrollment worker did not settle"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
 fn json_write(path: &str, document: &serde_json::Value, cookie: &str, csrf: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -438,6 +490,23 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let content_app =
         chef_engine::admin::independent_router(content.clone(), client.clone(), root.clone())
             .unwrap();
+    let (_, configuration) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/voice-jobs",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(configuration["configured"], false);
+    let enrollment = std::sync::Arc::new(EnrollmentFixture::default());
+    let service = chef_engine::qwen::Service::new(
+        enrollment.clone(),
+        "https://provider-fixture.example.test",
+    )
+    .unwrap();
+    let content_app = content_app.layer(axum::Extension(service));
     let character = serde_json::json!({"characterId":"split-character","expectedRevision":0,"displayName":"Test character","avatarId":"avatar-camille-v1","avatarRevision":1,"reason":"Independent character registration"});
     for (session, token, expected) in [
         (next_cookie.as_str(), next_csrf.as_str(), 403),
@@ -969,6 +1038,94 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         "{grant_route}/{}/revoke",
         live["grant"]["id"].as_str().unwrap()
     );
+    let job_request = serde_json::json!({"grantId":live["grant"]["id"],"token":live["path"].as_str().unwrap().rsplit('/').next().unwrap(),"costConfirmed":true,"reason":"Independent enrollment attempt"});
+    let job_route = "/api/v1/operator/voice-jobs";
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            job_route,
+            Some(job_request.clone()),
+            &mut next_cookie,
+            &mut next_csrf
+        )
+        .await
+        .0,
+        403
+    );
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            job_route,
+            Some(job_request.clone()),
+            &mut cookie,
+            &mut wrong
+        )
+        .await
+        .0,
+        403
+    );
+    let (status, submitted) = request(
+        &content_app,
+        "POST",
+        job_route,
+        Some(job_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{submitted}");
+    assert_eq!(submitted["status"], "submitted");
+    let job_path = format!("{job_route}/{}", submitted["id"].as_str().unwrap());
+    let processing = settled_job(&content_app, &job_path, &mut cookie, &mut csrf).await;
+    assert_eq!(processing["status"], "processing");
+    assert_eq!(processing["version"], 2);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            job_route,
+            Some(job_request.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let job_check = format!("{job_path}/check");
+    let check_request =
+        serde_json::json!({"expectedVersion":2,"reason":"Independent enrollment query"});
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &job_check,
+            Some(check_request.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    let ready = settled_job(&content_app, &job_path, &mut cookie, &mut csrf).await;
+    assert_eq!(ready["status"], "ready");
+    assert_eq!(ready["version"], 4);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &job_check,
+            Some(check_request),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
     // Revoke after the first HTTP verification while the write waits on the same
     // database advisory lock used by identity membership mutations.
     imported_source["id"] = "split-revoked-import".into();
@@ -999,6 +1156,13 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         ),
         json_write(grant_route, &grant_request, &cookie, &csrf),
         json_write(&live_revoke, &revoke_request, &cookie, &csrf),
+        json_write(job_route, &job_request, &cookie, &csrf),
+        json_write(
+            &job_check,
+            &serde_json::json!({"expectedVersion":4,"reason":"Must not query after revocation"}),
+            &cookie,
+            &csrf,
+        ),
     ] {
         let held = owner.begin().await.unwrap();
         held.execute_unprepared(
@@ -1103,6 +1267,61 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM lesson_revisions WHERE lesson_id='split-revoked-import'")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    let row = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM voice_clone_events",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 4);
+    assert_eq!(
+        enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert!(
+        content
+            .execute_unprepared("DELETE FROM voice_clone_events WHERE false")
+            .await
+            .is_err()
+    );
+    // A different valid operator cannot consume a revoked issuer's reference.
+    let next_account = next["user"]["id"].as_str().unwrap().parse::<i64>().unwrap();
+    let held = owner.begin().await.unwrap();
+    held.execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
+        .await
+        .unwrap();
+    held.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("UPDATE \"{target}\".product_memberships SET role=CASE WHEN user_id=$1 THEN 'learner' ELSE 'operator' END,version=version+1 WHERE product_id='brioche' AND user_id IN($1,$2)"),[account.into(),next_account.into()])).await.unwrap();
+    held.commit().await.unwrap();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            job_route,
+            Some(job_request.clone()),
+            &mut next_cookie,
+            &mut next_csrf
+        )
+        .await
+        .0,
+        404
+    );
+    let restore = owner.begin().await.unwrap();
+    restore
+        .execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
+        .await
+        .unwrap();
+    restore.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("UPDATE \"{target}\".product_memberships SET role=CASE WHEN user_id=$1 THEN 'operator' ELSE 'learner' END,version=version+1 WHERE product_id='brioche' AND user_id IN($1,$2)"),[account.into(),next_account.into()])).await.unwrap();
+    restore.commit().await.unwrap();
+    assert_eq!(
+        enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
     task.abort();
     let _ = task.await;
     assert_eq!(

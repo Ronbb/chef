@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立音色创建任务补充：voice_jobs的列表/读取/创建/状态查询进入共享content_router，db-only Store/AdminAuth；创建和查询先Operator.lock_content。创建不再JOIN身份成员表，远端通过原可信proof内的身份client检查参考授权人的固定产品权限；legacy复用本地产品成员读取。供应商调用仍在提交submitted/checking审计后触发，响应worker只持内容db，保留版本CAS/未知结果不自动重试。content-grants新增jobs/events INSERT与仅jobs UPDATE(id)行锁权限，原不可变trigger保留。真实分离schema模拟供应商回归验证提交→processing→ready、旧版本/重复409、九类等待撤权403无额外事件/调用、不同有效管理员消费已撤权授权人的参考404。其他试听/语音流水线/私有预览与租户仍待迁移，不更新生产或产品pin。
+
 独立参考录音补充：voice_references管理员列表/签发/撤销使用db-only Store/AdminAuth，签发与撤销事务先Operator.lock_content；临时bearer下载单独delivery_router在浏览器gate外，仍用token hash/期限/撤销/32读上限和account-admin锁。远端下载通过凭证保护GET /internal/v1/operators/{stored_actor}检查固定产品成员，204允许/404拒绝/其他503，有界无缓存HTTP；不能要求供应商登录，也不能读取内容连接身份表。身份服务最终响应统一private,no-store含fallback；内部operator接口无浏览器会话或全局role授权。内容角色新增reference三表SELECT/INSERT、reads序列与仅grant UPDATE(id)用于FOR UPDATE，原不可变trigger保留，禁止实际更新/删除或扩大身份权限。角色产品仍仅Brioche；其他配音流水线及课程预览待迁移，不切生产。
 
 独立角色库补充：character_voices共享路由采用db-only Store/AdminAuth；角色追加必须传Operator到media导入，声音HTTP写事务必须先lock_content再调用私有append_profile_body。公共CLI append_profile/试听采纳append_profile_in保留本地成员事务复核，共用私有写实现；不得直接暴露body或接受客户端actor。content-grants增加character_revisions/character_voice_profiles INSERT，不授UPDATE/DELETE。实际分离schema验证新角色、第二revision、旧revision/头像/声音读取、声音CAS冲突/actor审计、learner/CSRF拒绝、五类写入各自等待后撤权403零登记，身份停止503。语音任务/参考授权/试听/课程预览仍依赖legacy；不推进生产或Hargow开放。

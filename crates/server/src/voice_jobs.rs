@@ -1,10 +1,10 @@
 //! Durable enrollment attempts. A lost provider reply is never automatically retried.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{exec, field, one, owner},
+    admin_auth::AdminAuth,
+    learning::{exec, field, one},
     qwen::{self, ProviderError, Service},
-    voice_references::{hex, inspect, lock_operator},
+    voice_references::{hex, inspect},
 };
 use axum::{
     Extension, Json, Router,
@@ -22,11 +22,18 @@ e.voice_id,e.request_id,to_char(j.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH
 to_char(e.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
 FROM voice_clone_jobs j JOIN voice_reference_grants g ON g.id=j.grant_id
 JOIN LATERAL (SELECT * FROM voice_clone_events WHERE job_id=j.id ORDER BY version DESC LIMIT 1) e ON true"#;
-pub fn router() -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/voice-jobs", get(list).post(create))
         .route("/api/v1/operator/voice-jobs/{id}", get(read))
         .route("/api/v1/operator/voice-jobs/{id}/check", post(check))
+        .with_state(Store { db })
 }
 fn item(row: &QueryResult) -> Result<AdminVoiceJob, AppError> {
     Ok(AdminVoiceJob {
@@ -62,12 +69,12 @@ struct Cursor {
     after_id: Option<String>,
 }
 async fn list(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     service: Option<Extension<Service>>,
     Query(cursor): Query<Cursor>,
 ) -> Result<Json<AdminVoiceJobs>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let after = cursor.after_id.unwrap_or_default();
     if !after.is_empty() && !hex(&after, 32) {
         return Err(AppError::InvalidInput);
@@ -98,11 +105,11 @@ async fn list(
     }))
 }
 async fn read(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminVoiceJob>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     Ok(Json(load(&backend.db, &id).await?))
 }
 async fn event(
@@ -117,14 +124,14 @@ async fn event(
     exec(db,"INSERT INTO voice_clone_events(job_id,version,status,voice_id,request_id,actor_id,reason) SELECT $1,COALESCE(max(version),0)+1,$2,$3,$4,$5,$6 FROM voice_clone_events WHERE job_id=$1",vec![id.into(),status.into(),voice.into(),request.into(),actor.into(),reason.into()]).await.map(|_|())
 }
 async fn create(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     service: Option<Extension<Service>>,
     Extension(root): Extension<PathBuf>,
     Extension(media_permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminVoiceJobRequest>,
 ) -> Result<Json<AdminVoiceJob>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     crate::admin::reason(&request.reason)?;
     if !request.cost_confirmed || !hex(&request.grant_id, 32) || !hex(&request.token, 64) {
         return Err(AppError::InvalidInput);
@@ -135,14 +142,26 @@ async fn create(
         .clone()
         .try_acquire_owned()
         .map_err(|_| AppError::RateLimited)?;
-    let actor = owner(&auth)?;
+    let actor = operator.actor;
     let tx = backend
         .db
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
-    let row=one(&tx,"SELECT g.descriptor,g.actor_id FROM voice_reference_grants g JOIN product_memberships m ON m.user_id=g.actor_id AND m.product_id='brioche' WHERE g.id=$1 AND g.token_hash=$2 AND m.role='operator' AND g.expires_at>clock_timestamp()+interval '60 seconds' AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id) AND (SELECT count(*) FROM voice_reference_reads r WHERE r.grant_id=g.id)<32",vec![request.grant_id.clone().into(),crate::media::digest(request.token.as_bytes()).into()]).await?.ok_or(AppError::NotFound)?;
+    operator.lock_content(&tx).await?;
+    let row=one(&tx,"SELECT g.descriptor,g.actor_id FROM voice_reference_grants g WHERE g.id=$1 AND g.token_hash=$2 AND g.expires_at>clock_timestamp()+interval '60 seconds' AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id) AND (SELECT count(*) FROM voice_reference_reads r WHERE r.grant_id=g.id)<32",vec![request.grant_id.clone().into(),crate::media::digest(request.token.as_bytes()).into()]).await?.ok_or(AppError::NotFound)?;
+    let grant_actor: i64 = field(&row, "actor_id")?;
+    let grant_authorized = if let Some(remote) = &operator.remote {
+        remote.is_operator(grant_actor).await?
+    } else {
+        crate::product_memberships::read(&tx, operator.product, grant_actor)
+            .await?
+            .role
+            == "operator"
+    };
+    if !grant_authorized {
+        return Err(AppError::NotFound);
+    }
     if one(
         &tx,
         "SELECT id FROM voice_clone_jobs WHERE grant_id=$1",
@@ -242,13 +261,13 @@ async fn finish(
     tx.commit().await.map_err(|_| AppError::Unavailable)
 }
 async fn check(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     service: Option<Extension<Service>>,
     Path(id): Path<String>,
     Json(request): Json<AdminVoiceJobCheck>,
 ) -> Result<Json<AdminVoiceJob>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     crate::admin::reason(&request.reason)?;
     let service = service.ok_or(AppError::Unavailable)?.0;
     let permit = service
@@ -256,13 +275,13 @@ async fn check(
         .clone()
         .try_acquire_owned()
         .map_err(|_| AppError::RateLimited)?;
-    let actor = owner(&auth)?;
+    let actor = operator.actor;
     let tx = backend
         .db
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     if !hex(&id, 32) {
         return Err(AppError::InvalidInput);
     }

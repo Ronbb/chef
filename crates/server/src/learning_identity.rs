@@ -175,6 +175,9 @@ pub(crate) struct RemoteAuthorization {
     identity: SessionIdentity,
 }
 impl RemoteAuthorization {
+    pub(crate) async fn is_operator(&self, actor: i64) -> Result<bool, AppError> {
+        self.client.is_operator(actor).await
+    }
     pub(crate) fn actor(&self) -> i64 {
         self.identity
             .account
