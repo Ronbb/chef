@@ -28,6 +28,10 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
 ) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/speech-plans/{id}/export", get(export))
+        .route(
+            "/api/v1/operator/speech-plans/{id}/export-direct",
+            get(export_direct),
+        )
         .with_state(Store { db })
 }
 pub(crate) async fn snapshot(db: &impl ConnectionTrait, id: &str) -> Result<Value, AppError> {
@@ -163,11 +167,30 @@ async fn export(
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
 ) -> Result<Response, AppError> {
+    export_response(auth, b, id, root, permits, true).await
+}
+async fn export_direct(
+    auth: AdminAuth,
+    State(b): State<Store>,
+    Path(id): Path<String>,
+    Extension(root): Extension<PathBuf>,
+    Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
+) -> Result<Response, AppError> {
+    export_response(auth, b, id, root, permits, false).await
+}
+async fn export_response(
+    auth: AdminAuth,
+    b: Store,
+    id: String,
+    root: PathBuf,
+    permits: Arc<tokio::sync::Semaphore>,
+    reviewed: bool,
+) -> Result<Response, AppError> {
     let operator = auth.require_operator().await?;
     let _permit = permits
         .try_acquire_owned()
         .map_err(|_| AppError::RateLimited)?;
-    let bytes = export_policy(&b, &operator, id.clone(), root, true).await?;
+    let bytes = export_policy(&b, &operator, id.clone(), root, reviewed).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         "content-type",

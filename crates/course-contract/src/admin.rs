@@ -687,6 +687,12 @@ pub struct AdminSpeechPackageImport {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdminAutomaticSpeechPackageRequest {
+    pub report_json: String,
+    pub package: AdminSpeechPackageRequest,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdminSpeechPackageResult {
     pub id: String,
     pub lesson_id: String,

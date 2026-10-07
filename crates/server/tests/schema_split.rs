@@ -1809,6 +1809,99 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     }).collect();
     let report = serde_json::json!({"schemaVersion":"1.0","kind":"brioche-alignment-predictions","planId":plan_id,"planHash":preview["planHash"],"sourceArchiveSha256":format!("{:x}",Sha256::digest(&archive_bytes)),"engine":engine,"reviewRequired":true,"clips":report_clips});
     let alignment_route = "/api/v1/operator/speech-alignments";
+    let direct_export_path = format!("/api/v1/operator/speech-plans/{plan_id}/export-direct");
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&direct_export_path)
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let direct_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let mut automatic = report.clone();
+    automatic["kind"] = serde_json::json!("brioche-automatic-alignment-v1");
+    automatic["reviewRequired"] = false.into();
+    automatic["humanListeningAsserted"] = false.into();
+    automatic["originalPredictionReportSha256"] = serde_json::json!("b".repeat(64));
+    automatic["sourceArchiveSha256"] = format!("{:x}", Sha256::digest(&direct_bytes)).into();
+    for clip in automatic["clips"].as_array_mut().unwrap() {
+        let words = clip["words"].clone();
+        for target in clip["targets"].as_array_mut().unwrap() {
+            let original = manifest["plan"]["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["pointer"] == target["pointer"])
+                .unwrap();
+            target["words"] = serde_json::json!(
+                original["words"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|unit| {
+                        let word = words
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|w| {
+                                w["start"] == unit["entryStart"]
+                                    && w["end"] == unit["entryEnd"]
+                                    && w["text"] == unit["text"]
+                            })
+                            .unwrap();
+                        let mut unit = unit.clone();
+                        unit["startMs"] = word["startMs"].clone();
+                        unit["endMs"] = word["endMs"].clone();
+                        unit
+                    })
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+    let automatic_path = "/api/v1/operator/speech-packages/automatic";
+    let automatic_request = serde_json::json!({"reportJson":automatic.to_string(),"package":{"expectedReportHash":format!("{:x}",Sha256::digest(serde_json::to_vec(&automatic).unwrap())),"lessonRevision":lesson.revision+1,"gapMs":250,"rightsConfirmed":true,"source":"Synthetic protocol recording","license":"Synthetic fixture permission only","creator":"Isolated test","creditZh":"Synthetic fixture","reason":"Synthetic automatic assembly; no human hearing"}});
+    for (session, token, expected) in [
+        (&cookie, &csrf, 200),
+        (&next_cookie, &next_csrf, 403),
+        (&cookie, &"bad-csrf".to_owned(), 403),
+    ] {
+        let response = content_app
+            .clone()
+            .oneshot(json_write(
+                automatic_path,
+                &automatic_request,
+                session,
+                token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), expected);
+        if expected == 200 {
+            assert_eq!(response.headers()["cache-control"], "private, no-store");
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let mut archive = tar::Archive::new(std::io::Cursor::new(bytes));
+            let mut found = false;
+            for entry in archive.entries().unwrap() {
+                let mut entry = entry.unwrap();
+                if entry.path().unwrap().to_string_lossy() == "manifest.json" {
+                    let mut bytes = Vec::new();
+                    std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+                    let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(result["assembly"]["humanListeningAsserted"], false);
+                    assert_eq!(result["assembly"]["approvalRequired"], false);
+                    assert_eq!(result["automaticAlignment"], automatic);
+                    found = true;
+                }
+            }
+            assert!(found);
+        }
+    }
     let alignment_id = "88888888888888888888888888888888";
     let alignment_request = serde_json::json!({"id":alignment_id,"planId":plan_id,"expectedPlanHash":preview["planHash"],"reportJson":report.to_string(),"reason":"Independent synthetic alignment"});
     for (session, token) in [
@@ -2485,6 +2578,12 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         json_write(&audio_path, &audio_accept, &cookie, &csrf),
         json_write(&direct_path, &direct_request, &cookie, &csrf),
         json_write(&grade_path, &grade_request, &cookie, &csrf),
+        json_write(automatic_path, &automatic_request, &cookie, &csrf),
+        Request::builder()
+            .uri(&direct_export_path)
+            .header("cookie", &cookie)
+            .body(Body::empty())
+            .unwrap(),
     ] {
         let held = owner.begin().await.unwrap();
         held.execute_unprepared(

@@ -4,11 +4,66 @@ use crate::{
     identity::Backend,
     learning::{exec, field, hash, one},
 };
+use axum::{
+    Extension, Json, Router,
+    body::Body,
+    extract::{DefaultBodyLimit, State},
+    http::HeaderValue,
+    response::Response,
+    routing::post,
+};
 use brioche_course_contract::{AdminAlignmentWord, AdminSpeechPackageRequest};
 use sea_orm::{ConnectionTrait, IsolationLevel, TransactionTrait};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, path::PathBuf};
 use unicode_normalization::UnicodeNormalization;
+
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
+    Router::new()
+        .route(
+            "/api/v1/operator/speech-packages/automatic",
+            post(assemble_http).layer(DefaultBodyLimit::max(5 * 1024 * 1024)),
+        )
+        .with_state(Store { db })
+}
+async fn assemble_http(
+    auth: crate::admin_auth::AdminAuth,
+    State(store): State<Store>,
+    Extension(root): Extension<PathBuf>,
+    Extension(slots): Extension<std::sync::Arc<tokio::sync::Semaphore>>,
+    Json(request): Json<brioche_course_contract::AdminAutomaticSpeechPackageRequest>,
+) -> Result<Response, AppError> {
+    let operator = auth.require_operator().await?;
+    if request.report_json.len() > 4 * 1024 * 1024 {
+        return Err(AppError::InvalidInput);
+    }
+    let report = crate::author_json::parse_document(request.report_json.as_bytes())
+        .map_err(|_| AppError::InvalidInput)?;
+    let _slot = slots
+        .try_acquire_owned()
+        .map_err(|_| AppError::RateLimited)?;
+    let bytes = assemble_authorized(&store, &operator, root, report, request.package).await?;
+    let mut response = Response::new(Body::from(bytes));
+    response.headers_mut().insert(
+        "content-type",
+        HeaderValue::from_static("application/x-tar"),
+    );
+    response.headers_mut().insert(
+        "cache-control",
+        HeaderValue::from_static("private, no-store"),
+    );
+    response.headers_mut().insert(
+        "content-disposition",
+        HeaderValue::from_static("attachment; filename=\"automatic-speech.tar\""),
+    );
+    Ok(response)
+}
 
 const LEGACY_TRANSCRIPT: &str = "NFC source word units, apostrophes normalized; original scalar ranges retained; raw timestamp classes without interpolation";
 
@@ -266,12 +321,35 @@ pub async fn assemble_for_actor(
     report: Value,
     request: AdminSpeechPackageRequest,
 ) -> Result<Vec<u8>, AppError> {
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
+        actor,
+    )
+    .await?;
+    assemble_authorized(
+        &Store { db: b.db.clone() },
+        &operator,
+        root,
+        report,
+        request,
+    )
+    .await
+}
+async fn assemble_authorized(
+    b: &Store,
+    operator: &crate::product_memberships::Operator,
+    root: PathBuf,
+    report: Value,
+    request: AdminSpeechPackageRequest,
+) -> Result<Vec<u8>, AppError> {
+    let actor = operator.actor;
     check_report(&report, &request)?;
     let tx =
         b.db.begin_with_config(Some(IsolationLevel::RepeatableRead), None)
             .await
             .map_err(|_| AppError::Unavailable)?;
-    crate::voice_references::lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     let original = snapshot(&tx, &report, &request).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     let expected = original.clone();
@@ -288,7 +366,7 @@ pub async fn assemble_for_actor(
     .await
     .map_err(|_| AppError::Unavailable)??;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    crate::voice_references::lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     exec(
         &tx,
         "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",

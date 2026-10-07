@@ -101,15 +101,6 @@ async fn list(
     };
     Ok(Json(AdminReferenceGrants { items, next }))
 }
-pub(crate) async fn lock_operator(
-    tx: &sea_orm::DatabaseTransaction,
-    actor: i64,
-) -> Result<(), AppError> {
-    crate::product_memberships::lock_operator(tx, crate::product::ProductId::Brioche, actor)
-        .await?;
-    Ok(())
-}
-
 /// Hash, full decode and provider limits are checked against actual bytes, not just client metadata.
 pub(crate) async fn inspect(
     root: PathBuf,

@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+自动打包补充：speech_automatic的HTTP与本机CLI共用仅内容db/Operator kernel，本机入口才读取成员身份。新增automatic POST及export-direct GET，AdminAutomaticSpeechPackageRequest由Rust生成TS；报告JSON拒绝重复字段，4MiB报告/5MiB请求、两媒体槽与原128MiB归档限制保留。计算前/交付前lock_content复核请求，交付前快照比对，不写人工heard或激活目录。受限split-schema验证私有自动tar/固定报告/learner与CSRF403及二十五类等待后撤权，模拟协议不表示真实模型准确度。完整租户/语言中立/粤语、共享Web入口及生产装配仍待完成，生产pin不变。
+
 分离布局升级补充：migrate-layout只接受已登记split布局和精确legacy32历史，由相关表所有者运行；身份schema从布局读取，固定步骤及独立chef_layout_migrations属于Chef。共用维护锁，整批DDL/账本原子提交，拒绝未知/漂移定义、同名未登记索引及运行角色，不自动逆向或服务启动执行。实际CLI/受限PG验证冲突整批回滚、正常/幂等、身份行指纹和漂移拒绝。生产pin不变；完整产品事实、语言中立/粤语和生产装配仍待实施。
 
 独立私有预览补充：preview共享路由使用db-only Store/AdminAuth并入content_router，legacy移除重复装配。固定release/revision/私有media/audio/grade共用原投影/读文件/判分实现，URL仍改写operator路径，来源与私有答案不返回。POST判分增加Operator事务锁内复核，只计算结果，不写学习事实；保持CSRF与撤回410。实际分离schema/受限角色验证未发布新音频revision预览、私有SVG、WAV range206、learner403/匿名401、撤回410/目录标记、学习session/attempt零增量、二十三类等待后撤权403及identity停止预览/媒体503。完整租户/语言中立与粤语、布局感知后续迁移/生产装配仍未完成，不更新生产pin。

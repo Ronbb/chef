@@ -1,5 +1,11 @@
 # 独立账号服务：迁移中的可运行边界
 
+## 自动组装与直接发布输入
+
+共享内容服务提供GET /api/v1/operator/speech-plans/{id}/export-direct和POST /api/v1/operator/speech-packages/automatic。前者导出ready片段的技术输入，不要求人工审核，但拒绝已否决片段；后者接收Rust契约AdminAutomaticSpeechPackageRequest（reportJson与package）。报告使用严格JSON解析，4MiB报告、5MiB请求、两媒体槽和原128MiB归档限制；保留固定引擎/原始预测/计划与课源/归档hash/时间轴/新revision检查。
+
+HTTP与可信本机CLI共用db-only kernel；原请求Operator在计算前和交付前复核，最终内容快照比对后才返回private,no-store tar。不注册新课、不激活目录、不伪造heard；本机身份Backend仅用于边界授权。实际受限split-schema模拟报告验证tar的自动报告和无人工声明、learner/CSRF拒绝及二十五类等待后撤权，旧本机自动打包回归继续验证。模拟预测不证明实际模型准确度，无付费调用。共享Web入口、完整租户与粤语/生产装配继续实施。
+
 分离后的维护升级使用Chef `migrate-layout <learning-schema>`：身份schema来自已登记布局，所有者在同一事务向两个域应用固定步骤，独立账本拒绝未知或变化的定义。首批身份节流清理/学习尝试查询索引已通过实际CLI、冲突回滚、重复执行和运行角色拒绝验证。此命令不在服务启动时自动运行；生产尚未迁移，操作边界见database-schema-split.md。
 
 ## 独立私有课程预览
