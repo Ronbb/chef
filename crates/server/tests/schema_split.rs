@@ -410,6 +410,20 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .execute_unprepared("DROP TRIGGER chef_content_owner ON content_releases")
         .await
         .unwrap();
+    owner
+        .execute_unprepared(
+            "ALTER TABLE saved_items ADD CONSTRAINT chef_saved_product_lesson CHECK(true)",
+        )
+        .await
+        .unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='learning_sessions' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
+    owner
+        .execute_unprepared("ALTER TABLE saved_items DROP CONSTRAINT chef_saved_product_lesson")
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -417,7 +431,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=9 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=10 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -889,9 +903,14 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         200
     );
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO learning_operations(product_id,user_id,scope,idempotency_key,request_hash,result) VALUES('hargow',$1,'start','split-start-learning-01',$2,$3)",[account.into(),"b".repeat(64).into(),serde_json::json!({"marker":"other product only"}).into()])).await.unwrap();
+    let mut other_lesson = lesson.clone();
+    other_lesson.id = "hargow-learning-fixture".into();
+    let mut other_source = chef_engine::development_source().unwrap();
+    other_source["id"] = other_lesson.id.clone().into();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) VALUES('hargow',$1,$2,true,$3,$4)",[other_lesson.id.clone().into(),(lesson.revision as i32).into(),serde_json::to_value(&other_lesson).unwrap().into(),other_source.into()])).await.unwrap();
     let other_session = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO learning_sessions(id,product_id,user_id,lesson_id,revision,schema_version) VALUES($1,'hargow',$2,$3,$4,'1.0')",[other_session.into(),account.into(),lesson.id.clone().into(),(lesson.revision as i32).into()])).await.unwrap();
-    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_progress(product_id,user_id,lesson_id,last_session_id,first_completed_at,latest_completed_revision) VALUES('hargow',$1,$2,$3,'2026-01-01T00:00:00Z',$4)",[account.into(),lesson.id.clone().into(),other_session.into(),(lesson.revision as i32).into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO learning_sessions(id,product_id,user_id,lesson_id,revision,schema_version) VALUES($1,'hargow',$2,$3,$4,'1.0')",[other_session.into(),account.into(),other_lesson.id.clone().into(),(lesson.revision as i32).into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_progress(product_id,user_id,lesson_id,last_session_id,first_completed_at,latest_completed_revision) VALUES('hargow',$1,$2,$3,'2026-01-01T00:00:00Z',$4)",[account.into(),other_lesson.id.clone().into(),other_session.into(),(lesson.revision as i32).into()])).await.unwrap();
     let start_body = serde_json::json!({"lessonId":lesson.id,"schemaVersion":"1.0","idempotencyKey":"split-start-learning-01"});
     owner
         .execute_unprepared(
@@ -975,7 +994,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(history["completedLessons"], 0);
     assert_eq!(history["items"].as_array().unwrap().len(), 1);
     assert_eq!(history["items"][0]["sessionId"], started["progress"]["id"]);
-    let untouched=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT s.version,s.completed_at IS NULL AS active,p.first_completed_at='2026-01-01T00:00:00Z'::timestamptz AS preserved,(SELECT count(*) FROM learning_sessions WHERE user_id=$1 AND lesson_id=$2 AND completed_at IS NULL)::bigint AS active_count FROM learning_sessions s JOIN lesson_progress p ON p.product_id=s.product_id AND p.last_session_id=s.id WHERE s.id=$3",[account.into(),lesson.id.clone().into(),other_session.into()])).await.unwrap().unwrap();
+    let untouched=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT s.version,s.completed_at IS NULL AS active,p.first_completed_at='2026-01-01T00:00:00Z'::timestamptz AS preserved,(SELECT count(*) FROM learning_sessions WHERE user_id=$1 AND (lesson_id=$2 OR id=$3) AND completed_at IS NULL)::bigint AS active_count FROM learning_sessions s JOIN lesson_progress p ON p.product_id=s.product_id AND p.last_session_id=s.id WHERE s.id=$3",[account.into(),lesson.id.clone().into(),other_session.into()])).await.unwrap().unwrap();
     assert_eq!(untouched.try_get::<i32>("", "version").unwrap(), 1);
     assert!(untouched.try_get::<bool>("", "active").unwrap());
     assert!(untouched.try_get::<bool>("", "preserved").unwrap());
@@ -1037,7 +1056,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     );
     let knowledge = &lesson.knowledge.vocabulary[0];
     let other_saved = "dddddddddddddddddddddddddddddddd";
-    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO saved_items(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot,saved) VALUES('hargow',$1,$2,$3,$4,$5,$6,true)",[other_saved.into(),account.into(),knowledge.id.clone().into(),lesson.id.clone().into(),(lesson.revision as i32).into(),serde_json::to_value(knowledge).unwrap().into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO saved_items(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot,saved) VALUES('hargow',$1,$2,$3,$4,$5,$6,true)",[other_saved.into(),account.into(),knowledge.id.clone().into(),other_lesson.id.clone().into(),(lesson.revision as i32).into(),serde_json::to_value(knowledge).unwrap().into()])).await.unwrap();
     let saved_path = format!("/api/v1/me/saved-items/{}", knowledge.id);
     assert_eq!(
         request(&remote, "GET", &saved_path, None, &mut cookie, &mut csrf)
@@ -1098,7 +1117,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert!(untouched.try_get::<bool>("", "saved").unwrap());
     assert_eq!(untouched.try_get::<i32>("", "version").unwrap(), 1);
     let other_card = "cccccccccccccccccccccccccccccccc";
-    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO review_cards(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) VALUES('hargow',$1,$2,$3,$4,$5,$6)",[other_card.into(),account.into(),knowledge.id.clone().into(),lesson.id.clone().into(),(lesson.revision as i32).into(),serde_json::to_value(knowledge).unwrap().into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO review_cards(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) VALUES('hargow',$1,$2,$3,$4,$5,$6)",[other_card.into(),account.into(),knowledge.id.clone().into(),other_lesson.id.clone().into(),(lesson.revision as i32).into(),serde_json::to_value(knowledge).unwrap().into()])).await.unwrap();
     let other_path = format!("/api/v1/me/reviews/{other_card}");
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO review_attempts(product_id,id,card_id,user_id,rating,old_stage,new_stage,old_version,new_version,due_at,reviewed_at,time_zone) VALUES('hargow','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',$1,$2,'again',-1,0,1,2,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'Asia/Hong_Kong')",[other_card.into(),account.into()])).await.unwrap();
     let (status, history) = request(
@@ -1254,7 +1273,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .await
         .unwrap();
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO exercise_attempts(product_id,id,session_id,user_id,exercise_id,attempt_index,answer,result,hint_used) VALUES('hargow','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',$1,$2,'other-product-exercise',1,'{}','{}',false)",[other_session.into(),account.into()])).await.unwrap();
-    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"UPDATE lesson_progress SET first_completed_at=CURRENT_TIMESTAMP WHERE product_id='hargow' AND user_id=$1 AND lesson_id=$2",[account.into(),lesson.id.clone().into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"UPDATE lesson_progress SET first_completed_at=CURRENT_TIMESTAMP WHERE product_id='hargow' AND user_id=$1 AND lesson_id=$2",[account.into(),other_lesson.id.clone().into()])).await.unwrap();
     let (status, dashboard) = request(
         &remote,
         "GET",

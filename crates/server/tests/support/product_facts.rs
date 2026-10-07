@@ -92,11 +92,37 @@ pub async fn verify(db: &DatabaseConnection) {
     let error=tx.execute_unprepared("INSERT INTO lesson_progress(product_id,user_id,lesson_id,last_session_id) SELECT 'hargow',user_id,lesson_id,id FROM learning_sessions WHERE id='fact-session'").await.unwrap_err();
     assert!(error.to_string().contains("chef_progress_product_session"));
     tx.rollback().await.unwrap();
+    // Check the exact source constraint, not an incidental uniqueness or missing-field error.
+    for (sql, constraint) in [
+        (
+            "INSERT INTO learning_sessions(product_id,id,user_id,lesson_id,revision,schema_version) SELECT 'hargow','cross-source-session',user_id,lesson_id,revision,schema_version FROM learning_sessions WHERE id='fact-session'",
+            "chef_session_product_lesson",
+        ),
+        (
+            "INSERT INTO review_cards(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) SELECT 'hargow','cross-source-card',user_id,'cross-source',source_lesson_id,source_revision,snapshot FROM review_cards WHERE id='fact-card'",
+            "chef_review_product_lesson",
+        ),
+        (
+            "INSERT INTO saved_items(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) SELECT 'hargow','cross-source-saved',user_id,'cross-source',source_lesson_id,source_revision,snapshot FROM saved_items WHERE id='fact-saved'",
+            "chef_saved_product_lesson",
+        ),
+        (
+            "UPDATE lesson_progress p SET latest_completed_revision=s.revision+1 FROM learning_sessions s WHERE s.id='fact-session' AND p.last_session_id=s.id",
+            "chef_progress_product_lesson",
+        ),
+    ] {
+        let error = db.execute_unprepared(sql).await.unwrap_err();
+        assert!(
+            error.to_string().contains(constraint),
+            "{constraint}: {error}"
+        );
+    }
     // Positive same-product references without persisting Hargow facts while runtime is still blocked.
     let tx = db.begin().await.unwrap();
-    tx.execute_unprepared("INSERT INTO learning_sessions(product_id,id,user_id,lesson_id,revision,schema_version,completed_at) SELECT 'hargow','hargow-fact-session',user_id,lesson_id,revision,schema_version,CURRENT_TIMESTAMP FROM learning_sessions WHERE id='fact-session'; INSERT INTO step_progress(product_id,session_id,step_id) VALUES('hargow','hargow-fact-session','read'); INSERT INTO exercise_hints(product_id,session_id,exercise_id) VALUES('hargow','hargow-fact-session','exercise'); INSERT INTO exercise_attempts(product_id,id,session_id,user_id,exercise_id,attempt_index,answer,result,hint_used) SELECT 'hargow','hargow-fact-attempt',id,user_id,'exercise',1,'{}','{}',false FROM learning_sessions WHERE id='hargow-fact-session'").await.unwrap();
+    tx.execute_unprepared("INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) SELECT 'hargow','hargow-fact-source',revision,published,public_document,server_document FROM lesson_revisions WHERE (lesson_id,revision)=(SELECT lesson_id,revision FROM learning_sessions WHERE id='fact-session')").await.unwrap();
+    tx.execute_unprepared("INSERT INTO learning_sessions(product_id,id,user_id,lesson_id,revision,schema_version,completed_at) SELECT 'hargow','hargow-fact-session',user_id,'hargow-fact-source',revision,schema_version,CURRENT_TIMESTAMP FROM learning_sessions WHERE id='fact-session'; INSERT INTO step_progress(product_id,session_id,step_id) VALUES('hargow','hargow-fact-session','read'); INSERT INTO exercise_hints(product_id,session_id,exercise_id) VALUES('hargow','hargow-fact-session','exercise'); INSERT INTO exercise_attempts(product_id,id,session_id,user_id,exercise_id,attempt_index,answer,result,hint_used) SELECT 'hargow','hargow-fact-attempt',id,user_id,'exercise',1,'{}','{}',false FROM learning_sessions WHERE id='hargow-fact-session'").await.unwrap();
     // Product progress keys allow both facts to coexist.
-    tx.execute_unprepared("INSERT INTO lesson_progress(product_id,user_id,lesson_id,last_session_id) SELECT 'hargow',user_id,lesson_id,id FROM learning_sessions WHERE id='hargow-fact-session'; INSERT INTO review_cards(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) SELECT 'hargow','hargow-fact-card',user_id,'hargow-knowledge',source_lesson_id,source_revision,snapshot FROM review_cards WHERE id='fact-card'; INSERT INTO saved_items(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) SELECT 'hargow','hargow-fact-saved',user_id,'hargow-knowledge',source_lesson_id,source_revision,snapshot FROM saved_items WHERE id='fact-saved'; INSERT INTO learning_operations(product_id,user_id,scope,idempotency_key,request_hash,result) SELECT 'hargow',user_id,'hargow-start','hargow-key',request_hash,result FROM learning_operations WHERE idempotency_key='original-idempotency'; INSERT INTO review_attempts(product_id,id,card_id,user_id,rating,old_stage,new_stage,old_version,new_version,due_at,reviewed_at,time_zone) SELECT 'hargow','hargow-fact-review',id,user_id,'again',-1,0,1,2,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'Asia/Shanghai' FROM review_cards WHERE id='hargow-fact-card'").await.unwrap();
+    tx.execute_unprepared("INSERT INTO lesson_progress(product_id,user_id,lesson_id,last_session_id,latest_completed_revision) SELECT 'hargow',user_id,lesson_id,id,revision FROM learning_sessions WHERE id='hargow-fact-session'; INSERT INTO review_cards(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) SELECT 'hargow','hargow-fact-card',user_id,'hargow-knowledge','hargow-fact-source',source_revision,snapshot FROM review_cards WHERE id='fact-card'; INSERT INTO saved_items(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) SELECT 'hargow','hargow-fact-saved',user_id,'hargow-knowledge','hargow-fact-source',source_revision,snapshot FROM saved_items WHERE id='fact-saved'; INSERT INTO learning_operations(product_id,user_id,scope,idempotency_key,request_hash,result) SELECT 'hargow',user_id,'hargow-start','hargow-key',request_hash,result FROM learning_operations WHERE idempotency_key='original-idempotency'; INSERT INTO review_attempts(product_id,id,card_id,user_id,rating,old_stage,new_stage,old_version,new_version,due_at,reviewed_at,time_zone) SELECT 'hargow','hargow-fact-review',id,user_id,'again',-1,0,1,2,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'Asia/Shanghai' FROM review_cards WHERE id='hargow-fact-card'").await.unwrap();
     for table in TABLES {
         let row = tx
             .query_one_raw(Statement::from_string(

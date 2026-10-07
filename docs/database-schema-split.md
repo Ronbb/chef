@@ -1,5 +1,11 @@
 # 身份与学习schema分离
 
+## 学习事实到课程的同产品外键
+
+learning_000009_product_sources新增四个已验证复合外键：会话(product_id,lesson_id,revision)、复习与收藏(product_id,source_lesson_id,source_revision)、进度(product_id,lesson_id,latest_completed_revision)引用lesson_revisions。进度未完成时版本可为空，已有last_session同产品/同用户/同课约束继续保留。升级立即验证已有数据；不以NOT VALID跳过历史，不自动修复跨产品归属，任何失败回滚整批DDL和账本。
+
+actual split核对原九事实旧字段指纹、故意同名约束冲突导致全部布局步骤回滚，以及具体外键拒绝三类跨产品课源和不存在的已完成版本。独立H合成课源与九事实在事务内正向验证后回滚。全局课编号和有限课程锁、媒体/后台及真实粤语继续迁移，H认证入口与生产保持；迁移只属于Chef。
+
 ## 学习事实读取课源的产品范围
 
 共享学习load/start/history和收藏/复习课源关联按可信LearningStore.product限制事实与lesson_revisions。手动收藏及复习参与的新建课源查询同样固定产品；None仅旧组合Brioche布局。现有课程锁仍是全局编号锁，数据库课源复合外键与局部编号迁移尚未完成，不能因此开放完整Hargow业务。

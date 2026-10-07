@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+课源数据库约束补充：learning_000009_product_sources为learning_sessions/review_cards/saved_items及lesson_progress.latest_completed_revision建立同产品课源复合外键，安装时立即验证已有行，不使用NOT VALID或自动改归属。固定维护命令整批原子DDL/账本；冲突回滚和旧九表字段指纹由actual split验证。H合成事实必须引用独立H课源，三类跨产品引用和不存在的已完成版本由具体外键拒绝，正向H九事实在事务中验证后回滚。产品局部课ID、课程锁、媒体后台及真实粤语仍待完成，H入口/生产pin保持，SQL仅Chef。
+
 学习课源范围补充：远端学习load/start/history、收藏source/detail/list/history和复习load/queue/count/cards同时限制事实与关联lesson_revisions的固定产品，legacy None保留原布局。收藏创建/复习enroll显式传LearningStore.product到共用source；外产品公开已发布课源不能生成当前产品事实。受限split HTTP验证B收藏/加入复习/开始课程对真实存在的H合成课源404且三类事实零增量；完整课源复合外键、有限课程锁/global编号及媒体后台范围仍待迁移，H认证业务关闭，生产pin保持，实现仅Chef。
 
 公共课程API产品范围补充：independent_product_router由可信部署装配传ProductId，Extension固定目录与当前/指定版本详情范围，客户端query/header不能选产品。受限actual split HTTP覆盖跨产品ID两路径404、自有H公开详情200且无私有字段、伪造header目录保持、product查询400；H禁止回退法语演示判分/fixture。independent_learning_router仍固定B，H认证业务关闭；合成法语夹具不代表粤语能力。后台/媒体、学习事实到课源约束及全局编号仍待迁移，生产pin保持，产品不复制API。
