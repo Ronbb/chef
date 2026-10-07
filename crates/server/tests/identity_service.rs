@@ -898,6 +898,11 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     .await
     .unwrap();
     db.execute_unprepared(include_str!(
+        "../../migration/src/learning_product_release_state.sql"
+    ))
+    .await
+    .unwrap();
+    db.execute_unprepared(include_str!(
         "../../migration/src/learning_product_reviews.sql"
     ))
     .await
@@ -922,6 +927,14 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         .replace(":\"identity_schema\"", &format!("\"{schema}\""))
         .replace(":\"role\"", &format!("\"{learner_role}\""));
     db.execute_unprepared(&grants).await.unwrap();
+    let product_grants = include_str!("../../../infra/database/learning-product-grants.sql")
+        .lines()
+        .filter(|line| !line.starts_with('\\'))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(":\"schema\"", &format!("\"{schema}\""))
+        .replace(":\"role\"", &format!("\"{learner_role}\""));
+    db.execute_unprepared(&product_grants).await.unwrap();
     let mut learner_url = url::Url::parse(&std::env::var("TEST_DATABASE_URL").unwrap()).unwrap();
     learner_url.set_username(&learner_role).unwrap();
     learner_url.set_password(None).unwrap();

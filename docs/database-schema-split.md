@@ -1,5 +1,13 @@
 # 身份与学习schema分离
 
+## 独立发布状态及学习锁
+
+learning_000008_product_release_state将content_state主键替换为product_id，保留原Brioche active_release/generation。singleton暂为legacy选择器，约束singleton=(product_id='brioche')；新增Hargow状态必须显式false，未自动创建生产H行。所有调用按产品迁移后需移除旧选择器，不将其作为最终多产品接口。
+
+chef_lock_product_release_state(TEXT)使用迁移时确定的完整schema引用、固定pg_catalog search_path、SECURITY DEFINER，只读取/共享锁指定产品状态。PUBLIC执行权限撤销；所有者在布局维护和基础learning-grants后应用infra/database/learning-product-grants.sql。这是split-only附加授权，基础legacy32授权仍有效。远端学习开始传可信LearningStore产品，浏览器不传产品；缺状态返回空目录指针，不能回退Brioche。
+
+实际受限split测试覆盖B/H双状态、读取H目录与旧B函数一致性、H generation修改后B整行指纹不变、B引用H目录外键拒绝、身份角色无执行权限，以及双状态下B课程开始/学习与后台回归。全局课源ID、目录读取/后台写入和媒体仍未完成范围迁移，Hargow业务关闭，生产不迁移。
+
 ## 课程内容归属准备
 
 learning_000007_product_content为lesson_revisions、content_releases、release_entries、content_state、content_withdrawals、content_audit、lesson_import_audit、editorial_reviews、lesson_audio_reviews和lesson_direct_publications添加默认brioche且仅允许brioche/hargow的product_id，使用归属不可变trigger。课程和目录增加复合候选键，目录条目/状态/撤回及相关审核用复合外键引用同产品父记录；不改课程/目录全局编号、主键、快照、版本或singleton。

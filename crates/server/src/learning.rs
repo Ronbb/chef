@@ -409,8 +409,15 @@ async fn start(
     } else {
         let state = one(
             &tx,
-            "SELECT chef_lock_release_state() AS active_release",
-            vec![],
+            if backend.product.is_some() {
+                "SELECT chef_lock_product_release_state($1) AS active_release"
+            } else {
+                "SELECT chef_lock_release_state() AS active_release"
+            },
+            backend
+                .product
+                .map(|p| vec![p.as_str().into()])
+                .unwrap_or_default(),
         )
         .await?
         .ok_or(AppError::Unavailable)?;

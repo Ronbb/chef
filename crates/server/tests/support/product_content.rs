@@ -57,5 +57,34 @@ pub async fn verify(db: &DatabaseConnection, lesson: &str, revision: i32) {
     tx.execute_unprepared("INSERT INTO content_releases(product_id,id,manifest,content_hash) VALUES('hargow','hargow-product-fixture','{}',repeat('a',64))").await.unwrap();
     tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) SELECT 'hargow','hargow-product-lesson',revision,false,public_document,server_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2",[lesson.into(),revision.into()])).await.unwrap();
     tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO release_entries(product_id,release_id,lesson_id,revision,position) VALUES('hargow','hargow-product-fixture','hargow-product-lesson',$1,0)",[revision.into()])).await.unwrap();
+    tx.execute_unprepared("INSERT INTO content_state(product_id,singleton,active_release) VALUES('hargow',false,'hargow-product-fixture')").await.unwrap();
+    let before = tx
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT md5(to_jsonb(s)::text) AS hash FROM content_state s WHERE product_id='brioche'",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "hash")
+        .unwrap();
+    tx.execute_unprepared("UPDATE content_state SET generation=17 WHERE product_id='hargow'")
+        .await
+        .unwrap();
+    let after=tx.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(s)::text) AS hash,(SELECT generation FROM content_state WHERE product_id='hargow') AS h_generation FROM content_state s WHERE product_id='brioche'")).await.unwrap().unwrap();
+    assert_eq!(after.try_get::<String>("", "hash").unwrap(), before);
+    assert_eq!(after.try_get::<i64>("", "h_generation").unwrap(), 17);
+    let row=tx.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT chef_lock_product_release_state('hargow') AS h,chef_lock_product_release_state('brioche') IS NOT DISTINCT FROM chef_lock_release_state() AS same,(SELECT count(*) FROM content_state WHERE singleton)::bigint AS legacy_count")).await.unwrap().unwrap();
+    assert_eq!(
+        row.try_get::<String>("", "h").unwrap(),
+        "hargow-product-fixture"
+    );
+    assert!(row.try_get::<bool>("", "same").unwrap());
+    assert_eq!(row.try_get::<i64>("", "legacy_count").unwrap(), 1);
+    let error=tx.execute_unprepared("UPDATE content_state SET active_release='hargow-product-fixture' WHERE product_id='brioche'").await.unwrap_err();
+    assert!(
+        error.to_string().contains("chef_state_product_release"),
+        "{error}"
+    );
     tx.rollback().await.unwrap();
 }

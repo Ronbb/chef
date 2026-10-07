@@ -417,7 +417,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=8 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=9 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -479,6 +479,11 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .unwrap();
     owner.execute_unprepared(&format!("CREATE ROLE {id_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE; CREATE ROLE {learning_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE")).await.unwrap();
     for (template, schema, role) in [
+        (
+            include_str!("../../../infra/database/learning-product-grants.sql"),
+            source.as_str(),
+            learning_role.as_str(),
+        ),
         (
             include_str!("../../../infra/database/identity-grants.sql"),
             target.as_str(),
@@ -888,6 +893,20 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO learning_sessions(id,product_id,user_id,lesson_id,revision,schema_version) VALUES($1,'hargow',$2,$3,$4,'1.0')",[other_session.into(),account.into(),lesson.id.clone().into(),(lesson.revision as i32).into()])).await.unwrap();
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_progress(product_id,user_id,lesson_id,last_session_id,first_completed_at,latest_completed_revision) VALUES('hargow',$1,$2,$3,'2026-01-01T00:00:00Z',$4)",[account.into(),lesson.id.clone().into(),other_session.into(),(lesson.revision as i32).into()])).await.unwrap();
     let start_body = serde_json::json!({"lessonId":lesson.id,"schemaVersion":"1.0","idempotencyKey":"split-start-learning-01"});
+    owner
+        .execute_unprepared(
+            "INSERT INTO content_state(product_id,singleton) VALUES('hargow',false)",
+        )
+        .await
+        .unwrap();
+    assert!(
+        identity
+            .execute_unprepared(&format!(
+                "SELECT {source}.chef_lock_product_release_state('brioche')"
+            ))
+            .await
+            .is_err()
+    );
     let start = Request::builder()
         .method("POST")
         .uri("/api/v1/learning-sessions")

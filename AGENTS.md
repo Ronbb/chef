@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+发布状态产品范围补充：learning_000008_product_release_state将content_state主键改为product_id；singleton暂为legacy Brioche选择器，约束为等于(product_id=brioche)，H插入false，后续全部调用迁移后移除旧选择器。新chef_lock_product_release_state(TEXT)固定schema/pg_catalog SECURITY DEFINER只FOR SHARE，PUBLIC EXECUTE撤销，split-only learning-product-grants显式授运行角色；远端开始课程用可信产品调用，legacy旧函数保持。actual split验证双状态/读取H目录/旧B选择器单行、Hgeneration改17 B指纹不变、B引用H目录拒绝、身份role拒执行及双状态下B学习/内容后台回归。全局课ID/媒体及后台产品scope/目录查询仍待迁移，H入口和生产pin保持，不声明完整租户。
+
 课程内容归属准备补充：learning_000007_product_content为课程版本/目录/目录条目/状态/撤回/发布审计及导入/编辑/课音频/直接发布审计十表添加默认brioche的product_id和归属不可变trigger。课程/目录增加产品复合候选键，条目/状态/撤回/相关审核引用同产品父记录；原全局ID/主键/singleton仍保留，运行查询及媒体/学习事实到课源外键尚未产品化，禁止开放H。actual split维护命令核对十表旧字段指纹，故意中途trigger冲突整批回滚、异产品条目引用拒绝、同产品H课/条目正例回滚和lesson改归属拒绝。准备不等于完整内容隔离，生产/pin保持，SQL/回归仅Chef。
 
 首页学习统计产品范围补充：dashboard按固定LearningStore.product读取设置、日历步骤/答题/评分/首次完成事件、课程状态/resume、完成数、复习到期/下次时间及推荐课learned标记。关联步骤/进度要求同产品，legacy保留旧32 SQL。actual split受限HTTP放入同账号异产品全部事件/同课进度/到期和未来复习，B仅自身步骤与评分，0异产品答题完成、单独resume、待复习与next时间不串、推荐未完成。目录仍全局，H路由继续关闭；完整内容媒体/粤语/双产品生产待完成，生产pin不变，产品无实现副本。
