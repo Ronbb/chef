@@ -245,7 +245,7 @@ async fn ready(
         db.execute_unprepared(sql)
             .await
             .map_err(|_| AppError::Unavailable)?;
-        db.execute_unprepared("SELECT 'chef_lock_lesson(text,integer)'::regprocedure,'chef_lock_release_state()'::regprocedure")
+        db.execute_unprepared(if independent_identity { "SELECT 'chef_lock_product_lesson(text,text,integer)'::regprocedure,'chef_lock_product_release_state(text)'::regprocedure" } else { "SELECT 'chef_lock_lesson(text,integer)'::regprocedure,'chef_lock_release_state()'::regprocedure" })
             .await.map_err(|_|AppError::Unavailable)?;
     } else if state.fixture.is_none() {
         return Err(AppError::Unavailable);

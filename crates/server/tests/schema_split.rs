@@ -431,7 +431,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=10 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=11 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -534,6 +534,60 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let identity = connect(&role_url(&id_role), &target).await;
     let learning = connect(&role_url(&learning_role), &source).await;
     let content = connect(&role_url(&content_role), &source).await;
+    assert!(
+        identity
+            .execute_unprepared(&format!(
+                "SELECT {source}.chef_lock_product_lesson('brioche','missing',1)"
+            ))
+            .await
+            .is_err()
+    );
+    let locked = owner.begin().await.unwrap();
+    locked
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT 1 FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2 FOR UPDATE",
+            [lesson.id.clone().into(), (lesson.revision as i32).into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    let reader = learning.begin().await.unwrap();
+    reader
+        .execute_unprepared("SET LOCAL lock_timeout='100ms'")
+        .await
+        .unwrap();
+    let no_lock = reader
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT chef_lock_product_lesson('hargow',$1,$2) AS found",
+            [lesson.id.clone().into(), (lesson.revision as i32).into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!no_lock.try_get::<bool>("", "found").unwrap());
+    let error = reader
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT chef_lock_product_lesson('brioche',$1,$2) AS found",
+            [lesson.id.clone().into(), (lesson.revision as i32).into()],
+        ))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("lock timeout"), "{error}");
+    reader.rollback().await.unwrap();
+    locked.rollback().await.unwrap();
+    let found = learning
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT chef_lock_product_lesson('brioche',$1,$2) AS found",
+            [lesson.id.clone().into(), (lesson.revision as i32).into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(found.try_get::<bool>("", "found").unwrap());
     for restricted in [&identity, &learning, &content] {
         assert!(
             brioche_migration::layout::up(restricted, &source, &target)

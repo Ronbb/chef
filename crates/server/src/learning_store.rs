@@ -19,9 +19,24 @@ impl LearningStore {
 }
 pub(crate) async fn lock_lesson<C: sea_orm::ConnectionTrait>(
     db: &C,
+    product: Option<crate::product::ProductId>,
     lesson: &str,
     revision: i32,
 ) -> Result<(), crate::AppError> {
+    if let Some(product) = product {
+        let row = crate::learning::one(
+            db,
+            "SELECT chef_lock_product_lesson($1,$2,$3) AS found",
+            vec![product.as_str().into(), lesson.into(), revision.into()],
+        )
+        .await?
+        .ok_or(crate::AppError::Unavailable)?;
+        return if crate::learning::field::<bool>(&row, "found")? {
+            Ok(())
+        } else {
+            Err(crate::AppError::NotFound)
+        };
+    }
     crate::learning::one(
         db,
         "SELECT chef_lock_lesson($1,$2)",

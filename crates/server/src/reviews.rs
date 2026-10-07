@@ -52,6 +52,7 @@ pub(crate) async fn load(
     .ok_or(AppError::NotFound)?;
     crate::learning_store::lock_lesson(
         tx,
+        product,
         &field::<String>(&reference, "source_lesson_id")?,
         field(&reference, "source_revision")?,
     )

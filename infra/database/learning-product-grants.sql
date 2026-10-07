@@ -3,4 +3,5 @@
 \set ON_ERROR_STOP on
 BEGIN;
 GRANT EXECUTE ON FUNCTION :"schema".chef_lock_product_release_state(TEXT) TO :"role";
+GRANT EXECUTE ON FUNCTION :"schema".chef_lock_product_lesson(TEXT,TEXT,INTEGER) TO :"role";
 COMMIT;

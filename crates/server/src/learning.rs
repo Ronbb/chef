@@ -195,6 +195,7 @@ async fn load<C: ConnectionTrait>(
         .ok_or(AppError::NotFound)?;
         crate::learning_store::lock_lesson(
             db,
+            product,
             &field::<String>(&reference, "lesson_id")?,
             field(&reference, "revision")?,
         )
@@ -434,8 +435,13 @@ async fn start(
         .ok_or(AppError::Unavailable)?;
         let release: Option<String> = field(&state, "active_release")?;
         let row = one(&tx,&format!("SELECT r.revision,r.public_document FROM release_entries e JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision) WHERE e.release_id=$1 AND e.lesson_id=$2 AND r.published{}{}",product_filter(backend.product,"e.product_id"),product_filter(backend.product,"r.product_id")),vec![release.into(),request.lesson_id.clone().into()]).await?.ok_or(AppError::NotFound)?;
-        crate::learning_store::lock_lesson(&tx, &request.lesson_id, field(&row, "revision")?)
-            .await?;
+        crate::learning_store::lock_lesson(
+            &tx,
+            backend.product,
+            &request.lesson_id,
+            field(&row, "revision")?,
+        )
+        .await?;
         let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
             .map_err(|_| AppError::Unavailable)?;
         lesson.validate().map_err(|_| AppError::Unavailable)?;

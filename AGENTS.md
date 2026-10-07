@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+产品课程锁补充：learning_000010_product_locks安装固定schema/search_path=pg_catalog SECURITY DEFINER chef_lock_product_lesson(TEXT,TEXT,INTEGER)，仅FOR SHARE返回是否存在，不返回课源；PUBLIC EXECUTE撤销，split附加授权显式授学习角色。lock_lesson使用可信LearningStore.product，Some缺课404，None仅legacy旧函数；所有学习/收藏/复习写入传产品。独立ready要求新课程/状态锁。actual split受限学习角色验证外产品在持有课行写锁时false且不阻塞、同产品触发lock timeout、释放后true，身份角色拒执行。全局课ID、旧函数移除、媒体后台及真实粤语仍待迁移，H入口/生产pin保持，产品无锁实现副本。
+
 课源数据库约束补充：learning_000009_product_sources为learning_sessions/review_cards/saved_items及lesson_progress.latest_completed_revision建立同产品课源复合外键，安装时立即验证已有行，不使用NOT VALID或自动改归属。固定维护命令整批原子DDL/账本；冲突回滚和旧九表字段指纹由actual split验证。H合成事实必须引用独立H课源，三类跨产品引用和不存在的已完成版本由具体外键拒绝，正向H九事实在事务中验证后回滚。产品局部课ID、课程锁、媒体后台及真实粤语仍待完成，H入口/生产pin保持，SQL仅Chef。
 
 学习课源范围补充：远端学习load/start/history、收藏source/detail/list/history和复习load/queue/count/cards同时限制事实与关联lesson_revisions的固定产品，legacy None保留原布局。收藏创建/复习enroll显式传LearningStore.product到共用source；外产品公开已发布课源不能生成当前产品事实。受限split HTTP验证B收藏/加入复习/开始课程对真实存在的H合成课源404且三类事实零增量；完整课源复合外键、有限课程锁/global编号及媒体后台范围仍待迁移，H认证业务关闭，生产pin保持，实现仅Chef。

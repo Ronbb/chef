@@ -46,7 +46,7 @@ pub(crate) async fn source(
     knowledge: &str,
 ) -> Result<Vocabulary, AppError> {
     let revision = i32::try_from(revision).map_err(|_| AppError::InvalidInput)?;
-    crate::learning_store::lock_lesson(tx, lesson, revision).await?;
+    crate::learning_store::lock_lesson(tx, product, lesson, revision).await?;
     let row = one(
         tx,
         &format!("SELECT published,public_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2{}", product_filter(product, "product_id")),
@@ -97,7 +97,7 @@ async fn load(
     lock: bool,
 ) -> Result<Option<SavedItem>, AppError> {
     if lock && let Some(reference)=one(tx,&format!("SELECT source_lesson_id,source_revision FROM saved_items WHERE user_id=$1 AND knowledge_id=$2{}",product_filter(product,"product_id")),vec![user.into(),knowledge.into()]).await? {
-        crate::learning_store::lock_lesson(tx,&field::<String>(&reference,"source_lesson_id")?,field(&reference,"source_revision")?).await?;
+        crate::learning_store::lock_lesson(tx,product,&field::<String>(&reference,"source_lesson_id")?,field(&reference,"source_revision")?).await?;
     }
     let sql = format!(
         "SELECT s.*,r.published,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1 AND s.knowledge_id=$2{} {}",

@@ -1,5 +1,11 @@
 # 身份与学习schema分离
 
+## 产品课程行锁
+
+learning_000010_product_locks新增chef_lock_product_lesson(TEXT,TEXT,INTEGER)，固定迁移schema及pg_catalog search_path，通过SECURITY DEFINER取得匹配产品/课程/版本的FOR SHARE锁，只返回boolean，PUBLIC EXECUTE撤销。split-only learning-product-grants显式授权有限学习角色。共享lock_lesson从LearningStore.product传参数，缺少当前产品课源返回404；所有学习、收藏及复习写入采用同一入口，legacy None仍用旧课程锁。独立readiness要求新的产品课程/状态函数存在。
+
+actual split由所有者持有B课程FOR UPDATE，受限学习事务以100ms lock_timeout调用H范围返回false、B范围触发预期锁超时，释放锁后B返回true；身份角色执行拒绝。运行角色仍共同访问共享学习schema，不能将函数参数化声明为数据库角色级产品隔离。全局课ID、legacy函数移除和媒体后台继续迁移，H认证业务与生产pin保持。
+
 ## 学习事实到课程的同产品外键
 
 learning_000009_product_sources新增四个已验证复合外键：会话(product_id,lesson_id,revision)、复习与收藏(product_id,source_lesson_id,source_revision)、进度(product_id,lesson_id,latest_completed_revision)引用lesson_revisions。进度未完成时版本可为空，已有last_session同产品/同用户/同课约束继续保留。升级立即验证已有数据；不以NOT VALID跳过历史，不自动修复跨产品归属，任何失败回滚整批DDL和账本。
