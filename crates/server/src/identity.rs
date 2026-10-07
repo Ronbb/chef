@@ -631,7 +631,6 @@ pub fn router_with_media_root(
             crate::learning_store::LearningStore::new(backend.db.clone()),
         ))
         .merge(crate::admin::router(root.clone(), backend.db.clone()))
-        .merge(crate::preview::router(root))
         .layer(axum::Extension(crate::product::ProductId::Brioche));
     protect_routes(
         routes,

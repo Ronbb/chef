@@ -1,5 +1,11 @@
 # 独立账号服务：迁移中的可运行边界
 
+## 独立私有课程预览
+
+固定课程revision、整批release目录、私有素材/录音与判分预览已进入共享内容服务，以AdminAuth和仅内容db的状态运行；legacy复用，独立身份服务不暴露预览路由。公开课程投影保持不含课源/私有答案，图片/录音及词汇/语法录音URL改写为operator路径；撤回课程返回410，目录预览保留撤回标记。素材文件验证与录音Range复用原实现，保持no-store。
+
+POST判分取得account-admin事务锁后通过可信Operator复核原请求，返回有限判分结果，不写学习会话/尝试/进度。实际分离schema/受限内容角色验证未发布音频新revision、私有SVG、WAV bytes=0-11返回206、learner403/匿名401/CSRF403、撤回410/目录标记、学习session/attempt无增量、二十三类等待后撤权403，以及身份服务停止后预览/素材/录音均503。配置不新增身份或学习表权限。布局感知后续迁移、完整产品租户/粤语及生产双产品装配仍待实施，生产pin保持现有版本。
+
 ## 独立课程音频打包和授权
 
 speech_package与lesson_audio_reviews的HTTP接口已进入共享内容服务，状态只含内容db。打包/导入在开始及交付/写入事务内用Operator复核原请求，最终锁内容并比对快照；保留两媒体槽准入、PCM拼接/实际哈希和时间轴验证、固定报告hash/新revision、录音+draft课源+package记录原子登记以及精确重试。音频审核保留heard、expectedLessonHash和版本CAS，不改变旧审核。

@@ -1,7 +1,7 @@
 //! Imported immutable revisions are visible only to an authenticated operator.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
+    admin_auth::AdminAuth,
     learning::{field, one},
 };
 use axum::{
@@ -19,7 +19,14 @@ struct PreviewMedia {
     root: std::path::PathBuf,
     permits: std::sync::Arc<tokio::sync::Semaphore>,
 }
-pub fn router(root: std::path::PathBuf) -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    root: std::path::PathBuf,
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/releases/{id}", get(release))
         .route(
@@ -42,6 +49,7 @@ pub fn router(root: std::path::PathBuf) -> Router<Backend> {
             root,
             permits: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         }))
+        .with_state(Store { db })
 }
 
 fn valid_id(id: &str) -> bool {
@@ -53,11 +61,11 @@ fn valid_id(id: &str) -> bool {
 }
 
 async fn release(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path(id): Path<String>,
 ) -> Result<Json<PreviewRelease>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     if !valid_id(&id) {
         return Err(AppError::InvalidInput);
     }
@@ -131,7 +139,7 @@ async fn release(
         withdrawn_lesson_ids: withdrawn,
     }))
 }
-async fn read(backend: &Backend, id: &str, revision: u32) -> Result<PublicLesson, AppError> {
+async fn read(backend: &Store, id: &str, revision: u32) -> Result<PublicLesson, AppError> {
     if !valid_id(id) || revision == 0 || revision > i32::MAX as u32 {
         return Err(AppError::InvalidInput);
     }
@@ -190,26 +198,32 @@ async fn read(backend: &Backend, id: &str, revision: u32) -> Result<PublicLesson
     Ok(lesson)
 }
 async fn lesson(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path((id, revision)): Path<(String, u32)>,
 ) -> Result<Json<PublicLesson>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     Ok(Json(read(&backend, &id, revision).await?))
 }
 
 async fn grade(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path((id, revision)): Path<(String, u32)>,
     Json(request): Json<GradeRequest>,
 ) -> Result<Json<GradeResult>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     if !valid_id(&id) || revision == 0 || revision > i32::MAX as u32 || request.revision != revision
     {
         return Err(AppError::InvalidInput);
     }
-    let row = one(&backend.db,
+    let tx = backend
+        .db
+        .begin()
+        .await
+        .map_err(|_| AppError::Unavailable)?;
+    operator.lock_content(&tx).await?;
+    let row = one(&tx,
         "SELECT public_document,server_document,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision)) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2",
         vec![id.clone().into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     if field::<bool>(&row, "withdrawn")? {
@@ -231,15 +245,16 @@ async fn grade(
             crate::grading::GradeError::UnknownExercise => AppError::NotFound,
             crate::grading::GradeError::InvalidAnswer => AppError::InvalidAnswer,
         })?;
+    tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
 async fn media(
-    auth: AuthSession,
+    auth: AdminAuth,
     axum::Extension(config): axum::Extension<PreviewMedia>,
-    State(backend): State<Backend>,
+    State(backend): State<Store>,
     Path((id, revision, name)): Path<(String, u32, String)>,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let lesson = read(&backend, &id, revision).await?;
     let asset = lesson
         .media
@@ -250,13 +265,13 @@ async fn media(
 }
 
 async fn audio(
-    auth: AuthSession,
+    auth: AdminAuth,
     axum::Extension(config): axum::Extension<PreviewMedia>,
-    State(backend): State<Backend>,
+    State(backend): State<Store>,
     Path((id, revision, name)): Path<(String, u32, String)>,
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let lesson = read(&backend, &id, revision).await?;
     let asset = lesson
         .audio

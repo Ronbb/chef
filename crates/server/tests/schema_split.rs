@@ -2188,6 +2188,194 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     );
     // Revoke after the first HTTP verification while the write waits on the same
     // database advisory lock used by identity membership mutations.
+    let preview_path = format!(
+        "/api/v1/operator/lessons/{}/revisions/{}",
+        lesson.id,
+        lesson.revision + 2
+    );
+    let (status, preview_lesson) = request(
+        &content_app,
+        "GET",
+        &preview_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{preview_lesson}");
+    assert_eq!(preview_lesson["revision"], lesson.revision + 2);
+    assert!(preview_lesson.get("serverOnly").is_none());
+    assert!(preview_lesson.get("editorial").is_none());
+    for asset in preview_lesson["media"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(preview_lesson["audio"].as_array().unwrap())
+    {
+        assert!(
+            asset["url"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("{preview_path}/"))
+        );
+    }
+    let media_path = preview_lesson["media"][0]["url"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let recording_path = preview_lesson["audio"][0]["url"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for path in [&preview_path, &media_path, &recording_path] {
+        assert_eq!(
+            request(
+                &content_app,
+                "GET",
+                path,
+                None,
+                &mut next_cookie,
+                &mut next_csrf
+            )
+            .await
+            .0,
+            403
+        );
+        assert_eq!(
+            content_app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            401
+        );
+    }
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&media_path)
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert!(
+        response.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("no-store")
+    );
+    assert!(
+        String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes())
+            .contains("<svg")
+    );
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&recording_path)
+                .header("cookie", &cookie)
+                .header("range", "bytes=0-11")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 206);
+    assert!(
+        response.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("no-store")
+    );
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(bytes.len(), 12);
+    assert_eq!(&bytes[..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WAVE");
+    let exercise = preview_lesson["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["exerciseType"] == "single-choice")
+        .unwrap();
+    let grade_path = format!("{preview_path}/grade");
+    let grade_request = serde_json::json!({"revision":lesson.revision+2,"exerciseId":exercise["id"],"answer":{"kind":"choice","optionId":exercise["options"][0]["id"]}});
+    let progress_sql = "SELECT (SELECT count(*) FROM learning_sessions) AS sessions,(SELECT count(*) FROM exercise_attempts) AS attempts";
+    let progress = owner
+        .query_one_raw(Statement::from_string(DbBackend::Postgres, progress_sql))
+        .await
+        .unwrap()
+        .unwrap();
+    for (session, token) in [
+        (next_cookie.as_str(), next_csrf.as_str()),
+        (cookie.as_str(), "bad-csrf"),
+    ] {
+        assert_eq!(
+            content_app
+                .clone()
+                .oneshot(json_write(&grade_path, &grade_request, session, token))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            403
+        );
+    }
+    let (status, grade) = request(
+        &content_app,
+        "POST",
+        &grade_path,
+        Some(grade_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{grade}");
+    assert_eq!(grade["exerciseId"], exercise["id"]);
+    assert!(grade["correct"].is_boolean());
+    let after = owner
+        .query_one_raw(Statement::from_string(DbBackend::Postgres, progress_sql))
+        .await
+        .unwrap()
+        .unwrap();
+    for key in ["sessions", "attempts"] {
+        assert_eq!(
+            progress.try_get::<i64>("", key).unwrap(),
+            after.try_get::<i64>("", key).unwrap()
+        );
+    }
+    assert_eq!(
+        request(
+            &content_app,
+            "GET",
+            "/api/v1/operator/lessons/split-admin-lesson/revisions/1",
+            None,
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        410
+    );
+    let (status, release_preview) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/releases/split-admin-release",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{release_preview}");
+    assert_eq!(
+        release_preview["withdrawnLessonIds"],
+        serde_json::json!(["split-admin-lesson"])
+    );
     imported_source["id"] = "split-revoked-import".into();
     let course_request = Request::builder().method("POST").uri("/api/v1/operator/lessons/import")
         .header("origin", ORIGIN).header("cookie", &cookie).header("x-csrf-token", &csrf)
@@ -2253,6 +2441,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         json_write(&import_path, &revoked_package, &cookie, &csrf),
         json_write(&audio_path, &audio_accept, &cookie, &csrf),
         json_write(&direct_path, &direct_request, &cookie, &csrf),
+        json_write(&grade_path, &grade_request, &cookie, &csrf),
     ] {
         let held = owner.begin().await.unwrap();
         held.execute_unprepared(
@@ -2495,6 +2684,14 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         "/api/v1/operator/recordings",
         "/api/v1/operator/characters",
     ] {
+        assert_eq!(
+            request(&content_app, "GET", path, None, &mut cookie, &mut csrf)
+                .await
+                .0,
+            503
+        );
+    }
+    for path in [&preview_path, &media_path, &recording_path] {
         assert_eq!(
             request(&content_app, "GET", path, None, &mut cookie, &mut csrf)
                 .await
