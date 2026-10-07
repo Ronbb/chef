@@ -1,5 +1,11 @@
 # 身份与学习schema分离
 
+## 课程内容归属准备
+
+learning_000007_product_content为lesson_revisions、content_releases、release_entries、content_state、content_withdrawals、content_audit、lesson_import_audit、editorial_reviews、lesson_audio_reviews和lesson_direct_publications添加默认brioche且仅允许brioche/hargow的product_id，使用归属不可变trigger。课程和目录增加复合候选键，目录条目/状态/撤回及相关审核用复合外键引用同产品父记录；不改课程/目录全局编号、主键、快照、版本或singleton。
+
+实际split维护命令比较十表全部旧字段指纹（部分审计表初始为空），故意在第二内容表trigger冲突验证本步骤前面的DDL及整批布局账本回滚；测试拒绝H目录引用B课程和修改课程归属，同产品H课程/条目正例在事务中回滚。原非空九学习事实指纹保持，后续内容后台协议回归仍执行。运行查询、独立目录状态、产品局部编号、学习事实的课源归属及媒体约束尚待实施；Hargow仍关闭，生产无迁移。
+
 ## 首页学习统计的产品范围
 
 dashboard日历统计从固定产品的四类事件读取，步骤关联会话要求同产品；课程状态、继续学习及首次完成关联同产品进度。完成数、待复习/下次时间与推荐课已学标记同样过滤产品，目标与时区读取当前产品设置。legacy32无产品上下文保持旧查询；不增加产品仓库副本。

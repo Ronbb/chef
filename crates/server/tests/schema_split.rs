@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 #[path = "support/assets.rs"]
 mod assets;
+#[path = "support/product_content.rs"]
+mod product_content;
 #[path = "support/product_facts.rs"]
 mod product_facts;
 mod support;
@@ -331,6 +333,8 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     support::fixture_release(&owner).await;
     product_facts::seed(&owner, &lesson.id, lesson.revision as i32).await;
     let fact_snapshot = product_facts::snapshot(&owner).await;
+    let content_snapshot = product_content::snapshot(&owner).await;
+    assert!(content_snapshot.iter().filter(|(n, _)| *n > 0).count() >= 3);
     assert!(fact_snapshot.iter().all(|(n, _)| *n > 0));
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
         "INSERT INTO product_user_settings(product_id,user_id,settings,version) VALUES('brioche',$1,$2,2)",
@@ -397,6 +401,15 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .execute_unprepared("DROP FUNCTION chef_protect_learning_product()")
         .await
         .unwrap();
+    owner.execute_unprepared("CREATE TRIGGER chef_content_owner BEFORE UPDATE ON content_releases FOR EACH ROW EXECUTE FUNCTION reject_content_edit()").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name IN ('lesson_revisions','content_releases','learning_sessions') AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_content::snapshot(&owner).await, content_snapshot);
+    owner
+        .execute_unprepared("DROP TRIGGER chef_content_owner ON content_releases")
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -404,10 +417,13 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=7 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=8 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
+    assert_eq!(product_content::snapshot(&owner).await, content_snapshot);
+    product_content::verify(&owner, &lesson.id, lesson.revision as i32).await;
+    assert_eq!(product_content::snapshot(&owner).await, content_snapshot);
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     assert_eq!(fingerprints(&owner, &target).await, snapshot);
     assert!(
