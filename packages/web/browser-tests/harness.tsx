@@ -26,6 +26,8 @@ import Courses from "../app/routes/courses";
 import History from "../app/routes/review-history";
 import { Account } from "../app/components/account";
 import AuthorPreview from "../app/routes/author-preview";
+import { LessonAudioReview } from "../app/components/admin-lesson-audio-review";
+import type { AdminLessonAudioStatus } from "@brioche/contracts/AdminLessonAudioStatus";
 import Practice from "../app/routes/practice";
 import type { Block } from "@brioche/contracts/Block";
 import { Scrollbar } from "../app/components/scrollbar";
@@ -78,7 +80,7 @@ const qa = {
     path: string;
     body: unknown;
     signal?: AbortSignal | null;
-    release: (value: GradeResult | number) => void;
+    release: (value: GradeResult | AdminLessonAudioStatus | number) => void;
   }[],
   ready: false,
   deferAuthBootstrap: false,
@@ -1289,6 +1291,26 @@ const router = createMemoryRouter(
         <HomeHarness />
       ) : kind === "courses" ? (
         <Navigate to="/courses" replace />
+      ) : kind === "audio-publication" ? (
+        <main>
+          <LessonAudioReview
+            id="qa-audio"
+            revision={7}
+            initial={{
+              required: true,
+              published: false,
+              lessonHash: "a".repeat(64),
+              version: 2,
+              accepted: false,
+              directAuthorized: false,
+              reason: "",
+              actor: null,
+            }}
+          />
+          <Link className="audio-exit" to="/previous">
+            回到后台
+          </Link>
+        </main>
       ) : kind === "author" ? (
         <Navigate
           to={

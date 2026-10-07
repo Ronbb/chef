@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+共享Web直接发布补充：LessonAudioReview默认direct-publication授权，人工heard仅可选试听动作写audio-review；固定Rust DTO，evidence仅admin-web来源及humanListeningAsserted=false。attempt锁定kind/body，未知结果保留、重试同一路径/载荷、离开拦截；明确校验拒绝才释放，已授权版本阻止再次表单授权。授权不会自动激活目录。受控浏览器验证直接请求/503精确重试/离开保留/成功恢复与独立人工试听/409释放；typecheck/unit/SSR/build通过。实现与回归只在Chef，产品pin与生产不变。
+
 自动打包补充：speech_automatic的HTTP与本机CLI共用仅内容db/Operator kernel，本机入口才读取成员身份。新增automatic POST及export-direct GET，AdminAutomaticSpeechPackageRequest由Rust生成TS；报告JSON拒绝重复字段，4MiB报告/5MiB请求、两媒体槽与原128MiB归档限制保留。计算前/交付前lock_content复核请求，交付前快照比对，不写人工heard或激活目录。受限split-schema验证私有自动tar/固定报告/learner与CSRF403及二十五类等待后撤权，模拟协议不表示真实模型准确度。完整租户/语言中立/粤语、共享Web入口及生产装配仍待完成，生产pin不变。
 
 分离布局升级补充：migrate-layout只接受已登记split布局和精确legacy32历史，由相关表所有者运行；身份schema从布局读取，固定步骤及独立chef_layout_migrations属于Chef。共用维护锁，整批DDL/账本原子提交，拒绝未知/漂移定义、同名未登记索引及运行角色，不自动逆向或服务启动执行。实际CLI/受限PG验证冲突整批回滚、正常/幂等、身份行指纹和漂移拒绝。生产pin不变；完整产品事实、语言中立/粤语和生产装配仍待实施。

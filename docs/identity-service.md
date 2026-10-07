@@ -1,5 +1,7 @@
 # 独立账号服务：迁移中的可运行边界
 
+共享Web课程预览的“录音发布”默认POST direct-publication，只提交固定lessonHash、说明和admin-web来源/无人工试听声明；可选人工试听单独POST audio-review。未知网络结果保留操作类型/载荷并拦截离开，核对按钮重发同一请求；明确校验拒绝才恢复编辑。成功授权只表示音频发布前置条件成立，目录激活仍是后台独立操作。受控浏览器验证两种路径、503精确重试/离开保留、成功释放、人工试听及409恢复，不替代实际生产发布证据；生产pin保持。
+
 ## 自动组装与直接发布输入
 
 共享内容服务提供GET /api/v1/operator/speech-plans/{id}/export-direct和POST /api/v1/operator/speech-packages/automatic。前者导出ready片段的技术输入，不要求人工审核，但拒绝已否决片段；后者接收Rust契约AdminAutomaticSpeechPackageRequest（reportJson与package）。报告使用严格JSON解析，4MiB报告、5MiB请求、两媒体槽和原128MiB归档限制；保留固定引擎/原始预测/计划与课源/归档hash/时间轴/新revision检查。

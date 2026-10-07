@@ -102,6 +102,121 @@ afterEach(async () => {
   );
 });
 
+test("direct audio publication does not assert hearing and freezes exact retry across uncertain results", async () => {
+  await open("audio-publication");
+  await browser(
+    "find",
+    "label",
+    "发布说明",
+    "fill",
+    "Owner publication from shared admin",
+  );
+  await browser(
+    "find",
+    "role",
+    "button",
+    "click",
+    "--name",
+    "授权直接发布",
+    "--exact",
+  );
+  await browser("wait", "--fn", "qa.previewWrites.length===1");
+  assert.deepEqual(await evaluate("qa.previewWrites[0].body"), {
+    expectedLessonHash: "a".repeat(64),
+    reason: "Owner publication from shared admin",
+    evidence: { source: "admin-web", humanListeningAsserted: false },
+  });
+  assert.equal(
+    await evaluate("qa.previewWrites[0].path"),
+    "/api/v1/operator/lessons/qa-audio/revisions/7/direct-publication",
+  );
+  await evaluate("qa.previewWrites[0].release(503)");
+  await browser("wait", "--text", "核对同一请求");
+  assert.equal(
+    await evaluate(
+      "document.querySelector('.lesson-audio-review textarea').matches(':disabled')",
+    ),
+    true,
+  );
+  await browser("click", ".audio-exit");
+  await browser("wait", "dialog[open]");
+  await browser("find", "role", "button", "click", "--name", "留在当前页");
+  await browser(
+    "find",
+    "role",
+    "button",
+    "click",
+    "--name",
+    "核对同一请求",
+    "--exact",
+  );
+  await browser("wait", "--fn", "qa.previewWrites.length===2");
+  assert.equal(
+    await evaluate(
+      "JSON.stringify(qa.previewWrites[0].body)===JSON.stringify(qa.previewWrites[1].body)",
+    ),
+    true,
+  );
+  await evaluate(
+    "qa.previewWrites[1].release({required:true,published:false,lessonHash:'a'.repeat(64),version:2,accepted:true,directAuthorized:true,reason:'Owner publication',actor:'user:1'})",
+  );
+  await browser("wait", "--text", "已保存直接发布授权");
+  assert.equal(
+    await evaluate(
+      "document.querySelector('.lesson-audio-review .primary').disabled",
+    ),
+    true,
+  );
+  await browser("click", ".audio-exit");
+  await browser("wait", "--text", "上一页");
+});
+
+test("optional human listening keeps its separate review endpoint and explicit declaration", async () => {
+  await open("audio-publication");
+  await browser(
+    "find",
+    "label",
+    "发布说明",
+    "fill",
+    "Actual synthetic reviewer protocol",
+  );
+  await browser("click", ".admin-optional-review summary");
+  await browser("check", ".admin-optional-review input[type=checkbox]");
+  await browser(
+    "find",
+    "role",
+    "button",
+    "click",
+    "--name",
+    "保存试听通过记录",
+    "--exact",
+  );
+  await browser("wait", "--fn", "qa.previewWrites.length===1");
+  assert.equal(
+    await evaluate("qa.previewWrites[0].path.endsWith('/audio-review')"),
+    true,
+  );
+  assert.deepEqual(await evaluate("qa.previewWrites[0].body"), {
+    expectedLessonHash: "a".repeat(64),
+    version: 2,
+    accepted: true,
+    heard: true,
+    reason: "Actual synthetic reviewer protocol",
+  });
+  await evaluate("qa.previewWrites[0].release(409)");
+  await browser(
+    "wait",
+    "--fn",
+    "!document.querySelector('.lesson-audio-review textarea').matches(':disabled')",
+  );
+  assert.equal(
+    await evaluate(
+      "document.querySelector('.lesson-audio-review .primary').textContent",
+    ),
+    "授权直接发布",
+  );
+});
+
 test("learning entry keeps focus, deduplicates keyboard submits, and returns through login", async () => {
   await open();
   await browser("focus", ".start-learning button");
