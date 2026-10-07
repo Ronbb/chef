@@ -49,3 +49,15 @@ docker build -f infra/Dockerfile.identity -t chef-identity:local .
 写请求通过内部x-chef-request-method交给身份服务核验同一会话中的CSRF和产品精确Origin，不向学习服务返回CSRF秘密。学习服务不生成/保存登录会话、验证密码或清理身份token；只读取已验证账号，并在产品设置版本上执行CAS。全局账号名称修改在新学习设置接口明确拒绝，后续接入身份账号编辑API。旧部署的组合路由和回归保持，但远端验证失败不能进入旧路由。
 
 2026-10-08真实TCP+PostgreSQL验证覆盖远端profile、有效/错误CSRF设置写入、收藏列表、Brioche/Hargow设置独立、另一产品Cookie拒绝及身份服务关闭后503。独立HTTP边界回归覆盖错误产品/坏JSON/超大响应/503/重定向/超时/401、重复或缺失产品Cookie本地拒绝，响应不发Cookie。既有13项实际PG回归和全工作区测试通过；完整多产品成员授权、管理员原子权限复核、账号后台、数据库最小权限和正式双服务部署仍需实施。
+
+## 产品成员与管理员授权（迁移29）
+
+身份服务拥有product_memberships(product_id,user_id)及独立version。迁移只把现有账号role复制为Brioche授权，不创建Hargow授权；缺少记录视为learner/version0。全局账号role与产品授权分别维护，不能把前者当另一个产品的管理员。旧Brioche邀请在Brioche入口接受时建立相应Brioche成员记录；尚未带产品范围的旧邀请不能在Hargow入口创建管理员授权。Hargow首位管理员仍需要后续明确的初始化流程。
+
+内部SessionIdentity增加必填membership，身份服务每次查询当前产品授权；学习消费者严格验证role/version，并用membership.role组装产品profile。两个服务必须使用相同协议版本，旧载荷没有membership时拒绝而非回退全局role。身份/学习ready检查成员表存在。
+
+身份公共GET /api/v1/account/membership返回当前产品授权；PATCH /api/v1/account-admin/members/{id}修改当前产品目标，载荷为role、expectedVersion和reason，不接受浏览器指定product。会话/Origin/CSRF沿用身份层。事务先取得account-admin锁，再复核操作者当前产品operator，锁定目标、CAS版本和每产品最后管理员检查后更新并追加product_membership_audit，记录产品/真实actor/目标/旧新角色版本/理由/时间。没有授权的全局operator不能操作Hargow。同产品并发只允许一个期望版本成功；撤销后的操作者不能继续授予权限。
+
+迁移29回滚拒绝存在其他产品授权、任何产品审计或与原全局角色不同的Brioche权限，避免删除授权历史。测试中的合成数据清理不是生产回滚流程。当前旧后台还用global role及旧账号操作，尚未迁移到上述产品授权；远端学习仍不开放后台。继续完成后台事务内权限复核、账号编辑/管理UI、产品事实/schema及数据库最小权限后才可正式切换。
+
+实际验证：14项专用PG回归通过，新增28→29升级保留Brioche、Hargow不继承、双产品grant隔离、并发CAS、actor撤销复核、最后管理员、5条准确审计及回滚拒绝；真实身份HTTP确认global operator在Hargow membership为learner，修改Hargow授权403。常规工作区、Clippy全目标、fmt和公共生成契约无diff通过；内部HTTP协议同步更新。无生产迁移或授权变更。

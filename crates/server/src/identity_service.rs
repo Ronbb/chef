@@ -57,6 +57,7 @@ impl From<AuthResult> for AccountAuthResult {
 pub struct SessionIdentity {
     pub product: ProductId,
     pub account: AccountProfile,
+    pub membership: crate::product_memberships::Membership,
 }
 
 #[derive(Clone)]
@@ -130,10 +131,14 @@ async fn introspect(
     if !matches!(method, "GET" | "HEAD" | "OPTIONS") {
         crate::csrf::validate_write(&policy, &auth.session, &headers, true).await?;
     }
+    let member_id = crate::learning::owner(&auth)?;
+    let membership =
+        crate::product_memberships::read(&auth.backend.db, config.product, member_id).await?;
     let account = identity::account_identity(auth)?;
     Ok(Json(SessionIdentity {
         product: config.product,
         account,
+        membership,
     }))
 }
 pub fn router(backend: Backend, policy: CsrfPolicy, secure: bool, config: ServiceConfig) -> Router {

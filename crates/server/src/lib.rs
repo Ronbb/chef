@@ -25,6 +25,7 @@ pub mod observability;
 pub mod password;
 pub mod preview;
 pub mod product;
+pub mod product_memberships;
 pub mod product_settings;
 pub mod qwen;
 pub mod recording;
@@ -201,7 +202,7 @@ async fn demo_grade(
 }
 async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, AppError> {
     if let Some(db) = &state.db {
-        db.execute_unprepared("SELECT users.profile_version, product_user_settings.version FROM lesson_revisions, product_user_settings, users, browser_sessions, identity_tokens, auth_throttle, learning_sessions, review_cards, review_attempts, saved_items, content_state, content_releases, content_withdrawals, media_assets, character_revisions, asset_import_audit LIMIT 0")
+        db.execute_unprepared("SELECT users.profile_version, product_user_settings.version FROM lesson_revisions, product_user_settings, product_memberships, users, browser_sessions, identity_tokens, auth_throttle, learning_sessions, review_cards, review_attempts, saved_items, content_state, content_releases, content_withdrawals, media_assets, character_revisions, asset_import_audit LIMIT 0")
             .await
             .map_err(|_| AppError::Unavailable)?;
     } else if state.fixture.is_none() {

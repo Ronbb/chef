@@ -159,6 +159,12 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         .await;
     assert_eq!(status, 200);
     assert_eq!(hargow["account"]["id"], account);
+    assert_eq!(hargow["membership"]["role"], "learner");
+    let (_, scoped) = french
+        .request("GET", "/internal/v1/session", None, Some((KEY, "brioche")))
+        .await;
+    assert_eq!(scoped["membership"]["role"], "operator");
+    assert_eq!(cantonese.request("PATCH",&format!("/api/v1/account-admin/members/{account}"),Some(serde_json::json!({"role":"operator","expectedVersion":0,"reason":"Attempt to inherit global role"})),None).await.0,403);
     // Identity does not initialize or depend on the learning preferences relation.
     let count = db
         .query_one_raw(Statement::from_string(
@@ -483,6 +489,11 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     .await
     .unwrap();
     assert!(brioche.load(&record.id).await.unwrap().is_none());
+    // Restore this synthetic account's earlier global-role mutation before rollback.
+    // Product grants are deliberately independent of the global account role.
+    db.execute_unprepared("UPDATE users SET role='operator' WHERE email='shared@example.test'")
+        .await
+        .unwrap();
     brioche_migration::Migrator::down(&db, None).await.unwrap();
     admin
         .execute_unprepared(&format!("DROP SCHEMA {schema} CASCADE"))

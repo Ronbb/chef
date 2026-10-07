@@ -90,7 +90,7 @@ mod tests {
         db.execute_unprepared(r#"INSERT INTO users(id,email,password_hash,display_name,role,settings,profile_version)
             VALUES(101,'shared-settings@example.test','test-hash-preserved','Shared learner','learner',
                 '{"timeZone":"Europe/Paris","weeklyDays":3,"dailyMinutes":15,"showTranslation":true,"speechRate":0.75}',7)"#).await.unwrap();
-        brioche_migration::Migrator::up(&db, None).await.unwrap();
+        brioche_migration::Migrator::up(&db, Some(1)).await.unwrap();
         let before = read(&db, ProductId::Brioche, 101).await.unwrap();
         assert_eq!(before.version, 7);
         assert_eq!(before.settings.time_zone, "Europe/Paris");
@@ -186,7 +186,7 @@ mod tests {
         brioche_migration::Migrator::down(&db, Some(1))
             .await
             .unwrap();
-        brioche_migration::Migrator::up(&db, None).await.unwrap();
+        brioche_migration::Migrator::up(&db, Some(1)).await.unwrap();
         let restored = read(&db, ProductId::Brioche, 101).await.unwrap();
         assert_eq!(restored.version, 8);
         assert_eq!(restored.settings.time_zone, "Pacific/Honolulu");

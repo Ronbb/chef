@@ -160,6 +160,14 @@ impl Backend {
         Ok(())
     }
     pub async fn accept_invite(&self, request: AcceptInviteRequest) -> Result<User, AppError> {
+        self.accept_invite_scoped(request, crate::product::ProductId::Brioche)
+            .await
+    }
+    pub(crate) async fn accept_invite_scoped(
+        &self,
+        request: AcceptInviteRequest,
+        product: crate::product::ProductId,
+    ) -> Result<User, AppError> {
         let email = normalize_email(&request.email)?;
         let name = request.display_name.trim();
         if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
@@ -200,6 +208,16 @@ impl Backend {
         .await
         .map_err(|_| AppError::Unavailable)?;
         let user = row_user(row)?;
+        // Legacy invitations only authorize Brioche; they must not bootstrap Hargow operators.
+        if product == crate::product::ProductId::Brioche {
+            tx.execute_raw(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "INSERT INTO product_memberships(product_id,user_id,role) VALUES('brioche',$1,$2)",
+                [user.id.into(), user.role.clone().into()],
+            ))
+            .await
+            .map_err(|_| AppError::Unavailable)?;
+        }
         tx.commit().await.map_err(|_| AppError::Unavailable)?;
         Ok(user)
     }
@@ -618,7 +636,9 @@ pub fn account_router(
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/accept-invite", post(account_accept))
         .route("/api/v1/auth/reset-password", post(reset))
-        .route("/api/v1/account", get(account_me));
+        .route("/api/v1/account", get(account_me))
+        .merge(crate::product_memberships::router(backend.clone(), product))
+        .layer(axum::Extension(product));
     protect_routes(routes, backend, policy, secure, product)
 }
 
@@ -643,9 +663,10 @@ async fn account_login(
 async fn account_accept(
     mut auth: AuthSession,
     State(backend): State<Backend>,
+    axum::Extension(product): axum::Extension<crate::product::ProductId>,
     Json(request): Json<AcceptInviteRequest>,
 ) -> Result<Json<crate::identity_service::AccountAuthResult>, AppError> {
-    let user = backend.accept_invite(request).await?;
+    let user = backend.accept_invite_scoped(request, product).await?;
     let csrf_token = establish_session(&mut auth, &user).await?;
     Ok(Json(crate::identity_service::AccountAuthResult {
         user: user.account(),

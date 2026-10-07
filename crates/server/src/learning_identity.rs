@@ -123,6 +123,8 @@ impl Client {
             || verified.account.id != id.to_string()
             || !matches!(verified.account.role.as_str(), "learner" | "operator")
             || verified.account.version == 0
+            || !matches!(verified.membership.role.as_str(), "learner" | "operator")
+            || (verified.membership.role == "operator" && verified.membership.version == 0)
         {
             return Err(AppError::Unavailable);
         }
@@ -143,9 +145,16 @@ impl<S: Send + Sync> FromRequestParts<S> for LearningAuth {
         let auth = crate::identity::AuthSession::from_request_parts(parts, state)
             .await
             .map_err(|_| AppError::Unavailable)?;
+        let membership = crate::product_memberships::read(
+            &auth.backend.db,
+            ProductId::Brioche,
+            crate::learning::owner(&auth)?,
+        )
+        .await?;
         let identity = SessionIdentity {
             product: ProductId::Brioche,
             account: crate::identity::account_identity(auth)?,
+            membership,
         };
         Ok(Self { identity })
     }
@@ -206,7 +215,7 @@ fn profile_payload(
         id: identity.account.id,
         email: identity.account.email,
         display_name: identity.account.display_name,
-        role: identity.account.role,
+        role: identity.membership.role,
         settings: preferences.settings,
         version: preferences.version,
     }
@@ -292,7 +301,7 @@ mod tests {
                 assert_eq!(headers["x-chef-product"], "brioche");
                 assert_eq!(headers["x-chef-request-method"], "GET");
                 assert!(headers.get("x-spoofed-identity").is_none());
-                let value=serde_json::json!({"product":if mode==1 {"hargow"} else {"brioche"},"account":{"id":"101","email":"learner@example.test","displayName":"Test","role":"learner","version":1}});
+                let value=serde_json::json!({"product":if mode==1 {"hargow"} else {"brioche"},"account":{"id":"101","email":"learner@example.test","displayName":"Test","role":"learner","version":1},"membership":{"role":"learner","version":0}});
                 match mode {
                     2 => (StatusCode::OK,"{\"product\":\"brioche\"}".to_string()).into_response(),
                     3 => (StatusCode::OK,"x".repeat(5000)).into_response(),
@@ -304,7 +313,7 @@ mod tests {
                 }
             }
         }));
-        let identity=identity.route("/redirected",get(|| async { Json(serde_json::json!({"product":"brioche","account":{"id":"101","email":"learner@example.test","displayName":"Test","role":"learner","version":1}})) }));
+        let identity=identity.route("/redirected",get(|| async { Json(serde_json::json!({"product":"brioche","account":{"id":"101","email":"learner@example.test","displayName":"Test","role":"learner","version":1},"membership":{"role":"learner","version":0}})) }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move { axum::serve(listener, identity).await.unwrap() });

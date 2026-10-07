@@ -11,7 +11,7 @@ async fn ready(
     State(db): State<DatabaseConnection>,
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
     db.execute_unprepared(
-        "SELECT users.id FROM users, browser_sessions, identity_tokens, auth_throttle LIMIT 0",
+        "SELECT users.id FROM users, browser_sessions, identity_tokens, auth_throttle, product_memberships, product_membership_audit LIMIT 0",
     )
     .await
     .map_err(|_| axum::http::StatusCode::SERVICE_UNAVAILABLE)?;
