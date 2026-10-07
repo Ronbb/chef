@@ -47,6 +47,11 @@ function ProfileContent() {
   const wasDiscarding = useRef(false);
   const [editorOpen, setEditorOpen] = useState(false),
     [discarding, setDiscarding] = useState(false);
+  const [editMode, setEditMode] = useState<"account" | "study">("account");
+  const [loadingAccount, setLoadingAccount] = useState(false);
+  const accountReadBusy = useRef(false);
+  const editorError =
+    editMode === "account" ? learning.accountError : learning.saveError;
   const saveFailure = useRef<HTMLParagraphElement>(null);
   const [failureSequence, setFailureSequence] = useState(0);
   const [draftName, setDraftName] = useState(""),
@@ -85,7 +90,13 @@ function ProfileContent() {
   }, [editorOpen, dirty, editing]);
   useLayoutEffect(() => {
     if (discarding) discardHeading.current?.focus();
-    else if (wasDiscarding.current) retainedName.current?.focus();
+    else if (wasDiscarding.current) {
+      if (retainedName.current) retainedName.current.focus();
+      else
+        editor.current
+          ?.querySelector<HTMLButtonElement>("form button")
+          ?.focus();
+    }
     wasDiscarding.current = discarding;
   }, [discarding]);
   function requestClose() {
@@ -110,17 +121,36 @@ function ProfileContent() {
   useLayoutEffect(() => {
     if (failureSequence && editor.current?.open) saveFailure.current?.focus();
   }, [failureSequence]);
-  function openEditor() {
+  useLayoutEffect(() => {
+    if (editorOpen)
+      editor.current
+        ?.querySelector<HTMLElement>("form input, form button")
+        ?.focus();
+  }, [editorOpen, editMode]);
+  async function openEditor(mode: "account" | "study") {
     if (!profile) return;
+    if (accountReadBusy.current) return;
+    let name = profile.displayName;
+    if (mode === "account") {
+      accountReadBusy.current = true;
+      setLoadingAccount(true);
+      const account = await learning.readAccount();
+      if (!alive.current) return;
+      accountReadBusy.current = false;
+      setLoadingAccount(false);
+      if (!account) return;
+      name = account.displayName;
+    }
+    setEditMode(mode);
     baseline.current = {
-      name: profile.displayName,
+      name,
       zone: profile.settings.timeZone,
       days: profile.settings.weeklyDays,
       minutes: profile.settings.dailyMinutes,
     };
     setDiscarding(false);
     setEditorOpen(true);
-    setDraftName(profile.displayName);
+    setDraftName(name);
     setZone(profile.settings.timeZone);
     setDays(profile.settings.weeklyDays);
     setMinutes(profile.settings.dailyMinutes);
@@ -129,22 +159,32 @@ function ProfileContent() {
   async function save() {
     if (editBusy.current || !profile) return;
     const changes = {
-      ...(draftName.trim() !== profile.displayName
-        ? { displayName: draftName.trim() }
-        : {}),
       ...(zone !== profile.settings.timeZone ? { timeZone: zone } : {}),
       ...(days !== profile.settings.weeklyDays ? { weeklyDays: days } : {}),
       ...(minutes !== profile.settings.dailyMinutes
         ? { dailyMinutes: minutes }
         : {}),
     };
-    if (!Object.keys(changes).length) {
+    if (
+      editMode === "account"
+        ? draftName.trim() === profile.displayName
+        : !Object.keys(changes).length
+    ) {
       editor.current?.close();
       return;
     }
     setEditing(true);
     editBusy.current = true;
-    if (await learning.saveProfile(changes)) {
+    const ok =
+      editMode === "account"
+        ? learning.accountProfile &&
+          (await learning.saveAccount(
+            draftName.trim(),
+            learning.accountProfile.version,
+          ))
+        : await learning.saveProfile(changes);
+    if (!alive.current) return;
+    if (ok) {
       setEditorOpen(false);
       editor.current?.close();
     } else setFailureSequence((sequence) => sequence + 1);
@@ -196,13 +236,19 @@ function ProfileContent() {
         {profile && (
           <button
             className="icon-button profile-edit"
-            aria-label="编辑个人资料与学习目标"
-            onClick={openEditor}
+            aria-label="编辑个人资料"
+            aria-busy={loadingAccount}
+            onClick={() => void openEditor("account")}
           >
             <Icon name="chevron" />
           </button>
         )}
       </div>
+      {learning.accountError && !editorOpen && (
+        <p className="error-message" role="alert">
+          {learning.accountError}
+        </p>
+      )}
       {profile && (
         <>
           <h2>学习日常</h2>
@@ -225,7 +271,10 @@ function ProfileContent() {
               <span>复习记录</span>
               <Icon name="chevron" />
             </Link>
-            <button className="setting-row setting-link" onClick={openEditor}>
+            <button
+              className="setting-row setting-link"
+              onClick={() => void openEditor("study")}
+            >
               <span>学习目标</span>
               <span>
                 每周 {profile.settings.weeklyDays} 天 · 每天{" "}
@@ -233,7 +282,10 @@ function ProfileContent() {
                 <Icon name="chevron" />
               </span>
             </button>
-            <button className="setting-row setting-link" onClick={openEditor}>
+            <button
+              className="setting-row setting-link"
+              onClick={() => void openEditor("study")}
+            >
               <span>学习时区</span>
               <span>
                 {zones.find(
@@ -316,7 +368,9 @@ function ProfileContent() {
         }}
       >
         <div className="rate-heading">
-          <h2 id="profile-edit-title">个人资料与学习日常</h2>
+          <h2 id="profile-edit-title">
+            {editMode === "account" ? "个人资料" : "学习日常"}
+          </h2>
           <button
             type="button"
             className="icon-button"
@@ -338,9 +392,11 @@ function ProfileContent() {
               放弃这些修改？
             </h3>
             <p>
-              {learning.saveError
+              {editorError
                 ? "上次保存未获确认。离开将丢弃当前编辑草稿。"
-                : "昵称、学习目标和时区的修改尚未保存。"}
+                : editMode === "account"
+                  ? "昵称的修改尚未保存。"
+                  : "学习目标和时区的修改尚未保存。"}
             </p>
             <button type="button" className="primary" onClick={keepEditing}>
               继续编辑
@@ -361,73 +417,79 @@ function ProfileContent() {
             void save();
           }}
         >
-          <label className="profile-field">
-            怎么称呼你
-            <input
-              ref={retainedName}
-              required
-              maxLength={80}
-              autoComplete="nickname"
-              value={draftName}
-              readOnly={editing}
-              onChange={(event) => setDraftName(event.target.value)}
-            />
-          </label>
-          <div className="setting-row">
-            <span>学习时区</span>
-            <ChoiceDialog
-              title="学习时区"
-              choices={zones}
-              value={zone}
-              onChange={setZone}
-              searchable
-              disabled={editing}
-            />
-          </div>
-          <button
-            className="text-button device-zone"
-            type="button"
-            disabled={editing}
-            onClick={() =>
-              setZone(Intl.DateTimeFormat().resolvedOptions().timeZone)
-            }
-          >
-            使用设备时区
-          </button>
-          <div className="setting-row">
-            <span>每周学习</span>
-            <ChoiceDialog
-              title="每周学习天数"
-              choices={[3, 5, 7].map((value) => ({
-                value: String(value),
-                label: `${value} 天`,
-              }))}
-              value={String(days)}
-              onChange={(value) => setDays(Number(value))}
-              disabled={editing}
-            />
-          </div>
-          <div className="setting-row">
-            <span>每天学习</span>
-            <ChoiceDialog
-              title="每天学习时间"
-              choices={[5, 10, 15].map((value) => ({
-                value: String(value),
-                label: `${value} 分钟`,
-              }))}
-              value={String(minutes)}
-              onChange={(value) => setMinutes(Number(value))}
-              disabled={editing}
-            />
-          </div>
-          {learning.saveError && (
+          {editMode === "account" && (
+            <label className="profile-field">
+              怎么称呼你
+              <input
+                ref={retainedName}
+                required
+                maxLength={80}
+                autoComplete="nickname"
+                value={draftName}
+                readOnly={editing}
+                onChange={(event) => setDraftName(event.target.value)}
+              />
+            </label>
+          )}
+          {editMode === "study" && (
+            <>
+              <div className="setting-row">
+                <span>学习时区</span>
+                <ChoiceDialog
+                  title="学习时区"
+                  choices={zones}
+                  value={zone}
+                  onChange={setZone}
+                  searchable
+                  disabled={editing}
+                />
+              </div>
+              <button
+                className="text-button device-zone"
+                type="button"
+                disabled={editing}
+                onClick={() =>
+                  setZone(Intl.DateTimeFormat().resolvedOptions().timeZone)
+                }
+              >
+                使用设备时区
+              </button>
+              <div className="setting-row">
+                <span>每周学习</span>
+                <ChoiceDialog
+                  title="每周学习天数"
+                  choices={[3, 5, 7].map((value) => ({
+                    value: String(value),
+                    label: `${value} 天`,
+                  }))}
+                  value={String(days)}
+                  onChange={(value) => setDays(Number(value))}
+                  disabled={editing}
+                />
+              </div>
+              <div className="setting-row">
+                <span>每天学习</span>
+                <ChoiceDialog
+                  title="每天学习时间"
+                  choices={[5, 10, 15].map((value) => ({
+                    value: String(value),
+                    label: `${value} 分钟`,
+                  }))}
+                  value={String(minutes)}
+                  onChange={(value) => setMinutes(Number(value))}
+                  disabled={editing}
+                />
+              </div>
+            </>
+          )}
+          {editorError && (
             <p
               ref={saveFailure}
               className="error-message"
               role="alert"
               tabIndex={-1}
             >
-              {learning.saveError}
+              {editorError}
             </p>
           )}
           <button

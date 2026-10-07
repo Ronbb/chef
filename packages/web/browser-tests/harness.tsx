@@ -46,6 +46,7 @@ import type { ReviewQueue } from "@brioche/contracts/ReviewQueue";
 import type { ReviewAttemptResult } from "@brioche/contracts/ReviewAttemptResult";
 import type { LearningState } from "@brioche/contracts/LearningState";
 import type { UserProfile } from "@brioche/contracts/UserProfile";
+import type { AccountProfile } from "@brioche/contracts/AccountProfile";
 import "../app/styles/app.css";
 
 const stress = new URL(location.href).searchParams.has("stress");
@@ -105,6 +106,17 @@ const qa = {
   profileWrites: [] as Record<string, unknown>[],
   profileRelease: [] as ((profile: UserProfile | number) => void)[],
   profileReads: [] as ((profile: UserProfile | number) => void)[],
+  accountWrites: [] as Record<string, unknown>[],
+  accountRelease: [] as ((account: AccountProfile | number) => void)[],
+  accountReads: [] as ((account: AccountProfile | number) => void)[],
+  accountState: {
+    id: "account-a",
+    email: "a@example.test",
+    displayName: "Alice",
+    role: "operator",
+    version: 1,
+  } as AccountProfile,
+  deferAccountRead: false,
   navigate: null as ((destination: string | number) => void) | null,
   learningWrites: [] as Record<string, unknown>[],
   learningRelease: [] as ((value: LearningState | number) => void)[],
@@ -392,6 +404,37 @@ window.fetch = async (input, init) => {
         );
     });
   }
+  if (String(input) === "/api/v1/account") {
+    if (init?.method === "PATCH") {
+      qa.deferAccountRead = true;
+      const index = qa.accountWrites.push(JSON.parse(String(init.body))) - 1;
+      return new Promise<Response>((resolve) => {
+        qa.accountRelease[index] = (value) => {
+          if (typeof value !== "number") {
+            qa.accountState = value;
+            qa.deferAccountRead = false;
+          }
+          resolve(
+            typeof value === "number"
+              ? new Response("", { status: value })
+              : Response.json(value),
+          );
+        };
+      });
+    }
+    if (!qa.deferAccountRead) return Response.json(qa.accountState);
+    return new Promise<Response>((resolve) => {
+      qa.accountReads.push((value) => {
+        qa.deferAccountRead = false;
+        if (typeof value !== "number") qa.accountState = value;
+        resolve(
+          typeof value === "number"
+            ? new Response("", { status: value })
+            : Response.json(value),
+        );
+      });
+    });
+  }
   if (String(input) === "/api/v1/me/settings") {
     const index = qa.profileWrites.push(JSON.parse(String(init?.body))) - 1;
     return new Promise<Response>((resolve) => {
@@ -521,7 +564,15 @@ function ProfileHarness() {
       speechRate: 1,
     },
   });
-  qa.changeUser = () =>
+  qa.changeUser = () => {
+    qa.accountState = {
+      id: "account-b",
+      email: "b@example.test",
+      displayName: "Bob",
+      role: "operator",
+      version: 3,
+    };
+    qa.deferAccountRead = false;
     setUser({
       ...user,
       id: "account-b",
@@ -529,6 +580,7 @@ function ProfileHarness() {
       displayName: "Bob",
       version: 10,
     });
+  };
   return (
     <LearningProvider user={user}>
       <main>

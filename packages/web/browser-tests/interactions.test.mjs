@@ -9,9 +9,7 @@ import { createServer } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 
 const execute = promisify(execFile);
-const cli = fileURLToPath(
-  browserCliUrl(),
-);
+const cli = fileURLToPath(browserCliUrl());
 const session = "brioche-regression-" + randomUUID();
 let server, origin;
 let browserOpened = false;
@@ -41,7 +39,10 @@ async function open(kind = "start") {
 before(async () => {
   server = await createServer({
     configFile: false,
-    resolve: { alias: { "@chef/product": fileURLToPath(productWebUrl("product.ts")) }, dedupe: ["react", "react-dom", "react-router"] },
+    resolve: {
+      alias: { "@chef/product": fileURLToPath(productWebUrl("product.ts")) },
+      dedupe: ["react", "react-dom", "react-router"],
+    },
     root: fileURLToPath(new URL(".", import.meta.url)),
     plugins: [
       tailwindcss(),
@@ -299,10 +300,7 @@ test("a partially recorded reading sequence does not begin a misleading incomple
   `);
   await browser("focus", ".playback-line");
   await press("Enter");
-  assert.equal(
-    await evaluate("qa.observedToast"),
-    "这段录音还在准备中。",
-  );
+  assert.equal(await evaluate("qa.observedToast"), "这段录音还在准备中。");
   await evaluate("qa.toastObserver.disconnect()");
   assert.deepEqual(
     await evaluate(
@@ -454,13 +452,14 @@ test("custom settings dialogs remain in the viewport and restore keyboard focus 
 
 test("a profile identity change discards the previous editor and permits independent saves", async () => {
   await open("profile");
-  const edit = 'button[aria-label="编辑个人资料与学习目标"]';
+  const edit = 'button[aria-label="编辑个人资料"]';
   await browser("focus", edit);
   await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
   await browser("fill", ".profile-dialog input", "Alice edited");
   await browser("focus", ".profile-dialog button[type=submit]");
   await press("Enter");
-  await browser("wait", "--fn", "qa.profileWrites.length===1");
+  await browser("wait", "--fn", "qa.accountWrites.length===1");
   await evaluate("qa.changeUser()");
   await browser(
     "wait",
@@ -473,6 +472,7 @@ test("a profile identity change discards the previous editor and permits indepen
   );
   await browser("focus", edit);
   await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
   assert.equal(
     await evaluate("document.querySelector('.profile-dialog input').value"),
     "Bob",
@@ -480,10 +480,10 @@ test("a profile identity change discards the previous editor and permits indepen
   await browser("fill", ".profile-dialog input", "Bob edited");
   await browser("focus", ".profile-dialog button[type=submit]");
   await press("Enter");
-  await browser("wait", "--fn", "qa.profileWrites.length===2");
-  assert.equal(await evaluate("qa.profileWrites[1].version"), 10);
+  await browser("wait", "--fn", "qa.accountWrites.length===2");
+  assert.equal(await evaluate("qa.accountWrites[1].expectedAccountVersion"), 3);
   await evaluate(
-    "qa.profileRelease[0]({id:'account-a',email:'a@example.test',displayName:'Alice edited',role:'learner',version:2,settings:{timeZone:'Asia/Shanghai',weeklyDays:5,dailyMinutes:10,showTranslation:false,speechRate:1}})",
+    "qa.accountRelease[0]({id:'account-a',email:'a@example.test',displayName:'Alice edited',role:'learner',version:2})",
   );
   assert.equal(
     await evaluate("document.querySelector('.profile-dialog input').value"),
@@ -496,7 +496,7 @@ test("a profile identity change discards the previous editor and permits indepen
     "true",
   );
   await evaluate(
-    "qa.profileRelease[1]({id:'account-b',email:'b@example.test',displayName:'Bob edited',role:'learner',version:11,settings:{timeZone:'Asia/Shanghai',weeklyDays:5,dailyMinutes:10,showTranslation:false,speechRate:1}})",
+    "qa.accountRelease[1]({id:'account-b',email:'b@example.test',displayName:'Bob edited',role:'operator',version:4})",
   );
   await browser(
     "wait",
@@ -507,9 +507,10 @@ test("a profile identity change discards the previous editor and permits indepen
 
 test("closing a changed profile asks before discarding and preserves the draft when retained", async () => {
   await open("profile");
-  const edit = 'button[aria-label="编辑个人资料与学习目标"]';
+  const edit = 'button[aria-label="编辑个人资料"]';
   await browser("focus", edit);
   await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
   await browser("fill", ".profile-dialog input", "Unsaved name");
   await press("Escape");
   assert.equal(
@@ -523,6 +524,7 @@ test("closing a changed profile asks before discarding and preserves the draft w
   );
   await browser("focus", ".profile-discard .primary");
   await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
   assert.equal(
     await evaluate("document.querySelector('.profile-dialog input').value"),
     "Unsaved name",
@@ -531,7 +533,7 @@ test("closing a changed profile asks before discarding and preserves the draft w
     await evaluate("document.activeElement.matches('.profile-dialog input')"),
     true,
   );
-  assert.equal(await evaluate("qa.profileWrites.length"), 0);
+  assert.equal(await evaluate("qa.accountWrites.length"), 0);
   assert.equal(
     await evaluate(
       "(()=>{const e=new Event('beforeunload',{cancelable:true});window.dispatchEvent(e);return e.defaultPrevented})()",
@@ -555,6 +557,7 @@ test("closing a changed profile asks before discarding and preserves the draft w
   );
   await browser("focus", edit);
   await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
   assert.equal(
     await evaluate("document.querySelector('.profile-dialog input').value"),
     "Alice",
@@ -568,9 +571,10 @@ test("closing a changed profile asks before discarding and preserves the draft w
 
 test("profile drafts guard route pushes and history pops, including saves already in flight", async () => {
   await open("profile");
-  const edit = 'button[aria-label="编辑个人资料与学习目标"]';
+  const edit = 'button[aria-label="编辑个人资料"]';
   await browser("focus", edit);
   await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
   await browser("fill", ".profile-dialog input", "Keep this draft");
   await evaluate("qa.navigate('/login')");
   await browser(
@@ -581,6 +585,7 @@ test("profile drafts guard route pushes and history pops, including saves alread
   assert.equal(await evaluate("qa.route"), "/");
   await browser("focus", ".profile-discard .primary");
   await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
   assert.equal(
     await evaluate("document.querySelector('.profile-dialog input').value"),
     "Keep this draft",
@@ -590,15 +595,16 @@ test("profile drafts guard route pushes and history pops, including saves alread
   await browser("focus", ".profile-discard .text-button");
   await press("Enter");
   await browser("wait", "--fn", "qa.route==='/previous'");
-  assert.equal(await evaluate("qa.profileWrites.length"), 0);
+  assert.equal(await evaluate("qa.accountWrites.length"), 0);
 
   await open("profile");
   await browser("focus", edit);
   await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
   await browser("fill", ".profile-dialog input", "Saved before leaving");
   await browser("focus", ".profile-dialog button[type=submit]");
   await press("Enter");
-  await browser("wait", "--fn", "qa.profileWrites.length===1");
+  await browser("wait", "--fn", "qa.accountWrites.length===1");
   await evaluate("qa.navigate('/login')");
   await browser("wait", ".profile-leave-status");
   assert.equal(
@@ -609,31 +615,32 @@ test("profile drafts guard route pushes and history pops, including saves alread
   );
   assert.equal(await evaluate("qa.route"), "/");
   await evaluate(
-    "qa.profileRelease[0]({id:'account-a',email:'a@example.test',displayName:'Saved before leaving',role:'learner',version:2,settings:{timeZone:'Asia/Shanghai',weeklyDays:5,dailyMinutes:10,showTranslation:false,speechRate:1}})",
+    "qa.accountRelease[0]({id:'account-a',email:'a@example.test',displayName:'Saved before leaving',role:'learner',version:2})",
   );
   await browser("wait", "--fn", "qa.route==='/login'");
-  assert.equal(await evaluate("qa.profileWrites.length"), 1);
+  assert.equal(await evaluate("qa.accountWrites.length"), 1);
 });
 
 test("failed profile saves retain blocked drafts and require explicit version-aware recovery", async () => {
-  const edit = 'button[aria-label="编辑个人资料与学习目标"]';
+  const edit = 'button[aria-label="编辑个人资料"]';
   for (const status of [409, 503]) {
     await open("profile");
     await browser("focus", edit);
     await press("Enter");
+    await browser("wait", ".profile-dialog[open] input");
     await browser("fill", ".profile-dialog input", "My draft");
     await browser("focus", ".profile-dialog button[type=submit]");
     await press("Enter");
-    await browser("wait", "--fn", "qa.profileWrites.length===1");
+    await browser("wait", "--fn", "qa.accountWrites.length===1");
     await evaluate("qa.navigate('/login')");
     await browser("wait", ".profile-dialog .profile-leave-status");
-    await evaluate("qa.profileRelease[0](" + status + ")");
-    await browser("wait", "--fn", "qa.profileReads.length===1");
+    await evaluate("qa.accountRelease[0](" + status + ")");
+    await browser("wait", "--fn", "qa.accountReads.length===1");
     assert.equal(await evaluate("qa.route"), "/");
     await evaluate(
-      "qa.profileReads[0]({id:'account-a',email:'a@example.test',displayName:" +
+      "qa.accountReads[0]({id:'account-a',email:'a@example.test',displayName:" +
         JSON.stringify(status === 409 ? "Other device" : "My draft") +
-        ",role:'learner',version:7,settings:{timeZone:'Asia/Shanghai',weeklyDays:5,dailyMinutes:10,showTranslation:false,speechRate:1}})",
+        ",role:'learner',version:7})",
     );
     await browser("wait", ".profile-discard");
     assert.equal(
@@ -646,7 +653,7 @@ test("failed profile saves retain blocked drafts and require explicit version-aw
       ),
       "上次保存未获确认。离开将丢弃当前编辑草稿。",
     );
-    assert.equal(await evaluate("qa.profileWrites.length"), 1);
+    assert.equal(await evaluate("qa.accountWrites.length"), 1);
     await press("Escape");
     assert.equal(
       await evaluate("document.querySelector('.profile-dialog input').value"),
@@ -655,13 +662,13 @@ test("failed profile saves retain blocked drafts and require explicit version-aw
     await browser("focus", ".profile-dialog button[type=submit]");
     await press("Enter");
     if (status === 409) {
-      await browser("wait", "--fn", "qa.profileWrites.length===2");
-      assert.deepEqual(await evaluate("qa.profileWrites[1]"), {
+      await browser("wait", "--fn", "qa.accountWrites.length===2");
+      assert.deepEqual(await evaluate("qa.accountWrites[1]"), {
         displayName: "My draft",
-        version: 7,
+        expectedAccountVersion: 7,
       });
       await evaluate(
-        "qa.profileRelease[1]({id:'account-a',email:'a@example.test',displayName:'My draft',role:'learner',version:8,settings:{timeZone:'Asia/Shanghai',weeklyDays:5,dailyMinutes:10,showTranslation:false,speechRate:1}})",
+        "qa.accountRelease[1]({id:'account-a',email:'a@example.test',displayName:'My draft',role:'learner',version:8})",
       );
     }
     await browser(
@@ -671,7 +678,7 @@ test("failed profile saves retain blocked drafts and require explicit version-aw
     );
     assert.equal(await evaluate("qa.route"), "/");
     assert.equal(
-      await evaluate("qa.profileWrites.length"),
+      await evaluate("qa.accountWrites.length"),
       status === 409 ? 2 : 1,
     );
     assert.equal(
@@ -686,18 +693,19 @@ test("failed profile saves retain blocked drafts and require explicit version-aw
 test("unauthenticated recovery removes the old profile and releases its navigation guard", async () => {
   for (const status of [503, 401]) {
     await open("profile");
-    await browser("focus", 'button[aria-label="编辑个人资料与学习目标"]');
+    await browser("focus", 'button[aria-label="编辑个人资料"]');
     await press("Enter");
+    await browser("wait", ".profile-dialog[open] input");
     await browser("fill", ".profile-dialog input", "Private draft");
     await browser("focus", ".profile-dialog button[type=submit]");
     await press("Enter");
-    await browser("wait", "--fn", "qa.profileWrites.length===1");
+    await browser("wait", "--fn", "qa.accountWrites.length===1");
     await evaluate("qa.navigate('/login')");
     await browser("wait", ".profile-dialog .profile-leave-status");
-    await evaluate("qa.profileRelease[0](" + status + ")");
+    await evaluate("qa.accountRelease[0](" + status + ")");
     if (status === 503) {
-      await browser("wait", "--fn", "qa.profileReads.length===1");
-      await evaluate("qa.profileReads[0](401)");
+      await browser("wait", "--fn", "qa.accountReads.length===1");
+      await evaluate("qa.accountReads[0](401)");
     }
     await browser(
       "wait",
@@ -727,7 +735,7 @@ test("unauthenticated recovery removes the old profile and releases its navigati
       false,
     );
     assert.equal(
-      await evaluate("qa.profileReads.length"),
+      await evaluate("qa.accountReads.length"),
       status === 503 ? 1 : 0,
     );
     assert.equal(
@@ -739,28 +747,29 @@ test("unauthenticated recovery removes the old profile and releases its navigati
     await browser("focus", 'a.primary[href="/login"]');
     await press("Enter");
     await browser("wait", "--fn", "qa.route==='/login'");
-    assert.equal(await evaluate("qa.profileWrites.length"), 1);
+    assert.equal(await evaluate("qa.accountWrites.length"), 1);
   }
 });
 
 test("failed recovery reads retain the profile draft and let the server resolve the old version on explicit retry", async () => {
   await open("profile");
-  await browser("focus", 'button[aria-label="编辑个人资料与学习目标"]');
+  await browser("focus", 'button[aria-label="编辑个人资料"]');
   await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
   await browser("fill", ".profile-dialog input", "Retained draft");
   await browser("focus", ".profile-dialog button[type=submit]");
   await press("Enter");
-  await browser("wait", "--fn", "qa.profileWrites.length===1");
-  await evaluate("qa.navigate('/login');qa.profileRelease[0](503)");
-  await browser("wait", "--fn", "qa.profileReads.length===1");
-  await evaluate("qa.profileReads[0](503)");
+  await browser("wait", "--fn", "qa.accountWrites.length===1");
+  await evaluate("qa.navigate('/login');qa.accountRelease[0](503)");
+  await browser("wait", "--fn", "qa.accountReads.length===1");
+  await evaluate("qa.accountReads[0](503)");
   await browser("wait", ".profile-discard");
   assert.equal(
     await evaluate("document.querySelector('.profile-summary h2').textContent"),
     "Alice",
   );
   assert.equal(await evaluate("qa.route"), "/");
-  assert.equal(await evaluate("qa.profileWrites.length"), 1);
+  assert.equal(await evaluate("qa.accountWrites.length"), 1);
   await press("Escape");
   assert.equal(
     await evaluate("document.querySelector('.profile-dialog input').value"),
@@ -768,12 +777,12 @@ test("failed recovery reads retain the profile draft and let the server resolve 
   );
   await browser("focus", ".profile-dialog button[type=submit]");
   await press("Enter");
-  await browser("wait", "--fn", "qa.profileWrites.length===2");
-  assert.equal(await evaluate("qa.profileWrites[1].version"), 1);
-  await evaluate("qa.profileRelease[1](409)");
-  await browser("wait", "--fn", "qa.profileReads.length===2");
+  await browser("wait", "--fn", "qa.accountWrites.length===2");
+  assert.equal(await evaluate("qa.accountWrites[1].expectedAccountVersion"), 1);
+  await evaluate("qa.accountRelease[1](409)");
+  await browser("wait", "--fn", "qa.accountReads.length===2");
   await evaluate(
-    "qa.profileReads[1]({id:'account-a',email:'a@example.test',displayName:'Another device',role:'learner',version:7,settings:{timeZone:'Asia/Shanghai',weeklyDays:5,dailyMinutes:10,showTranslation:false,speechRate:1}})",
+    "qa.accountReads[1]({id:'account-a',email:'a@example.test',displayName:'Another device',role:'learner',version:7})",
   );
   await browser(
     "wait",
@@ -788,13 +797,13 @@ test("failed recovery reads retain the profile draft and let the server resolve 
     await evaluate("document.querySelector('.profile-dialog input').value"),
     "Retained draft",
   );
-  assert.equal(await evaluate("qa.profileWrites.length"), 2);
+  assert.equal(await evaluate("qa.accountWrites.length"), 2);
   await browser("focus", ".profile-dialog button[type=submit]");
   await press("Enter");
-  await browser("wait", "--fn", "qa.profileWrites.length===3");
-  assert.equal(await evaluate("qa.profileWrites[2].version"), 7);
+  await browser("wait", "--fn", "qa.accountWrites.length===3");
+  assert.equal(await evaluate("qa.accountWrites[2].expectedAccountVersion"), 7);
   await evaluate(
-    "qa.profileRelease[2]({id:'account-a',email:'a@example.test',displayName:'Retained draft',role:'learner',version:8,settings:{timeZone:'Asia/Shanghai',weeklyDays:5,dailyMinutes:10,showTranslation:false,speechRate:1}})",
+    "qa.accountRelease[2]({id:'account-a',email:'a@example.test',displayName:'Retained draft',role:'learner',version:8})",
   );
   await browser(
     "wait",
@@ -802,7 +811,131 @@ test("failed recovery reads retain the profile draft and let the server resolve 
     "!document.querySelector('.profile-dialog[open]')",
   );
   assert.equal(await evaluate("qa.route"), "/");
-  assert.equal(await evaluate("qa.profileWrites.length"), 3);
+  assert.equal(await evaluate("qa.accountWrites.length"), 3);
+});
+
+test("account and product settings save independently without replacing membership or versions", async () => {
+  await open("profile");
+  await browser("focus", ".translation-switch");
+  await press("Enter");
+  await browser("wait", "--fn", "qa.profileWrites.length===1");
+  await browser("focus", 'button[aria-label="编辑个人资料"]');
+  await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
+  assert.equal(
+    await evaluate(
+      "document.querySelector('.profile-dialog').textContent.includes('每周学习')",
+    ),
+    false,
+  );
+  await browser("fill", ".profile-dialog input", "Shared name");
+  await browser("focus", ".profile-dialog button[type=submit]");
+  await press("Enter");
+  await browser("wait", "--fn", "qa.accountWrites.length===1");
+  assert.deepEqual(await evaluate("qa.accountWrites[0]"), {
+    displayName: "Shared name",
+    expectedAccountVersion: 1,
+  });
+  assert.deepEqual(await evaluate("qa.profileWrites[0]"), {
+    showTranslation: true,
+    version: 1,
+  });
+  await evaluate(
+    "qa.accountRelease[0]({id:'account-a',email:'a@example.test',displayName:'Shared name',role:'operator',version:9})",
+  );
+  await browser(
+    "wait",
+    "--fn",
+    "!document.querySelector('.profile-dialog[open]')",
+  );
+  await evaluate(
+    "qa.profileRelease[0]({id:'account-a',email:'a@example.test',displayName:'Old product snapshot',role:'learner',version:2,settings:{timeZone:'Asia/Shanghai',weeklyDays:5,dailyMinutes:10,showTranslation:true,speechRate:1}})",
+  );
+  await browser(
+    "wait",
+    "--fn",
+    "document.querySelector('.profile-note').textContent==='设置已保存到账号。'",
+  );
+  assert.equal(
+    await evaluate("document.querySelector('.profile-summary h2').textContent"),
+    "Shared name",
+  );
+  assert.equal(
+    await evaluate("!!document.querySelector('a[href=\"/admin\"]')"),
+    false,
+  );
+  await browser("focus", ".translation-switch");
+  await press("Enter");
+  await browser("wait", "--fn", "qa.profileWrites.length===2");
+  assert.deepEqual(await evaluate("qa.profileWrites[1]"), {
+    showTranslation: false,
+    version: 2,
+  });
+  await evaluate("qa.profileRelease[1](401)");
+});
+
+test("an account switch aborts a delayed account CSRF bootstrap before any write", async () => {
+  await open("profile");
+  await browser("focus", 'button[aria-label="编辑个人资料"]');
+  await press("Enter");
+  await browser("wait", ".profile-dialog[open] input");
+  await browser("fill", ".profile-dialog input", "Must not reach Bob");
+  await evaluate("qa.deferAuthBootstrap=true");
+  await browser("focus", ".profile-dialog button[type=submit]");
+  await press("Enter");
+  await browser("wait", "--fn", "qa.authBootstraps.length===1");
+  await evaluate("qa.changeUser()");
+  await browser(
+    "wait",
+    "--fn",
+    "document.querySelector('.profile-summary h2').textContent==='Bob'",
+  );
+  assert.equal(await evaluate("qa.authBootstraps[0].signal.aborted"), true);
+  await evaluate("qa.authBootstraps[0].release(200)");
+  assert.equal(await evaluate("qa.accountWrites.length"), 0);
+  assert.equal(await evaluate("qa.profileWrites.length"), 0);
+  assert.equal(
+    await evaluate("document.querySelectorAll('.profile-dialog[open]').length"),
+    0,
+  );
+});
+
+test("learning day editing sends only product preferences", async () => {
+  await open("profile");
+  await browser("focus", ".settings-group button.setting-row");
+  await press("Enter");
+  await browser("wait", ".profile-dialog[open]");
+  assert.equal(
+    await evaluate(
+      "document.querySelectorAll('.profile-dialog .profile-field input').length",
+    ),
+    0,
+  );
+  await browser(
+    "find",
+    "role",
+    "button",
+    "click",
+    "--name",
+    "每周学习天数：5 天",
+  );
+  await browser("find", "role", "radio", "click", "--name", "7 天");
+  await browser("focus", ".profile-dialog button[type=submit]");
+  await press("Enter");
+  await browser("wait", "--fn", "qa.profileWrites.length===1");
+  assert.deepEqual(await evaluate("qa.profileWrites[0]"), {
+    weeklyDays: 7,
+    version: 1,
+  });
+  assert.equal(await evaluate("qa.accountWrites.length"), 0);
+  await evaluate(
+    "qa.profileRelease[0]({id:'account-a',email:'a@example.test',displayName:'Alice',role:'learner',version:2,settings:{timeZone:'Asia/Shanghai',weeklyDays:7,dailyMinutes:10,showTranslation:false,speechRate:1}})",
+  );
+  await browser(
+    "wait",
+    "--fn",
+    "!document.querySelector('.profile-dialog[open]')",
+  );
 });
 
 test("learning step and completion preserve waiting focus and retry their exact requests", async () => {

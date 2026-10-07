@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -10,6 +11,7 @@ import { useLocation } from "react-router";
 import { createPortal } from "react-dom";
 import { Icon } from "./icon";
 import type { UserProfile } from "@brioche/contracts/UserProfile";
+import type { AccountProfile } from "@brioche/contracts/AccountProfile";
 import type { UpdateProfileRequest } from "@brioche/contracts/UpdateProfileRequest";
 import { ApiRequestError, privateRequest } from "../lib/api.client";
 import { clearLearningDrafts } from "../lib/learning-draft";
@@ -19,7 +21,9 @@ import {
   type RecordingClip,
   type SpeechUnit,
 } from "../lib/recording-playback";
-export type ProfileChanges = Partial<Omit<UpdateProfileRequest, "version">>;
+export type ProfileChanges = Partial<
+  Omit<UpdateProfileRequest, "version" | "displayName">
+>;
 type PlayerState = {
   status: "idle" | "loading" | "playing" | "paused";
   id: string | null;
@@ -32,6 +36,13 @@ type Learning = {
   saveProfile: (changes: ProfileChanges) => Promise<boolean>;
   saveStatus: "idle" | "saving" | "saved" | "error";
   saveError: string;
+  readAccount: () => Promise<AccountProfile | null>;
+  saveAccount: (
+    name: string,
+    expectedAccountVersion: number,
+  ) => Promise<boolean>;
+  accountError: string;
+  accountProfile: AccountProfile | null;
   translation: boolean;
   setTranslation: (v: boolean) => void;
   rate: number;
@@ -79,6 +90,125 @@ export function LearningProvider({
     pendingChanges = useRef(new Map<symbol, ProfileChanges>()),
     saves = useRef<Promise<boolean>>(Promise.resolve(true)),
     saveGeneration = useRef(0);
+  const account = useRef<AccountProfile | null>(null);
+  const identityGeneration = useRef(0);
+  const [accountProfile, setAccountProfile] = useState<AccountProfile | null>(
+    null,
+  );
+  const requests = useRef(new Set<AbortController>());
+  const [accountError, setAccountError] = useState("");
+  function acceptAccount(value: AccountProfile) {
+    if (value.id !== savedProfile.current?.id) throw Error("Account changed");
+    account.current = value;
+    setAccountProfile(value);
+    // Account roles and versions must never replace product membership/settings.
+    acceptProfile({
+      ...savedProfile.current,
+      displayName: value.displayName,
+      email: value.email,
+    });
+  }
+  async function readAccount(): Promise<AccountProfile | null> {
+    if (!savedProfile.current) return null;
+    const gen = identityGeneration.current;
+    const request = new AbortController();
+    requests.current.add(request);
+    setAccountError("");
+    try {
+      const value = await privateRequest<AccountProfile>(
+        "/api/v1/account",
+        "GET",
+        undefined,
+        request.signal,
+      );
+      if (request.signal.aborted || gen !== identityGeneration.current)
+        return null;
+      acceptAccount(value);
+      return value;
+    } catch (error) {
+      if (request.signal.aborted || gen !== identityGeneration.current)
+        return null;
+      if (
+        error instanceof ApiRequestError &&
+        error.phase === "request" &&
+        error.status === 401
+      )
+        acceptProfile(null);
+      setAccountError(
+        error instanceof ApiRequestError
+          ? error.message
+          : "账号资料读取失败，请重试。",
+      );
+      return null;
+    } finally {
+      requests.current.delete(request);
+    }
+  }
+  async function saveAccount(
+    name: string,
+    expectedAccountVersion: number,
+  ): Promise<boolean> {
+    if (!savedProfile.current) return false;
+    const gen = identityGeneration.current;
+    const request = new AbortController();
+    requests.current.add(request);
+    setAccountError("");
+    try {
+      const value = await privateRequest<AccountProfile>(
+        "/api/v1/account",
+        "PATCH",
+        { displayName: name, expectedAccountVersion },
+        request.signal,
+      );
+      if (request.signal.aborted || gen !== identityGeneration.current)
+        return false;
+      acceptAccount(value);
+      return true;
+    } catch (error) {
+      if (request.signal.aborted || gen !== identityGeneration.current)
+        return false;
+      // Recover the authoritative account version without retrying the write.
+      if (
+        error instanceof ApiRequestError &&
+        error.phase === "request" &&
+        error.status === 401
+      )
+        acceptProfile(null);
+      else {
+        try {
+          const latest = await privateRequest<AccountProfile>(
+            "/api/v1/account",
+            "GET",
+            undefined,
+            request.signal,
+          );
+          if (request.signal.aborted || gen !== identityGeneration.current)
+            return false;
+          acceptAccount(latest);
+        } catch (recoveryError) {
+          if (request.signal.aborted || gen !== identityGeneration.current)
+            return false;
+          if (
+            recoveryError instanceof ApiRequestError &&
+            recoveryError.phase === "request" &&
+            recoveryError.status === 401
+          ) {
+            acceptProfile(null);
+            error = recoveryError;
+          }
+        }
+      }
+      const message =
+        error instanceof ApiRequestError
+          ? error.message
+          : "保存未确认，请检查账号资料后重试。";
+      setAccountError(message);
+      notify(message);
+      return false;
+    } finally {
+      requests.current.delete(request);
+    }
+  }
   const rateRef = useRef(user?.settings.speechRate ?? 1),
     state = useRef(player),
     queue = useRef<SpeechUnit[]>([]),
@@ -88,7 +218,22 @@ export function LearningProvider({
   const location = useLocation();
   const recording = useRef<RecordingPlayer | null>(null);
   function acceptProfile(value: UserProfile | null) {
+    if (value && account.current?.id === value.id)
+      value = {
+        ...value,
+        displayName: account.current.displayName,
+        email: account.current.email,
+      };
     if (savedProfile.current && savedProfile.current.id !== value?.id) {
+      // Losing a session also invalidates writes waiting for CSRF or a response.
+      saveGeneration.current++;
+      identityGeneration.current++;
+      for (const request of requests.current) request.abort();
+      requests.current.clear();
+      pendingChanges.current.clear();
+      saves.current = Promise.resolve(true);
+      account.current = null;
+      setAccountProfile(null);
       stop();
       clearLearningDrafts(savedProfile.current.id);
     }
@@ -103,7 +248,7 @@ export function LearningProvider({
     setTranslationState(show);
     applyRate(speed);
   }
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (
       savedProfile.current?.id === user?.id &&
       (savedProfile.current?.version ?? 0) > (user?.version ?? 0)
@@ -117,6 +262,27 @@ export function LearningProvider({
     setSaveError("");
     acceptProfile(user);
   }, [user?.id, user?.version]);
+  useLayoutEffect(() => {
+    identityGeneration.current++;
+    for (const request of requests.current) request.abort();
+    requests.current.clear();
+    account.current = null;
+    setAccountProfile(null);
+    setAccountError("");
+    return () => {
+      identityGeneration.current++;
+      for (const request of requests.current) request.abort();
+      requests.current.clear();
+    };
+  }, [user?.id]);
+  useLayoutEffect(
+    () => () => {
+      saveGeneration.current++;
+      for (const request of requests.current) request.abort();
+      requests.current.clear();
+    },
+    [],
+  );
   function saveProfile(changes: ProfileChanges): Promise<boolean> {
     if (!savedProfile.current) return Promise.resolve(false);
     const gen = saveGeneration.current;
@@ -126,11 +292,14 @@ export function LearningProvider({
     setSaveError("");
     const next = saves.current.then(async () => {
       if (gen !== saveGeneration.current || !savedProfile.current) return false;
+      const request = new AbortController();
+      requests.current.add(request);
       try {
         const value = await privateRequest<UserProfile>(
           "/api/v1/me/settings",
           "PATCH",
           { ...changes, version: savedProfile.current.version },
+          request.signal,
         );
         if (gen !== saveGeneration.current) return false;
         pendingChanges.current.delete(job);
@@ -152,6 +321,8 @@ export function LearningProvider({
             const latest = await privateRequest<UserProfile>(
               "/api/v1/me",
               "GET",
+              undefined,
+              request.signal,
             );
             if (recoveryGeneration !== saveGeneration.current) return false;
             acceptProfile(latest);
@@ -175,6 +346,8 @@ export function LearningProvider({
         setSaveError(message);
         notify(message);
         return false;
+      } finally {
+        requests.current.delete(request);
       }
     });
     saves.current = next;
@@ -364,6 +537,10 @@ export function LearningProvider({
         saveProfile,
         saveStatus,
         saveError,
+        readAccount,
+        saveAccount,
+        accountError,
+        accountProfile,
         translation,
         setTranslation,
         rate,

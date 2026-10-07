@@ -68,4 +68,14 @@ GET/PATCH /api/v1/account是身份服务的账号资料资源，兼容旧组合�
 
 AccountProfile、AccountProfileUpdateRequest、AccountAuthResult已成为共享Rust契约并由ts-rs生成TS，替代服务端手写重复DTO。旧v1 UserProfile的version继续表示产品学习设置；不能从它构造expectedAccountVersion，也不能把旧登录UserProfile直接当新账号响应。移除了旧From<UserProfile>/From<AuthResult>隐式转换，以避免混用这两类版本。
 
-真实双产品HTTP+PG验证包含名称trim/跨产品读取、两入口同账号版本并发只有一个200另一个409、设置版本仍1且身份流程不创建设置行、超长/空白/控制字符拒绝、额外settings/userId/role字段422。14项专用PG、普通工作区、Clippy和fmt通过。当前共享Web仍使用旧组合资料编辑，前端分开编辑账号与学习日常以及新登录响应组合仍待实施；本次没有宣称Web已切换或生产已完成双服务部署。
+真实双产品HTTP+PG验证包含名称trim/跨产品读取、两入口同账号版本并发只有一个200另一个409、设置版本仍1且身份流程不创建设置行、超长/空白/控制字符拒绝、额外settings/userId/role字段422。14项专用PG、普通工作区、Clippy和fmt通过。该后端阶段尚未迁移Web，不能据此宣称生产已完成双服务部署。
+
+## 共享Web的独立编辑资源
+
+个人摘要的编辑入口只修改昵称；学习目标/时区入口只修改当前产品的学习日常。打开昵称编辑前读取GET /account，提交PATCH /account时只发送displayName和expectedAccountVersion；读取失败不打开猜测版本的表单。学习保存继续PATCH /me/settings并使用UserProfile.version，ProfileChanges类型排除displayName。
+
+两个资源分别保留版本、错误和恢复状态。账号响应只更新名称/邮箱，不将全局role或账号version放入产品profile；迟到的产品设置响应保留已确认的账号名称。账号写入失败只读回真实版本，保留编辑草稿，要求显式重试；不会自动再次发送写入。账号切换、会话丢失和Provider卸载会取消请求及迟到的CSRF引导，旧响应不能重新恢复旧身份。两个编辑入口共享离页/放弃草稿/焦点保护，但不把两次独立写入包装成一次保存。
+
+此UI和测试仅属于Chef，产品无新增账号逻辑。旧组合账号API也支持/account，框架升级可兼容现有产品入口。新AccountAuthResult登录响应与产品GET /me组合、管理员页面/事务的身份迁移、生产独立路由及最小数据库权限仍待实施；本阶段不更新产品固定框架提交或执行生产迁移。
+
+验证：严格TS7检查、Web单元测试、29项SSR以及10项独立浏览器个人页回归通过。浏览器包含账号与偏好并行保存、独立版本/角色、迟到响应、旧CSRF取消、会话过期、冲突/失败读回、保留草稿/显式重试和离页/退出保护；模拟账号载荷不包含学习设置，账号版本与产品版本故意不同。运行浏览器回归时不改受测源码，以免Vite热更新重置Provider和测试状态。
