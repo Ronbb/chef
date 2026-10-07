@@ -155,7 +155,7 @@ async fn export(
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
 ) -> Result<Response, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let actor = owner(&auth)?;
     let _permit = permits
         .try_acquire_owned()

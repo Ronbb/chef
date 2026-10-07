@@ -39,7 +39,7 @@ async fn character_version(
     State(backend): State<Backend>,
     Path((id, revision)): Path<(String, u32)>,
 ) -> Result<Json<AdminCharacterVoice>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     id_revision(&id, revision)?;
     let row=one(&backend.db,"SELECT c.snapshot,c.avatar_revision,COALESCE(v.revision,0) AS voice_revision,v.profile FROM character_revisions c LEFT JOIN LATERAL (SELECT revision,profile FROM character_voice_profiles WHERE character_id=c.character_id AND character_revision=c.revision ORDER BY revision DESC LIMIT 1) v ON true WHERE c.character_id=$1 AND c.revision=$2",vec![id.into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     Ok(Json(item(&row)?))
@@ -50,7 +50,7 @@ async fn append_character(
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     Json(request): Json<brioche_course_contract::AdminCharacterRequest>,
 ) -> Result<Json<AdminCharacterVoice>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     crate::admin::reason(&request.reason)?;
     let revision = request
         .expected_revision
@@ -97,7 +97,7 @@ async fn avatar(
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     id_revision(&id, revision)?;
     let row=one(&backend.db,"SELECT m.descriptor FROM character_revisions c JOIN media_assets m ON m.asset_id=c.avatar_id AND m.revision=c.avatar_revision WHERE c.character_id=$1 AND c.revision=$2",vec![id.into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     let descriptor =
@@ -176,7 +176,7 @@ async fn list(
     State(backend): State<Backend>,
     Query(cursor): Query<Cursor>,
 ) -> Result<Json<AdminCharacterVoices>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let after = cursor.after_id.unwrap_or_default();
     if !after.is_empty() && !brioche_course_contract::valid_content_id(&after) {
         return Err(AppError::InvalidInput);
@@ -205,7 +205,7 @@ async fn version(
     State(backend): State<Backend>,
     Path((id, character_revision, voice_revision)): Path<(String, u32, u32)>,
 ) -> Result<Json<AdminCharacterVoice>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     id_revision(&id, character_revision)?;
     id_revision(&id, voice_revision)?;
     let row=one(&backend.db,"SELECT c.snapshot,c.avatar_revision,v.revision AS voice_revision,v.profile FROM character_revisions c JOIN character_voice_profiles v ON v.character_id=c.character_id AND v.character_revision=c.revision WHERE c.character_id=$1 AND c.revision=$2 AND v.revision=$3",vec![id.into(),(character_revision as i32).into(),(voice_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
@@ -216,7 +216,7 @@ async fn append(
     State(backend): State<Backend>,
     Json(request): Json<AdminCharacterVoiceRequest>,
 ) -> Result<Json<AdminCharacterVoice>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(
         append_profile(&backend.db, owner(&auth)?, request).await?,
     ))
@@ -244,19 +244,8 @@ pub(crate) async fn append_profile_in(
         .checked_add(1)
         .ok_or(AppError::InvalidInput)?;
     id_revision(&request.character_id, next)?;
-    // Serializes profiles and rechecks permissions in the same lock as role changes.
-    exec(
-        tx,
-        "SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))",
-        vec![],
-    )
-    .await?;
-    let operator = one(tx, "SELECT role FROM users WHERE id=$1", vec![actor.into()])
-        .await?
-        .ok_or(AppError::Forbidden)?;
-    if field::<String>(&operator, "role")? != "operator" {
-        return Err(AppError::Forbidden);
-    }
+    crate::product_memberships::lock_operator(tx, crate::product::ProductId::Brioche, actor)
+        .await?;
     let row=one(tx,"SELECT snapshot,avatar_revision FROM character_revisions WHERE character_id=$1 AND revision=$2",vec![request.character_id.clone().into(),(request.character_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     let latest=one(tx,"SELECT COALESCE(max(revision),0) AS revision FROM character_voice_profiles WHERE character_id=$1 AND character_revision=$2",vec![request.character_id.clone().into(),(request.character_revision as i32).into()]).await?.ok_or(AppError::Unavailable)?;
     if field::<i32>(&latest, "revision")? as u32 != request.expected_voice_revision {

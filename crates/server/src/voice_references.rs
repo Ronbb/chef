@@ -59,7 +59,7 @@ async fn list(
     State(backend): State<Backend>,
     Query(cursor): Query<Cursor>,
 ) -> Result<Json<AdminReferenceGrants>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let after = cursor.after_id.unwrap_or_default();
     if !after.is_empty() && !hex(&after, 32) {
         return Err(AppError::InvalidInput);
@@ -90,18 +90,8 @@ pub(crate) async fn lock_operator(
     tx: &sea_orm::DatabaseTransaction,
     actor: i64,
 ) -> Result<(), AppError> {
-    exec(
-        tx,
-        "SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))",
-        vec![],
-    )
-    .await?;
-    let row = one(tx, "SELECT role FROM users WHERE id=$1", vec![actor.into()])
-        .await?
-        .ok_or(AppError::Forbidden)?;
-    if field::<String>(&row, "role")? != "operator" {
-        return Err(AppError::Forbidden);
-    }
+    crate::product_memberships::lock_operator(tx, crate::product::ProductId::Brioche, actor)
+        .await?;
     Ok(())
 }
 
@@ -164,7 +154,7 @@ async fn issue(
     axum::Extension(permits): axum::Extension<Arc<Semaphore>>,
     Json(request): Json<AdminReferenceGrantRequest>,
 ) -> Result<Json<AdminReferenceGrantResult>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     crate::admin::reason(&request.reason)?;
     if !request.single_speaker_confirmed
         || !brioche_course_contract::valid_content_id(&request.character_id)
@@ -248,7 +238,7 @@ async fn revoke(
     Path(id): Path<String>,
     Json(request): Json<brioche_course_contract::AdminRevokeTokenRequest>,
 ) -> Result<Json<AdminReferenceGrant>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     if !hex(&id, 32) {
         return Err(AppError::InvalidInput);
     }
@@ -320,14 +310,11 @@ async fn download(
     let row=one(&tx,"SELECT descriptor,actor_id FROM voice_reference_grants g WHERE id=$1 AND token_hash=$2 AND expires_at>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id) AND (SELECT count(*) FROM voice_reference_reads a WHERE a.grant_id=g.id)<32 FOR UPDATE",
         vec![id.clone().into(),token_hash.into()]).await?.ok_or(AppError::NotFound)?;
     let actor: i64 = field(&row, "actor_id")?;
-    let user = one(
-        &tx,
-        "SELECT role FROM users WHERE id=$1",
-        vec![actor.into()],
-    )
-    .await?
-    .ok_or(AppError::NotFound)?;
-    if field::<String>(&user, "role")? != "operator" {
+    if crate::product_memberships::read(&tx, crate::product::ProductId::Brioche, actor)
+        .await?
+        .role
+        != "operator"
+    {
         return Err(AppError::NotFound);
     }
     let descriptor: AudioAsset =

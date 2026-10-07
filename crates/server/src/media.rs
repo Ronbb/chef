@@ -627,22 +627,8 @@ async fn import_bundle_impl(
         .await??;
     let tx = db.begin().await?;
     if let Some(OperatorImport { actor, .. }) = operator {
-        exec(
-            &tx,
-            "SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))",
-            vec![],
-        )
-        .await?;
-        let row = one(
-            &tx,
-            "SELECT role FROM users WHERE id=$1",
-            vec![actor.into()],
-        )
-        .await?
-        .ok_or(AppError::Forbidden)?;
-        if field::<String>(&row, "role")? != "operator" {
-            return Err(AppError::Forbidden.into());
-        }
+        crate::product_memberships::lock_operator(&tx, crate::product::ProductId::Brioche, actor)
+            .await?;
     }
     one(
         &tx,

@@ -169,7 +169,7 @@ async fn read(
     State(b): State<Backend>,
     Path((id, rev)): Path<(String, u32)>,
 ) -> Result<Json<AdminLessonAudioStatus>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let (source, published) = source(&b.db, &id, rev, false).await?;
     let mut current = status(&b.db, &id, rev, &source).await?;
     current.published = published;
@@ -183,7 +183,7 @@ async fn review(
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminLessonAudioReview>,
 ) -> Result<Json<AdminLessonAudioStatus>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     crate::admin::revision(&id, rev)?;
     crate::admin::reason(&request.reason)?;
     if !crate::voice_references::hex(&request.expected_lesson_hash, 64)

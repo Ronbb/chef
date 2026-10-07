@@ -745,7 +745,7 @@ async fn voice_reference_delivery_is_bounded_revocable_private_and_audited() {
     let actor = stored.try_get::<i64>("", "actor_id").unwrap();
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "UPDATE users SET role='learner' WHERE id=$1",
+        "UPDATE product_memberships SET role='learner',version=version+1 WHERE product_id='brioche' AND user_id=$1",
         vec![actor.into()],
     ))
     .await
@@ -753,7 +753,7 @@ async fn voice_reference_delivery_is_bounded_revocable_private_and_audited() {
     assert_eq!(visitor.send("GET", third_path, None, false).await.0, 404);
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "UPDATE users SET role='operator' WHERE id=$1",
+        "UPDATE product_memberships SET role='operator',version=version+1 WHERE product_id='brioche' AND user_id=$1",
         vec![actor.into()],
     ))
     .await
@@ -3619,7 +3619,7 @@ async fn approvals_permissions_concurrency_and_publication() {
     let count = db
         .query_one_raw(Statement::from_string(
             DbBackend::Postgres,
-            "SELECT count(*) AS n FROM users WHERE role='operator'".to_owned(),
+            "SELECT count(*) AS n FROM product_memberships WHERE product_id='brioche' AND role='operator'".to_owned(),
         ))
         .await
         .unwrap()

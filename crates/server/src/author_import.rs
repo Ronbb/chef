@@ -77,6 +77,18 @@ impl std::fmt::Display for RevisionConflict {
     }
 }
 impl std::error::Error for RevisionConflict {}
+pub(crate) async fn import_operator(
+    db: &DatabaseConnection,
+    source: Value,
+    operator: &crate::product_memberships::Operator,
+    reason: &str,
+) -> anyhow::Result<brioche_course_contract::AdminImportResult> {
+    let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
+    operator.lock_content(&tx).await?;
+    let result = import_transaction(&tx, source, &operator.audit_actor(), reason, true).await?;
+    tx.commit().await.map_err(|_| AppError::Unavailable)?;
+    Ok(result)
+}
 pub async fn import(
     db: &DatabaseConnection,
     source: Value,

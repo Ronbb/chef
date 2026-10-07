@@ -33,7 +33,7 @@ async fn upload(
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     mut multipart: Multipart,
 ) -> Result<Json<AdminAssetCursor>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let actor = crate::learning::owner(&auth)?;
     let _permit = permits
         .try_acquire_owned()
@@ -168,7 +168,7 @@ async fn list(
     State(backend): State<Backend>,
     Query(query): Query<RecordingQuery>,
 ) -> Result<Json<AdminRecordings>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     query.validate()?;
     let rows=backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, r#"
         SELECT descriptor,provenance->>'source' AS source,provenance->>'license' AS license,
@@ -222,7 +222,7 @@ async fn file(
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     if !valid(&id, revision) {
         return Err(AppError::InvalidInput);
     }

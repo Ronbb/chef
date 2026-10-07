@@ -24,6 +24,49 @@ pub struct Change {
     pub expected_version: u32,
     pub reason: String,
 }
+/// Internal proof of the configured product and real session actor, never client input.
+#[derive(Clone)]
+pub(crate) struct Operator {
+    pub(crate) product: ProductId,
+    pub(crate) actor: i64,
+}
+impl Operator {
+    pub(crate) fn audit_actor(&self) -> String {
+        format!("user:{}", self.actor)
+    }
+    pub(crate) async fn lock_content(
+        &self,
+        tx: &sea_orm::DatabaseTransaction,
+    ) -> Result<(), AppError> {
+        // The content schema is still Brioche-only until the tenant migration.
+        if self.product != ProductId::Brioche {
+            return Err(AppError::Forbidden);
+        }
+        lock_operator(tx, self.product, self.actor)
+            .await
+            .map(|_| ())
+    }
+}
+pub(crate) async fn require_operator<C: ConnectionTrait>(
+    db: &C,
+    product: ProductId,
+    actor: i64,
+) -> Result<Operator, AppError> {
+    if read(db, product, actor).await?.role != "operator" {
+        return Err(AppError::Forbidden);
+    }
+    Ok(Operator { product, actor })
+}
+pub(crate) async fn lock_operator<C: ConnectionTrait>(
+    tx: &C,
+    product: ProductId,
+    actor: i64,
+) -> Result<Operator, AppError> {
+    tx.execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
+        .await
+        .map_err(|_| AppError::Unavailable)?;
+    require_operator(tx, product, actor).await
+}
 pub async fn read<C: ConnectionTrait>(
     db: &C,
     product: ProductId,
@@ -72,13 +115,8 @@ pub async fn change(
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    tx.execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
-        .await
-        .map_err(|_| AppError::Unavailable)?;
     // Recheck after locking, so an in-flight request cannot retain a revoked grant.
-    if read(&tx, product, actor).await?.role != "operator" {
-        return Err(AppError::Forbidden);
-    }
+    lock_operator(&tx, product, actor).await?;
     tx.query_one_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
         "SELECT id FROM users WHERE id=$1 FOR UPDATE",
@@ -170,6 +208,13 @@ mod tests {
         db.execute_unprepared("INSERT INTO users(id,email,password_hash,display_name,role) VALUES(101,'operator-one@example.test','test','One','operator'),(102,'operator-two@example.test','test','Two','operator'),(103,'learner@example.test','test','Three','learner')").await.unwrap();
         brioche_migration::Migrator::up(&db, None).await.unwrap();
         let backend = Backend::new(db.clone()).await.unwrap();
+        let stale_operator = require_operator(&db, ProductId::Brioche, 101)
+            .await
+            .unwrap();
+        assert!(matches!(
+            require_operator(&db, ProductId::Hargow, 101).await,
+            Err(AppError::Forbidden)
+        ));
         let request = |role: &str, expected_version| Change {
             role: role.into(),
             expected_version,
@@ -245,6 +290,67 @@ mod tests {
         )
         .await
         .unwrap();
+        // A request authorized before revocation must recheck inside its write transaction.
+        let manifest = crate::content::ReleaseManifest {
+            id: "stale-operator-release".into(),
+            schema_version: "1.0".into(),
+            levels: vec![crate::content::ReleaseLevel {
+                id: "a1".into(),
+                label: "A1".into(),
+                units: vec![crate::content::ReleaseUnit {
+                    id: "unit".into(),
+                    title_zh: "Test unit".into(),
+                    lessons: vec![crate::content::RevisionRef {
+                        lesson_id: "lesson".into(),
+                        revision: 1,
+                    }],
+                }],
+            }],
+        };
+        let root = std::path::Path::new(".");
+        assert!(matches!(
+            crate::content::stage_operator(&db, &manifest, &stale_operator, "stale request", root)
+                .await,
+            Err(AppError::Forbidden)
+        ));
+        assert!(matches!(
+            crate::content::activate_operator(
+                &db,
+                "missing",
+                0,
+                &stale_operator,
+                "stale request",
+                root
+            )
+            .await,
+            Err(AppError::Forbidden)
+        ));
+        assert!(matches!(
+            crate::content::withdraw_operator(
+                &db,
+                "missing",
+                1,
+                0,
+                &stale_operator,
+                "stale request"
+            )
+            .await,
+            Err(AppError::Forbidden)
+        ));
+        let denied_import = crate::author_import::import_operator(
+            &db,
+            serde_json::json!({}),
+            &stale_operator,
+            "stale request",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            denied_import.downcast_ref::<AppError>(),
+            Some(AppError::Forbidden)
+        ));
+        let writes = db.query_one_raw(Statement::from_string(DbBackend::Postgres, "SELECT (SELECT count(*) FROM content_audit)+(SELECT count(*) FROM lesson_revisions) AS n")).await.unwrap().unwrap();
+        assert_eq!(writes.try_get::<i64>("", "n").unwrap(), 0);
         assert!(matches!(
             change(
                 &backend,

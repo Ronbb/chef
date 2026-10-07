@@ -67,7 +67,7 @@ async fn list(
     service: Option<Extension<Service>>,
     Query(cursor): Query<Cursor>,
 ) -> Result<Json<AdminVoiceJobs>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let after = cursor.after_id.unwrap_or_default();
     if !after.is_empty() && !hex(&after, 32) {
         return Err(AppError::InvalidInput);
@@ -102,7 +102,7 @@ async fn read(
     State(backend): State<Backend>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminVoiceJob>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(load(&backend.db, &id).await?))
 }
 async fn event(
@@ -124,7 +124,7 @@ async fn create(
     Extension(media_permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminVoiceJobRequest>,
 ) -> Result<Json<AdminVoiceJob>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     crate::admin::reason(&request.reason)?;
     if !request.cost_confirmed || !hex(&request.grant_id, 32) || !hex(&request.token, 64) {
         return Err(AppError::InvalidInput);
@@ -142,7 +142,7 @@ async fn create(
         .await
         .map_err(|_| AppError::Unavailable)?;
     lock_operator(&tx, actor).await?;
-    let row=one(&tx,"SELECT g.descriptor,g.actor_id FROM voice_reference_grants g JOIN users u ON u.id=g.actor_id WHERE g.id=$1 AND g.token_hash=$2 AND u.role='operator' AND g.expires_at>clock_timestamp()+interval '60 seconds' AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id) AND (SELECT count(*) FROM voice_reference_reads r WHERE r.grant_id=g.id)<32",vec![request.grant_id.clone().into(),crate::media::digest(request.token.as_bytes()).into()]).await?.ok_or(AppError::NotFound)?;
+    let row=one(&tx,"SELECT g.descriptor,g.actor_id FROM voice_reference_grants g JOIN product_memberships m ON m.user_id=g.actor_id AND m.product_id='brioche' WHERE g.id=$1 AND g.token_hash=$2 AND m.role='operator' AND g.expires_at>clock_timestamp()+interval '60 seconds' AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id) AND (SELECT count(*) FROM voice_reference_reads r WHERE r.grant_id=g.id)<32",vec![request.grant_id.clone().into(),crate::media::digest(request.token.as_bytes()).into()]).await?.ok_or(AppError::NotFound)?;
     if one(
         &tx,
         "SELECT id FROM voice_clone_jobs WHERE grant_id=$1",
@@ -248,7 +248,7 @@ async fn check(
     Path(id): Path<String>,
     Json(request): Json<AdminVoiceJobCheck>,
 ) -> Result<Json<AdminVoiceJob>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     crate::admin::reason(&request.reason)?;
     let service = service.ok_or(AppError::Unavailable)?.0;
     let permit = service

@@ -89,7 +89,7 @@ async fn import(
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminSpeechPackageImport>,
 ) -> Result<Json<AdminSpeechPackageResult>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     settings(&request.package)?;
     if !hex(&id, 32) || !hex(&request.id, 32) {
         return Err(AppError::InvalidInput);
@@ -191,7 +191,7 @@ async fn list(
     Path(id): Path<String>,
     Query(query): Query<Cursor>,
 ) -> Result<Json<AdminSpeechPackageResults>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let after = query.after.unwrap_or_default();
     if !hex(&id, 32) || (!after.is_empty() && !hex(&after, 32)) {
         return Err(AppError::InvalidInput);
@@ -281,7 +281,7 @@ async fn export(
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminSpeechPackageRequest>,
 ) -> Result<Response, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     settings(&request)?;
     let actor = owner(&auth)?;
     // Assembly holds originals, decoded PCM and the archive in memory. Reserve

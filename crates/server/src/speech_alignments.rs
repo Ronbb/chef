@@ -389,7 +389,7 @@ async fn import(
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminAlignmentImport>,
 ) -> Result<Json<AdminAlignment>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(
         import_for_actor(&b, owner(&auth)?, root, permits, request).await?,
     ))
@@ -482,7 +482,7 @@ async fn read(
     State(b): State<Backend>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminAlignment>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(view(&b.db, &load(&b.db, &id).await?).await?))
 }
 #[derive(Deserialize)]
@@ -496,7 +496,7 @@ async fn list(
     Path(id): Path<String>,
     Query(query): Query<Cursor>,
 ) -> Result<Json<AdminAlignments>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     speech_clips::plan(&b.db, &id).await?;
     let after = query.after.unwrap_or_default();
     if !after.is_empty() && !hex(&after, 32) {
@@ -532,7 +532,7 @@ async fn review(
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminAlignmentReview>,
 ) -> Result<Json<AdminAlignment>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     crate::admin::reason(&request.reason)?;
     if !hex(&id, 32)
         || !hex(&clip_id, 32)

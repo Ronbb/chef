@@ -89,7 +89,7 @@ async fn read(
     State(b): State<Backend>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminSpeechClip>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(item(&load(&b.db, &id).await?)?))
 }
 async fn list(
@@ -98,7 +98,7 @@ async fn list(
     Path(id): Path<String>,
     service: Option<Extension<Service>>,
 ) -> Result<Json<AdminSpeechClips>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let source = plan(&b.db, &id).await?;
     let requests = source["requests"]
         .as_object()
@@ -141,7 +141,7 @@ async fn create(
     Extension(read_permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminSpeechClipRequest>,
 ) -> Result<Json<AdminSpeechClip>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     create_for_actor(
         b,
         owner(&auth)?,
@@ -322,7 +322,7 @@ async fn file(
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let row = load(&b.db, &id).await?;
     if item(&row)?.status != "ready" {
         return Err(AppError::NotFound);
@@ -343,7 +343,7 @@ async fn review(
     Path(id): Path<String>,
     Json(request): Json<AdminSpeechClipReview>,
 ) -> Result<Json<AdminSpeechClip>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(
         review_for_actor(&b, owner(&auth)?, id, request).await?,
     ))

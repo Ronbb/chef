@@ -171,6 +171,73 @@ impl ReleaseManifest {
         Ok(())
     }
 }
+enum ContentActor<'a> {
+    Local(&'a str),
+    Operator(&'a crate::product_memberships::Operator),
+}
+impl ContentActor<'_> {
+    fn audit_actor(&self) -> String {
+        match self {
+            Self::Local(actor) => (*actor).to_owned(),
+            Self::Operator(operator) => operator.audit_actor(),
+        }
+    }
+    async fn lock(&self, tx: &sea_orm::DatabaseTransaction) -> Result<(), AppError> {
+        match self {
+            Self::Local(_) => Ok(()),
+            Self::Operator(operator) => operator.lock_content(tx).await,
+        }
+    }
+}
+pub(crate) async fn stage_operator(
+    db: &DatabaseConnection,
+    manifest: &ReleaseManifest,
+    operator: &crate::product_memberships::Operator,
+    reason: &str,
+    root: &std::path::Path,
+) -> Result<(), AppError> {
+    stage_impl(db, manifest, ContentActor::Operator(operator), reason, root)
+        .await
+        .map_err(|error| error.runtime)
+}
+pub(crate) async fn activate_operator(
+    db: &DatabaseConnection,
+    id: &str,
+    expected: i64,
+    operator: &crate::product_memberships::Operator,
+    reason: &str,
+    root: &std::path::Path,
+) -> Result<i64, AppError> {
+    activate_impl(
+        db,
+        id,
+        expected,
+        ContentActor::Operator(operator),
+        reason,
+        root,
+    )
+    .await
+    .map_err(|error| error.runtime)
+}
+pub(crate) async fn withdraw_operator(
+    db: &DatabaseConnection,
+    id: &str,
+    revision: u32,
+    expected: i64,
+    operator: &crate::product_memberships::Operator,
+    reason: &str,
+) -> Result<i64, AppError> {
+    withdraw_impl(
+        db,
+        id,
+        revision,
+        expected,
+        ContentActor::Operator(operator),
+        reason,
+    )
+    .await
+    .map_err(|error| error.runtime)
+}
 pub async fn stage(
     db: &DatabaseConnection,
     manifest: &ReleaseManifest,
@@ -178,7 +245,7 @@ pub async fn stage(
     reason: &str,
     media_root: &std::path::Path,
 ) -> Result<(), AppError> {
-    stage_impl(db, manifest, actor, reason, media_root)
+    stage_impl(db, manifest, ContentActor::Local(actor), reason, media_root)
         .await
         .map_err(|error| error.runtime)
 }
@@ -191,7 +258,7 @@ pub async fn stage_author(
     reason: &str,
     media_root: &std::path::Path,
 ) -> anyhow::Result<()> {
-    stage_impl(db, manifest, actor, reason, media_root)
+    stage_impl(db, manifest, ContentActor::Local(actor), reason, media_root)
         .await
         .map_err(|error| {
             anyhow::anyhow!(error.diagnostic.unwrap_or_else(|| {
@@ -356,10 +423,12 @@ pub(crate) async fn check_registered_release(
 async fn stage_impl(
     db: &DatabaseConnection,
     manifest: &ReleaseManifest,
-    actor: &str,
+    caller: ContentActor<'_>,
     reason: &str,
     media_root: &std::path::Path,
 ) -> Result<(), ReleaseFailure> {
+    let audit_actor = caller.audit_actor();
+    let actor = audit_actor.as_str();
     manifest.validate_author().map_err(|error| ReleaseFailure {
         runtime: AppError::InvalidInput,
         diagnostic: Some(error.to_string()),
@@ -373,6 +442,7 @@ async fn stage_impl(
         ));
     }
     let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
+    caller.lock(&tx).await?;
     // All content mutations lock the singleton before revision rows: no activation/withdrawal deadlock.
     let state = one(
         &tx,
@@ -409,9 +479,16 @@ pub async fn activate(
     reason: &str,
     media_root: &std::path::Path,
 ) -> Result<i64, AppError> {
-    activate_impl(db, id, expected, actor, reason, media_root)
-        .await
-        .map_err(|error| error.runtime)
+    activate_impl(
+        db,
+        id,
+        expected,
+        ContentActor::Local(actor),
+        reason,
+        media_root,
+    )
+    .await
+    .map_err(|error| error.runtime)
 }
 /// Local diagnostics never change runtime status codes or publication gates.
 pub async fn activate_author(
@@ -422,18 +499,34 @@ pub async fn activate_author(
     reason: &str,
     media_root: &std::path::Path,
 ) -> anyhow::Result<i64> {
-    activate_impl(db, id, expected, actor, reason, media_root).await.map_err(|error| {
-        anyhow::anyhow!("release {id}: {}", error.diagnostic.unwrap_or_else(|| "activation database operation failed; verify release status before retrying".into()))
+    activate_impl(
+        db,
+        id,
+        expected,
+        ContentActor::Local(actor),
+        reason,
+        media_root,
+    )
+    .await
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "release {id}: {}",
+            error.diagnostic.unwrap_or_else(|| {
+                "activation database operation failed; verify release status before retrying".into()
+            })
+        )
     })
 }
 async fn activate_impl(
     db: &DatabaseConnection,
     id: &str,
     expected: i64,
-    actor: &str,
+    caller: ContentActor<'_>,
     reason: &str,
     media_root: &std::path::Path,
 ) -> Result<i64, ReleaseFailure> {
+    let audit_actor = caller.audit_actor();
+    let actor = audit_actor.as_str();
     if !identifier(id) {
         return Err(ReleaseFailure::at(
             AppError::InvalidInput,
@@ -456,6 +549,7 @@ async fn activate_impl(
         ));
     }
     let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
+    caller.lock(&tx).await?;
     let state = one(
         &tx,
         "SELECT generation FROM content_state WHERE singleton FOR UPDATE",
@@ -537,9 +631,16 @@ pub async fn withdraw(
     actor: &str,
     reason: &str,
 ) -> Result<i64, AppError> {
-    withdraw_impl(db, id, revision, expected, actor, reason)
-        .await
-        .map_err(|error| error.runtime)
+    withdraw_impl(
+        db,
+        id,
+        revision,
+        expected,
+        ContentActor::Local(actor),
+        reason,
+    )
+    .await
+    .map_err(|error| error.runtime)
 }
 /// Local CLI diagnostics share the runtime transaction and irreversible withdrawal checks.
 pub async fn withdraw_author(
@@ -550,8 +651,22 @@ pub async fn withdraw_author(
     actor: &str,
     reason: &str,
 ) -> anyhow::Result<i64> {
-    withdraw_impl(db, id, revision, expected, actor, reason).await.map_err(|error| {
-        anyhow::anyhow!("lesson {id}@{revision}: {}", error.diagnostic.unwrap_or_else(|| "withdrawal database operation failed; verify content status before retrying".into()))
+    withdraw_impl(
+        db,
+        id,
+        revision,
+        expected,
+        ContentActor::Local(actor),
+        reason,
+    )
+    .await
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "lesson {id}@{revision}: {}",
+            error.diagnostic.unwrap_or_else(|| {
+                "withdrawal database operation failed; verify content status before retrying".into()
+            })
+        )
     })
 }
 async fn withdraw_impl(
@@ -559,9 +674,11 @@ async fn withdraw_impl(
     id: &str,
     revision: u32,
     expected: i64,
-    actor: &str,
+    caller: ContentActor<'_>,
     reason: &str,
 ) -> Result<i64, ReleaseFailure> {
+    let audit_actor = caller.audit_actor();
+    let actor = audit_actor.as_str();
     if !identifier(id) {
         return Err(ReleaseFailure::at(
             AppError::InvalidInput,
@@ -591,6 +708,7 @@ async fn withdraw_impl(
         ));
     }
     let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
+    caller.lock(&tx).await?;
     let state = one(
         &tx,
         "SELECT generation FROM content_state WHERE singleton FOR UPDATE",

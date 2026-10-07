@@ -57,7 +57,7 @@ async fn release(
     State(backend): State<Backend>,
     Path(id): Path<String>,
 ) -> Result<Json<PreviewRelease>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     if !valid_id(&id) {
         return Err(AppError::InvalidInput);
     }
@@ -194,7 +194,7 @@ async fn lesson(
     State(backend): State<Backend>,
     Path((id, revision)): Path<(String, u32)>,
 ) -> Result<Json<PublicLesson>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(read(&backend, &id, revision).await?))
 }
 
@@ -204,7 +204,7 @@ async fn grade(
     Path((id, revision)): Path<(String, u32)>,
     Json(request): Json<GradeRequest>,
 ) -> Result<Json<GradeResult>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     if !valid_id(&id) || revision == 0 || revision > i32::MAX as u32 || request.revision != revision
     {
         return Err(AppError::InvalidInput);
@@ -239,7 +239,7 @@ async fn media(
     State(backend): State<Backend>,
     Path((id, revision, name)): Path<(String, u32, String)>,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let lesson = read(&backend, &id, revision).await?;
     let asset = lesson
         .media
@@ -256,7 +256,7 @@ async fn audio(
     Path((id, revision, name)): Path<(String, u32, String)>,
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let lesson = read(&backend, &id, revision).await?;
     let asset = lesson
         .audio

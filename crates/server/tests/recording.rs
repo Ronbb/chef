@@ -686,7 +686,7 @@ async fn registration_is_immutable_atomic_and_hydrates_exact_revisions() {
         404
     );
     db.execute_unprepared(
-        "UPDATE users SET role='learner' WHERE email='audio-operator@example.test'",
+        "UPDATE product_memberships SET role='learner',version=version+1 WHERE product_id='brioche' AND user_id=(SELECT id FROM users WHERE email='audio-operator@example.test')",
     )
     .await
     .unwrap();
@@ -712,7 +712,7 @@ async fn registration_is_immutable_atomic_and_hydrates_exact_revisions() {
         );
     }
     db.execute_unprepared(
-        "UPDATE users SET role='operator' WHERE email='audio-operator@example.test'",
+        "UPDATE product_memberships SET role='operator',version=version+1 WHERE product_id='brioche' AND user_id=(SELECT id FROM users WHERE email='audio-operator@example.test')",
     )
     .await
     .unwrap();

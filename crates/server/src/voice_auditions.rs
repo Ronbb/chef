@@ -89,7 +89,7 @@ async fn list(
     service: Option<Extension<Service>>,
     Query(cursor): Query<Cursor>,
 ) -> Result<Json<AdminAuditions>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let after = cursor.after_id.unwrap_or_default();
     let clone = cursor.clone_job_id;
     if (!after.is_empty() && !hex(&after, 32)) || clone.as_ref().is_some_and(|s| !hex(s, 32)) {
@@ -128,7 +128,7 @@ async fn read(
     State(b): State<Backend>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminAudition>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(item(&load(&b.db, &id).await?)?))
 }
 
@@ -159,7 +159,7 @@ async fn create(
     Extension(root): Extension<PathBuf>,
     Json(request): Json<AdminAuditionRequest>,
 ) -> Result<Json<AdminAudition>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     create_for_actor(b, owner(&auth)?, service.map(|s| s.0), root, request).await
 }
 async fn create_for_actor(
@@ -324,7 +324,7 @@ async fn file(
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let row = load(&b.db, &id).await?;
     if item(&row)?.status != "ready" {
         return Err(AppError::NotFound);
@@ -345,7 +345,7 @@ async fn review(
     Path(id): Path<String>,
     Json(request): Json<AdminAuditionReview>,
 ) -> Result<Json<AdminAudition>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(
         review_for_actor(&b, owner(&auth)?, id, request).await?,
     ))

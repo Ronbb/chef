@@ -62,3 +62,5 @@ Hargow 目标语言采用粤语 `yue-Hant-HK`，面向中文学习者；繁体�
 Chef 现已拥有通用 React Router 页面、界面/播放器/后台组件和通用测试；独立 apps/web 只作合成协议兼容测试壳。品牌通过 Product接口/每产品product.ts注入，构建直接读取固定框架源；不为每个产品复制路由组件。旧法语 v1、账号Cookie与草稿尚兼容保留，多产品数据库、身份进程、客户端范围与语言适配仍按上述顺序实施，不能将新品牌直接连接现行法国API。
 
 产品设置实施补充（迁移28）：users.settings移至product_user_settings(product_id,user_id)，账号profile_version与产品settings版本独立。既有Brioche v1组合profile响应通过适配读取新表；复习时区和dashboard同源。独立identity登录/账号/内省不读取或初始化产品设置。双产品设置并发与真实27→28升级/回滚已验证；其他产品设置存在时回滚拒绝而非丢弃。学习事实/目录/角色媒体范围、服务间消费者、账号/学习schema和数据库角色仍需继续迁移；当前生产仍旧版本不可直接先执行28。
+
+后台授权实施补充：legacy Brioche入口已按产品成员授权，课程导入/暂存/激活/撤回在account-admin锁内复核真实actor再锁内容；撤销后的旧证明拒绝写入。录音/媒体/音色同样复核成员权限，旧角色接口写成员及审计，不修改全局账号role。此实现仍依赖本地AuthSession，仅Brioche内容，独立后台所有权、远端管理路由和完整租户schema尚未完成。共享实现只属于Chef，不增加产品业务副本。

@@ -108,7 +108,7 @@ async fn pending_tokens(
     use brioche_course_contract::{
         AdminAccountRole, AdminPendingToken, AdminPendingTokens, AdminTokenKind,
     };
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let after = query.after_id.unwrap_or_default();
     if !after.is_empty() {
         session_key(&after)?;
@@ -153,7 +153,7 @@ async fn revoke_token(
     Path(id): Path<String>,
     Json(request): Json<brioche_course_contract::AdminRevokeTokenRequest>,
 ) -> Result<Json<bool>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     session_key(&id)?;
     reason(&request.reason)?;
     let actor = owner(&auth)?;
@@ -168,16 +168,8 @@ async fn revoke_token(
         vec![],
     )
     .await?;
-    let operator = one(
-        &tx,
-        "SELECT role FROM users WHERE id=$1",
-        vec![actor.into()],
-    )
-    .await?
-    .ok_or(AppError::Forbidden)?;
-    if field::<String>(&operator, "role")? != "operator" {
-        return Err(AppError::Forbidden);
-    }
+    crate::product_memberships::require_operator(&tx, crate::product::ProductId::Brioche, actor)
+        .await?;
     let row=one(&tx,"SELECT email FROM identity_tokens WHERE encode(sha256(convert_to(token_hash,'UTF8')),'hex')=$1 AND consumed_at IS NULL AND expires_at>CURRENT_TIMESTAMP",vec![id.clone().into()]).await?.ok_or(AppError::NotFound)?;
     let email: String = field(&row, "email")?;
     // Same mailbox lock as issue/accept/reset: revocation and consumption have one winner.
@@ -215,7 +207,7 @@ async fn account_sessions(
     Query(query): Query<SessionQuery>,
 ) -> Result<Json<brioche_course_contract::AdminSessions>, AppError> {
     use brioche_course_contract::{AdminAccount, AdminSession, AdminSessions};
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let user_id = generation(&id)?;
     if user_id == 0 {
         return Err(AppError::InvalidInput);
@@ -226,7 +218,7 @@ async fn account_sessions(
     }
     let row = one(
         &backend.db,
-        "SELECT email,display_name,role FROM users WHERE id=$1",
+        "SELECT u.email,u.display_name,COALESCE(m.role,'learner') AS role FROM users u LEFT JOIN product_memberships m ON m.user_id=u.id AND m.product_id='brioche' WHERE u.id=$1",
         vec![user_id.into()],
     )
     .await?
@@ -266,7 +258,7 @@ async fn revoke_session(
     Path((id, key)): Path<(String, String)>,
     Json(request): Json<brioche_course_contract::AdminRevokeSessionRequest>,
 ) -> Result<Json<brioche_course_contract::AdminRevokeSessionResult>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     reason(&request.reason)?;
     let target = generation(&id)?;
     if target == 0 {
@@ -289,16 +281,8 @@ async fn revoke_session(
         vec![],
     )
     .await?;
-    let operator = one(
-        &tx,
-        "SELECT role FROM users WHERE id=$1",
-        vec![actor.into()],
-    )
-    .await?
-    .ok_or(AppError::Forbidden)?;
-    if field::<String>(&operator, "role")? != "operator" {
-        return Err(AppError::Forbidden);
-    }
+    crate::product_memberships::require_operator(&tx, crate::product::ProductId::Brioche, actor)
+        .await?;
     let user = one(
         &tx,
         "SELECT email FROM users WHERE id=$1",
@@ -325,13 +309,13 @@ async fn accounts(
     Query(query): Query<AccountQuery>,
 ) -> Result<Json<brioche_course_contract::AdminAccounts>, AppError> {
     use brioche_course_contract::{AdminAccount, AdminAccounts};
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let after = generation(query.after_id.as_deref().unwrap_or("0"))?;
     let search = query.q.unwrap_or_default().trim().to_owned();
     if search.len() > 300 || search.chars().count() > 100 || search.chars().any(char::is_control) {
         return Err(AppError::InvalidInput);
     }
-    let rows=backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT id,email,display_name,role FROM users WHERE id>$1 AND ($2='' OR strpos(lower(email||' '||display_name),lower($2))>0) ORDER BY id LIMIT 21",vec![after.into(),search.into()])).await.map_err(|_|AppError::Unavailable)?;
+    let rows=backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT u.id,u.email,u.display_name,COALESCE(m.role,'learner') AS role FROM users u LEFT JOIN product_memberships m ON m.user_id=u.id AND m.product_id='brioche' WHERE u.id>$1 AND ($2='' OR strpos(lower(u.email||' '||u.display_name),lower($2))>0) ORDER BY u.id LIMIT 21",vec![after.into(),search.into()])).await.map_err(|_|AppError::Unavailable)?;
     let has_more = rows.len() > 20;
     let mut items = Vec::new();
     for row in rows.into_iter().take(20) {
@@ -355,7 +339,7 @@ async fn account_token(
     Json(request): Json<brioche_course_contract::AdminTokenRequest>,
 ) -> Result<Json<brioche_course_contract::AdminTokenResult>, AppError> {
     use brioche_course_contract::{AdminTokenKind, AdminTokenResult};
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let reset = matches!(request.kind, AdminTokenKind::Reset);
     if reset && request.operator {
         return Err(AppError::InvalidInput);
@@ -384,7 +368,7 @@ async fn account_role(
     Json(request): Json<brioche_course_contract::AdminRoleRequest>,
 ) -> Result<Json<brioche_course_contract::AdminAccount>, AppError> {
     use brioche_course_contract::{AdminAccount, AdminAccountRole};
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     reason(&request.reason)?;
     let target = generation(&id)?;
     if target == 0 {
@@ -408,16 +392,8 @@ async fn account_role(
         vec![],
     )
     .await?;
-    let operator = one(
-        &tx,
-        "SELECT role FROM users WHERE id=$1",
-        vec![actor.into()],
-    )
-    .await?
-    .ok_or(AppError::Forbidden)?;
-    if field::<String>(&operator, "role")? != "operator" {
-        return Err(AppError::Forbidden);
-    }
+    crate::product_memberships::require_operator(&tx, crate::product::ProductId::Brioche, actor)
+        .await?;
     let row = one(
         &tx,
         "SELECT email,display_name,role FROM users WHERE id=$1 FOR UPDATE",
@@ -425,7 +401,9 @@ async fn account_role(
     )
     .await?
     .ok_or(AppError::NotFound)?;
-    let current: String = field(&row, "role")?;
+    let membership =
+        crate::product_memberships::read(&tx, crate::product::ProductId::Brioche, target).await?;
+    let current = membership.role;
     if current != expected {
         return Err(AppError::Conflict);
     }
@@ -434,7 +412,7 @@ async fn account_role(
         if current == "operator" {
             let count = one(
                 &tx,
-                "SELECT count(*) AS n FROM users WHERE role='operator'",
+                "SELECT count(*) AS n FROM product_memberships WHERE product_id='brioche' AND role='operator'",
                 vec![],
             )
             .await?
@@ -445,10 +423,11 @@ async fn account_role(
         }
         exec(
             &tx,
-            "UPDATE users SET role=$1 WHERE id=$2",
-            vec![desired.into(), target.into()],
+            "INSERT INTO product_memberships(product_id,user_id,role,version) VALUES('brioche',$1,$2,$3) ON CONFLICT(product_id,user_id) DO UPDATE SET role=EXCLUDED.role,version=EXCLUDED.version",
+            vec![target.into(), desired.into(), i32::try_from(membership.version.checked_add(1).ok_or(AppError::Conflict)?).map_err(|_| AppError::Conflict)?.into()],
         )
         .await?;
+        exec(&tx, "INSERT INTO product_membership_audit(product_id,actor_id,target_id,old_role,new_role,old_version,new_version,reason) VALUES('brioche',$1,$2,$3,$4,$5,$6,$7)", vec![actor.into(),target.into(),if membership.version==0 { None::<String> } else { Some(current.clone()) }.into(),desired.into(),i32::try_from(membership.version).map_err(|_|AppError::Conflict)?.into(),i32::try_from(membership.version+1).map_err(|_|AppError::Conflict)?.into(),request.reason.clone().into()]).await?;
         exec(&tx, "INSERT INTO account_admin_audit(action,actor_id,target_email,reason,details) VALUES('role',$1,$2,$3,$4)", vec![actor.into(),email.clone().into(),request.reason.into(),serde_json::json!({"userId":id,"from":current,"to":desired}).into()]).await?;
     }
     let account = AdminAccount {
@@ -466,7 +445,7 @@ async fn history(
     Query(query): Query<HistoryQuery>,
 ) -> Result<Json<brioche_course_contract::AdminHistory>, AppError> {
     use brioche_course_contract::{AdminHistory, AdminHistoryCursor, AdminHistoryItem};
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     if query.before_time.is_some() != query.before_key.is_some() {
         return Err(AppError::InvalidInput);
     }
@@ -565,7 +544,7 @@ async fn check_document(
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminDocumentRequest>,
 ) -> Result<Json<brioche_course_contract::AdminDocumentCheck>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     reason(&request.reason)?;
     let release = match kind.as_str() {
         "lesson" => false,
@@ -615,7 +594,7 @@ async fn import_lesson(
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminDocumentRequest>,
 ) -> Result<Json<AdminImportResult>, AppError> {
-    require_operator(&auth)?;
+    let operator = require_operator(&auth).await?;
     reason(&request.reason)?;
     let _permit = permits.try_acquire().map_err(|_| AppError::RateLimited)?;
     let source = tokio::task::spawn_blocking(move || {
@@ -626,17 +605,20 @@ async fn import_lesson(
     .await
     .map_err(|_| AppError::Unavailable)?
     .map_err(|_| AppError::InvalidInput)?;
-    let actor = format!("user:{}", owner(&auth)?);
-    let imported = crate::author_import::import_retry(&backend.db, source, &actor, &request.reason)
-        .await
-        .map_err(|error| {
-            if error.is::<crate::author_import::RevisionConflict>() {
-                return AppError::Conflict;
-            }
-            error
-                .downcast_ref::<AppError>()
-                .map_or(AppError::InvalidInput, |_| AppError::Unavailable)
-        })?;
+    let imported =
+        crate::author_import::import_operator(&backend.db, source, &operator, &request.reason)
+            .await
+            .map_err(|error| {
+                if error.is::<crate::author_import::RevisionConflict>() {
+                    return AppError::Conflict;
+                }
+                error
+                    .downcast_ref::<AppError>()
+                    .map_or(AppError::InvalidInput, |error| match error {
+                        AppError::Forbidden => AppError::Forbidden,
+                        _ => AppError::Unavailable,
+                    })
+            })?;
     Ok(Json(imported))
 }
 async fn stage(
@@ -646,7 +628,7 @@ async fn stage(
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminDocumentRequest>,
 ) -> Result<Json<String>, AppError> {
-    require_operator(&auth)?;
+    let operator = require_operator(&auth).await?;
     reason(&request.reason)?;
     let _permit = permits.try_acquire().map_err(|_| AppError::RateLimited)?;
     let manifest: crate::content::ReleaseManifest = tokio::task::spawn_blocking(move || {
@@ -658,8 +640,8 @@ async fn stage(
     .await
     .map_err(|_| AppError::Unavailable)?
     .map_err(|_| AppError::InvalidInput)?;
-    let actor = format!("user:{}", owner(&auth)?);
-    crate::content::stage(&backend.db, &manifest, &actor, &request.reason, &root).await?;
+    crate::content::stage_operator(&backend.db, &manifest, &operator, &request.reason, &root)
+        .await?;
     Ok(Json(manifest.id))
 }
 pub(crate) fn reason(value: &str) -> Result<(), AppError> {
@@ -737,7 +719,7 @@ async fn overview(
     State(backend): State<Backend>,
     Query(query): Query<OverviewQuery>,
 ) -> Result<Json<AdminOverview>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     query.validate()?;
     let tx = backend
         .db
@@ -840,7 +822,7 @@ async fn review(
     Path((id, rev)): Path<(String, u32)>,
     Json(request): Json<AdminReviewRequest>,
 ) -> Result<Json<AdminReviewRequest>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     revision(&id, rev)?;
     reason(&request.reason)?;
     let actor = owner(&auth)?;
@@ -917,14 +899,13 @@ async fn activate(
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     Json(request): Json<AdminActivateRequest>,
 ) -> Result<Json<String>, AppError> {
-    require_operator(&auth)?;
+    let operator = require_operator(&auth).await?;
     reason(&request.reason)?;
-    let actor = format!("user:{}", owner(&auth)?);
-    let result = crate::content::activate(
+    let result = crate::content::activate_operator(
         &backend.db,
         &request.release_id,
         generation(&request.generation)?,
-        &actor,
+        &operator,
         &request.reason,
         &root,
     )
@@ -937,16 +918,15 @@ async fn withdraw(
     Path((id, rev)): Path<(String, u32)>,
     Json(request): Json<AdminWithdrawRequest>,
 ) -> Result<Json<String>, AppError> {
-    require_operator(&auth)?;
+    let operator = require_operator(&auth).await?;
     revision(&id, rev)?;
     reason(&request.reason)?;
-    let actor = format!("user:{}", owner(&auth)?);
-    let result = crate::content::withdraw(
+    let result = crate::content::withdraw_operator(
         &backend.db,
         &id,
         rev,
         generation(&request.generation)?,
-        &actor,
+        &operator,
         &request.reason,
     )
     .await?;

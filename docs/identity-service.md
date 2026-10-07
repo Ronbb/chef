@@ -89,3 +89,13 @@ Product.sessionNamespace允许可信构建选择brioche或hargow；缺省brioche
 Hargow配置的Vite SSR真实模块通过本机隔离HTTP检查身份和私有读取：只转发Hargow Cookie、产品时区/版本原样读取、仅Brioche Cookie得到匿名/401、重复H会话在网络前拒绝。它验证Web边界，不表示Hargow生产API或完整多产品数据库已经可用。产品仓库只需将namespace与相应服务部署配置配对，无新增页面副本。
 
 验证：最终严格TS7、生产Web/SSR构建、30项单元和32项SSR回归通过；2项真实构建浏览器回归覆盖账号专属登录响应及服务器授权替换账号时清除旧草稿/页面。精确Cookie过滤也覆盖无等号、名称后缀、非法/超大/重复值。所有网络服务与浏览器均为专用合成测试，退出后关闭；没有生产数据库、域名、Cookie或API路由变更，也未推进产品固定框架提交。
+
+## Legacy后台的产品授权迁移
+
+Brioche后台入口每次按真实会话账号读取product_memberships，不再使用全局users.role授权。兼容profile和后台账号列表同样显示Brioche成员角色。旧角色修改接口在account-admin锁内更新成员独立版本、每产品最后管理员检查与product_membership_audit；全局账号角色不随此操作改变。该兼容接口仍采用expectedRole，独立身份接口采用expectedVersion，两者不能混淆。
+
+HTTP课程导入、暂存发布目录、激活和撤回使用内部Operator证明，并在写事务取得account-admin锁后再次查询当前权限，随后取得内容状态锁。已撤销的旧证明不能提交写入。内容表仍只属于Brioche，Hargow证明明确拒绝；可信本机CLI保留独立入口。录音、图片媒体、角色音色及参考录音授权的事务复核也改为产品成员权限。
+
+这一步仍使用legacy本地AuthSession；远端学习模式没有开放管理员路由。独立账号后台所有权、产品范围邀请、Hargow内容/学习事实隔离、最小数据库角色及完整双服务部署仍待实施。所有实现与回归只进入Chef，产品没有新增业务副本；不更新产品框架固定提交或生产数据库。
+
+验证：最终工作区测试、14项隔离PostgreSQL回归、全目标Clippy（-D warnings）、fmt和diff检查通过。回归包括保留全局operator但撤销产品成员后，旧Operator证明不能导入/暂存/激活/撤回课程，内容与审计无写入；后台会话、参考录音和发布并发测试也通过。专用无生产挂载PostgreSQL容器验证标签后关闭删除。

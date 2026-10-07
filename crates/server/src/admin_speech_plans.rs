@@ -59,7 +59,7 @@ async fn options(
     State(b): State<Backend>,
     Path((id, revision)): Path<(String, u32)>,
 ) -> Result<Json<AdminSpeechOptions>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     let tx =
         b.db.begin_with_config(Some(IsolationLevel::RepeatableRead), None)
             .await
@@ -134,7 +134,7 @@ async fn preview(
     State(b): State<Backend>,
     Json(request): Json<AdminSpeechPreviewRequest>,
 ) -> Result<Json<AdminSpeechPlan>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(preview_for_actor(&b, owner(&auth)?, &request).await?))
 }
 
@@ -175,7 +175,7 @@ async fn read(
     State(b): State<Backend>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminSpeechPlan>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(load(&b.db, &id).await?))
 }
 #[derive(serde::Deserialize)]
@@ -190,7 +190,7 @@ async fn list(
     State(b): State<Backend>,
     Query(cursor): Query<Cursor>,
 ) -> Result<Json<AdminSpeechPlans>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     lesson_key(&cursor.lesson_id, cursor.lesson_revision)?;
     let after = cursor.after_id.unwrap_or_default();
     if !after.is_empty() && !hex(&after, 32) {
@@ -214,7 +214,7 @@ async fn save(
     State(b): State<Backend>,
     Json(request): Json<AdminSpeechPlanRequest>,
 ) -> Result<Json<AdminSpeechPlan>, AppError> {
-    require_operator(&auth)?;
+    require_operator(&auth).await?;
     Ok(Json(save_for_actor(&b, owner(&auth)?, request).await?))
 }
 

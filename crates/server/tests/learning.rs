@@ -681,7 +681,7 @@ async fn releases_atomic_switch_rollback_and_hard_withdrawal() {
     assert_eq!(count(&db, "learning_sessions").await, before_preview);
     db.execute_raw(Statement::from_string(
         DbBackend::Postgres,
-        "UPDATE users SET role='learner' WHERE email='preview-operator@example.test'",
+        "UPDATE product_memberships SET role='learner',version=version+1 WHERE product_id='brioche' AND user_id=(SELECT id FROM users WHERE email='preview-operator@example.test')",
     ))
     .await
     .unwrap();
@@ -696,7 +696,7 @@ async fn releases_atomic_switch_rollback_and_hard_withdrawal() {
     assert_eq!(operator.send("GET", release_path, None, true).await.0, 403);
     db.execute_raw(Statement::from_string(
         DbBackend::Postgres,
-        "UPDATE users SET role='operator' WHERE email='preview-operator@example.test'",
+        "UPDATE product_memberships SET role='operator',version=version+1 WHERE product_id='brioche' AND user_id=(SELECT id FROM users WHERE email='preview-operator@example.test')",
     ))
     .await
     .unwrap();

@@ -46,7 +46,9 @@ impl User {
             id: self.id.to_string(),
             email: self.email.clone(),
             display_name: self.display_name.clone(),
-            role: self.role.clone(),
+            role: crate::product_memberships::read(db, crate::product::ProductId::Brioche, self.id)
+                .await?
+                .role,
             settings: preferences.settings,
             version: preferences.version,
         })
@@ -304,22 +306,12 @@ impl Backend {
         let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         let tx = self.db.begin().await.map_err(|_| AppError::Unavailable)?;
         if let Some((actor, _)) = audit {
-            crate::learning::exec(
+            crate::product_memberships::lock_operator(
                 &tx,
-                "SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))",
-                vec![],
+                crate::product::ProductId::Brioche,
+                actor,
             )
             .await?;
-            let row = crate::learning::one(
-                &tx,
-                "SELECT role FROM users WHERE id=$1",
-                vec![actor.into()],
-            )
-            .await?
-            .ok_or(AppError::Forbidden)?;
-            if crate::learning::field::<String>(&row, "role")? != "operator" {
-                return Err(AppError::Forbidden);
-            }
         }
         tx.execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -402,12 +394,16 @@ impl AuthnBackend for Backend {
     }
 }
 pub type AuthSession = axum_login::AuthSession<Backend>;
-pub(crate) fn require_operator(auth: &AuthSession) -> Result<(), AppError> {
+pub(crate) async fn require_operator(
+    auth: &AuthSession,
+) -> Result<crate::product_memberships::Operator, AppError> {
     let user = auth.user.as_ref().ok_or(AppError::Unauthorized)?;
-    if user.role != "operator" {
-        return Err(AppError::Forbidden);
-    }
-    Ok(())
+    crate::product_memberships::require_operator(
+        &auth.backend.db,
+        crate::product::ProductId::Brioche,
+        user.id,
+    )
+    .await
 }
 async fn establish(auth: &mut AuthSession, user: User) -> Result<Json<AuthResult>, AppError> {
     crate::product_settings::ensure(
@@ -531,7 +527,13 @@ async fn update_profile(
         id: updated.id.to_string(),
         email: updated.email,
         display_name: updated.display_name,
-        role: updated.role,
+        role: crate::product_memberships::read(
+            &backend.db,
+            crate::product::ProductId::Brioche,
+            updated.id,
+        )
+        .await?
+        .role,
         settings,
         version,
     }))
