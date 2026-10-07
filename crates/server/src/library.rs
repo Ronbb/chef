@@ -1,7 +1,10 @@
 //! Bookmarks preserve their first source snapshot and are independent of review participation.
 use crate::{
     AppError,
-    learning::{exec, field, hash, one, owner, random_id, record, replay, validate_key},
+    learning::{
+        exec, field, hash, insert_fact, one, owner, product_filter, random_id, record, replay,
+        validate_key,
+    },
     learning_identity::LearningAuth as AuthSession,
     learning_store::LearningStore,
 };
@@ -87,15 +90,17 @@ fn saved(row: &QueryResult) -> Result<SavedItem, AppError> {
 }
 async fn load(
     tx: &DatabaseTransaction,
+    product: Option<crate::product::ProductId>,
     user: i64,
     knowledge: &str,
     lock: bool,
 ) -> Result<Option<SavedItem>, AppError> {
-    if lock && let Some(reference)=one(tx,"SELECT source_lesson_id,source_revision FROM saved_items WHERE user_id=$1 AND knowledge_id=$2",vec![user.into(),knowledge.into()]).await? {
+    if lock && let Some(reference)=one(tx,&format!("SELECT source_lesson_id,source_revision FROM saved_items WHERE user_id=$1 AND knowledge_id=$2{}",product_filter(product,"product_id")),vec![user.into(),knowledge.into()]).await? {
         crate::learning_store::lock_lesson(tx,&field::<String>(&reference,"source_lesson_id")?,field(&reference,"source_revision")?).await?;
     }
     let sql = format!(
-        "SELECT s.*,r.published,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1 AND s.knowledge_id=$2 {}",
+        "SELECT s.*,r.published,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1 AND s.knowledge_id=$2{} {}",
+        product_filter(product, "s.product_id"),
         if lock { "FOR UPDATE OF s" } else { "" }
     );
     one(tx, &sql, vec![user.into(), knowledge.into()])
@@ -120,7 +125,7 @@ async fn detail(
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    let item = load(&tx, owner(&auth)?, &knowledge, false)
+    let item = load(&tx, backend.product, owner(&auth)?, &knowledge, false)
         .await?
         .ok_or(AppError::NotFound)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
@@ -147,10 +152,18 @@ async fn write(
     one(
         &tx,
         "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-        vec![format!("saved:{user}:{knowledge}").into()],
+        vec![
+            format!(
+                "{}saved:{user}:{knowledge}",
+                backend
+                    .product
+                    .map_or_else(String::new, |p| format!("{}:", p.as_str()))
+            )
+            .into(),
+        ],
     )
     .await?;
-    let old = load(&tx, user, &knowledge, true).await?;
+    let old = load(&tx, backend.product, user, &knowledge, true).await?;
     if request.saved && old.as_ref().is_some_and(|old| old.withdrawn) {
         return Err(AppError::Gone);
     }
@@ -178,7 +191,7 @@ async fn write(
             if old.version >= i32::MAX as u32 {
                 return Err(AppError::Conflict);
             }
-            exec(&tx,"UPDATE saved_items SET saved=$3,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE user_id=$1 AND knowledge_id=$2",vec![user.into(),knowledge.clone().into(),request.saved.into()]).await?;
+            exec(&tx,&format!("UPDATE saved_items SET saved=$3,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE user_id=$1 AND knowledge_id=$2{}",product_filter(backend.product,"product_id")),vec![user.into(),knowledge.clone().into(),request.saved.into()]).await?;
         }
     } else {
         let vocabulary = source(
@@ -188,9 +201,27 @@ async fn write(
             &knowledge,
         )
         .await?;
-        exec(&tx,"INSERT INTO saved_items (id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot,saved) VALUES ($1,$2,$3,$4,$5,$6,$7)",vec![random_id()?.into(),user.into(),knowledge.clone().into(),request.source_lesson_id.into(),(request.source_revision as i32).into(),serde_json::to_value(vocabulary).map_err(|_|AppError::Unavailable)?.into(),request.saved.into()]).await?;
+        insert_fact(
+            &tx,
+            backend.product,
+            "saved_items",
+            "id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot,saved",
+            vec![
+                random_id()?.into(),
+                user.into(),
+                knowledge.clone().into(),
+                request.source_lesson_id.into(),
+                (request.source_revision as i32).into(),
+                serde_json::to_value(vocabulary)
+                    .map_err(|_| AppError::Unavailable)?
+                    .into(),
+                request.saved.into(),
+            ],
+            "",
+        )
+        .await?;
     }
-    let result = load(&tx, user, &knowledge, false)
+    let result = load(&tx, backend.product, user, &knowledge, false)
         .await?
         .ok_or(AppError::Unavailable)?;
     record(
@@ -213,7 +244,8 @@ async fn list(
 ) -> Result<Json<SavedPage>, AppError> {
     let (stamp, id) = cursor(page.cursor)?;
     let sql = format!(
-        "SELECT s.*,r.published,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1 AND s.saved AND ($2::timestamptz IS NULL OR (s.created_at,s.id)<($2::timestamptz,$3::text)) ORDER BY s.created_at DESC,s.id DESC LIMIT 21"
+        "SELECT s.*,r.published,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1{} AND s.saved AND ($2::timestamptz IS NULL OR (s.created_at,s.id)<($2::timestamptz,$3::text)) ORDER BY s.created_at DESC,s.id DESC LIMIT 21",
+        product_filter(backend.product, "s.product_id"),
     );
     let rows = backend
         .db

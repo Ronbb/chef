@@ -136,7 +136,7 @@ pub(crate) fn product_filter(
 ) -> String {
     product.map_or_else(String::new, |p| format!(" AND {column}='{}'", p.as_str()))
 }
-async fn insert_fact(
+pub(crate) async fn insert_fact(
     tx: &DatabaseTransaction,
     product: Option<crate::product::ProductId>,
     table: &'static str,

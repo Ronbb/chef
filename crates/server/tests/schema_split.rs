@@ -404,7 +404,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=5 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=6 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -1000,6 +1000,68 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         stored.try_get::<String>("", "product_id").unwrap(),
         "brioche"
     );
+    let knowledge = &lesson.knowledge.vocabulary[0];
+    let other_saved = "dddddddddddddddddddddddddddddddd";
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO saved_items(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot,saved) VALUES('hargow',$1,$2,$3,$4,$5,$6,true)",[other_saved.into(),account.into(),knowledge.id.clone().into(),lesson.id.clone().into(),(lesson.revision as i32).into(),serde_json::to_value(knowledge).unwrap().into()])).await.unwrap();
+    let saved_path = format!("/api/v1/me/saved-items/{}", knowledge.id);
+    assert_eq!(
+        request(&remote, "GET", &saved_path, None, &mut cookie, &mut csrf)
+            .await
+            .0,
+        404
+    );
+    let saved_body = serde_json::json!({"sourceLessonId":lesson.id,"sourceRevision":lesson.revision,"saved":true,"version":0,"idempotencyKey":"split-save-expression-01"});
+    let (status, saved) = request(
+        &remote,
+        "PUT",
+        &saved_path,
+        Some(saved_body.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{saved}");
+    assert_ne!(saved["id"], other_saved);
+    assert_eq!(
+        request(
+            &remote,
+            "PUT",
+            &saved_path,
+            Some(saved_body),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .1,
+        saved
+    );
+    let (status, page) = request(
+        &remote,
+        "GET",
+        "/api/v1/me/saved-items",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["items"][0]["id"], saved["id"]);
+    let (status,unsaved)=request(&remote,"PUT",&saved_path,Some(serde_json::json!({"sourceLessonId":lesson.id,"sourceRevision":lesson.revision,"saved":false,"version":1,"idempotencyKey":"split-unsave-expression-01"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 200, "{unsaved}");
+    assert_eq!(unsaved["version"], 2);
+    assert_eq!(unsaved["saved"], false);
+    let untouched = owner
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT saved,version FROM saved_items WHERE id=$1",
+            [other_saved.into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(untouched.try_get::<bool>("", "saved").unwrap());
+    assert_eq!(untouched.try_get::<i32>("", "version").unwrap(), 1);
     let invalid = learning.execute_unprepared("INSERT INTO product_user_settings(product_id,user_id,settings) VALUES('brioche',999999,'{}')")
         .await.unwrap_err();
     assert!(invalid.to_string().contains("foreign key constraint"));

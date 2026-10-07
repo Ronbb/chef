@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+收藏产品范围补充：learning_000005_product_saved将saved_items去重改为(product_id,user_id,knowledge_id)并增加产品近期索引；详情/列表/锁内读取/新建/取消及请求锁按固定LearningStore.product，旧组合布局保留原查询。actual split受限HTTP预放同账号同表达H收藏，B详情404、新建独立ID、精确重放、列表仅B、取消B版本递增而H仍saved/version1。旧九表指纹保留；复习参与/卡片/历史/完成去重、dashboard及内容媒体仍待隔离，H入口/生产pin保持；所有SQL和回归仅Chef。
+
 学习会话产品范围补充：layout learning_000004_product_sessions为活动会话唯一索引、课程进度主键加入product_id；远端开始/读取/步骤/答题/提示/完成及历史按可信LearningStore产品读写，legacy保留旧32布局。实际split受限HTTP覆盖同账号同课双产品活动会话共存、B首次完成字段不继承H、H会话读/四类写404且版本/时间不变、B历史和成功步骤登记。原九表字段指纹保留。dashboard、收藏/复习查询与完成时review_cards全局去重、目录/媒体仍待隔离，Hargow业务保持关闭，生产/pin不变；所有实现测试属于Chef。
 
 幂等产品范围补充：独立学习LearningStore由可信Client.product构造Some(product)，共用replay/record及全部学习/收藏/复习调用显式传入；legacy new只兼容未分离Brioche，不能在split布局启动。layout learning_000003_product_operations主键增加product_id，原scope/key/hash/result不变。实际受限split HTTP预放同账号同key异产品记录，B忽略异产品结果/hash、独立登记、精确重放及改参409通过。identity_service合成fixture明确安装同一SQL步骤，真实命令/rollback在split套件。其余事实和内容媒体仍未隔离，Hargow关闭，生产pin不变。

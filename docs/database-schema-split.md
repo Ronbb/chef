@@ -1,5 +1,11 @@
 # 身份与学习schema分离
 
+## 收藏的产品范围
+
+learning_000005_product_saved用(product_id,user_id,knowledge_id)替换原收藏唯一键，增加产品内已收藏近期索引。详情、列表、行锁前引用、新建、取消和请求锁使用可信学习产品；legacy保留原布局SQL。source课源仍全局，尚不代表内容隔离。
+
+实际维护命令/受限split HTTP验证预存Hargow同账号同表达收藏时Brioche详情404、B新建独立ID、精确重放、列表仅B，取消B令B版本递增但H仍saved且version1；原九表字段指纹保留。复习相关路由及完成卡片去重、dashboard、内容媒体范围未完成，Hargow仍关闭，生产不迁移。
+
 ## 学习会话与进度的产品范围
 
 learning_000004_product_sessions将learning_one_active改为(product_id,user_id,lesson_id)部分唯一索引，lesson_progress主键改为(product_id,user_id,lesson_id)，追加产品近期会话索引；保留原会话ID、版本、时间与进度字段。固定产品的学习路由显式写产品、过滤会话及子事实，历史关联要求同产品，开始请求锁加入产品；未分离legacy仍兼容原32布局。
