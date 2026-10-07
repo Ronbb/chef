@@ -34,6 +34,7 @@ pub mod product_settings;
 pub mod qwen;
 pub mod recording;
 pub mod reviews;
+pub mod schema_split;
 pub mod session_store;
 pub mod speech_alignments;
 pub mod speech_automatic;

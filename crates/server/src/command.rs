@@ -671,8 +671,21 @@ pub async fn run() -> Result<()> {
             return Ok(());
         }
         "migrate" => {
+            crate::schema_split::require_combined(db.as_ref().unwrap()).await?;
             brioche_migration::Migrator::up(db.as_ref().unwrap(), None).await?;
             tracing::info!("migrations complete");
+            return Ok(());
+        }
+        "split-identity-schema" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            if args.len() != 2 {
+                bail!("usage: split-identity-schema <learning-schema> <new-identity-schema>");
+            }
+            crate::schema_split::relocate(db.as_ref().unwrap(), &args[0], &args[1])
+                .await.map_err(|_| anyhow::anyhow!("Identity schema split not confirmed; inspect the migration layout with the owner connection"))?;
+            tracing::info!(
+                "identity schema split complete; runtime grants and independent service configuration required"
+            );
             return Ok(());
         }
         "import" => {
@@ -760,6 +773,7 @@ pub async fn run() -> Result<()> {
             )?;
             crate::learning_identity::router(db.clone(), client)?
         } else {
+            crate::schema_split::require_combined(db).await?;
             let backend = crate::identity::Backend::new(db.clone()).await?;
             crate::identity::router(backend, policy, secure)
         })

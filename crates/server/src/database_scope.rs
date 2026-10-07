@@ -3,17 +3,22 @@ use sea_orm::ConnectOptions;
 
 pub fn apply(options: &mut ConnectOptions, schema: Option<&str>) -> anyhow::Result<()> {
     if let Some(schema) = schema {
-        anyhow::ensure!(
-            !schema.is_empty()
-                && schema.len() <= 63
-                && schema
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-                && schema.as_bytes()[0].is_ascii_lowercase(),
-            "Invalid configured database schema"
-        );
+        validate(schema)?;
         options.set_schema_search_path(schema);
     }
+    Ok(())
+}
+
+pub fn validate(schema: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !schema.is_empty()
+            && schema.len() <= 63
+            && schema
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            && schema.as_bytes()[0].is_ascii_lowercase(),
+        "Invalid configured database schema"
+    );
     Ok(())
 }
 

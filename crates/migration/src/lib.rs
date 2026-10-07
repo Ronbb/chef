@@ -30,6 +30,7 @@ mod m20261008_000028_product_settings;
 mod m20261008_000029_product_memberships;
 mod m20261008_000030_identity_product_scope;
 mod m20261008_000031_learning_content_locks;
+mod m20261008_000032_schema_layout;
 pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -66,6 +67,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261008_000029_product_memberships::Migration),
             Box::new(m20261008_000030_identity_product_scope::Migration),
             Box::new(m20261008_000031_learning_content_locks::Migration),
+            Box::new(m20261008_000032_schema_layout::Migration),
         ]
     }
 }

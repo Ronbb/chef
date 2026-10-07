@@ -592,6 +592,7 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         .collect::<Vec<_>>()
         .join("\n")
         .replace(":\"schema\"", &format!("\"{schema}\""))
+        .replace(":\"learning_schema\"", &format!("\"{schema}\""))
         .replace(":\"role\"", &format!("\"{identity_role}\""));
     db.execute_unprepared(&grants).await.unwrap();
     let mut identity_url = url::Url::parse(&std::env::var("TEST_DATABASE_URL").unwrap()).unwrap();
@@ -883,6 +884,7 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         .collect::<Vec<_>>()
         .join("\n")
         .replace(":\"schema\"", &format!("\"{schema}\""))
+        .replace(":\"identity_schema\"", &format!("\"{schema}\""))
         .replace(":\"role\"", &format!("\"{learner_role}\""));
     db.execute_unprepared(&grants).await.unwrap();
     let mut learner_url = url::Url::parse(&std::env::var("TEST_DATABASE_URL").unwrap()).unwrap();
