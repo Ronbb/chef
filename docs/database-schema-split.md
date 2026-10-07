@@ -1,5 +1,11 @@
 # 身份与学习schema分离
 
+## 学习会话与进度的产品范围
+
+learning_000004_product_sessions将learning_one_active改为(product_id,user_id,lesson_id)部分唯一索引，lesson_progress主键改为(product_id,user_id,lesson_id)，追加产品近期会话索引；保留原会话ID、版本、时间与进度字段。固定产品的学习路由显式写产品、过滤会话及子事实，历史关联要求同产品，开始请求锁加入产品；未分离legacy仍兼容原32布局。
+
+实际split维护命令和受限HTTP覆盖双产品同账号同课活动会话共存、Brioche首次完成为空而Hargow原时间保持、异产品会话GET/步骤/答题/提示/完成404且不改版本或完成时间、B历史不含H、成功步骤登记B。九表旧字段指纹和布局整批失败回滚仍验证。dashboard、收藏/复习查询、review_cards完成去重和目录/媒体范围仍待实施，Hargow保持关闭，未迁移生产。
+
 ## 幂等请求的产品范围
 
 布局步骤learning_000003_product_operations将learning_operations主键改为(product_id,user_id,scope,idempotency_key)，保留原scope、请求键、hash和结果。独立学习路由以可信Client.product构造LearningStore；学习步骤、答题/提示/完成、收藏和复习的共用replay/record按该产品读写，不接受浏览器选择产品。legacy组合Brioche保留旧查询兼容，仍不能在分离布局启动；独立服务必须先应用布局升级。

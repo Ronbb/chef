@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+学习会话产品范围补充：layout learning_000004_product_sessions为活动会话唯一索引、课程进度主键加入product_id；远端开始/读取/步骤/答题/提示/完成及历史按可信LearningStore产品读写，legacy保留旧32布局。实际split受限HTTP覆盖同账号同课双产品活动会话共存、B首次完成字段不继承H、H会话读/四类写404且版本/时间不变、B历史和成功步骤登记。原九表字段指纹保留。dashboard、收藏/复习查询与完成时review_cards全局去重、目录/媒体仍待隔离，Hargow业务保持关闭，生产/pin不变；所有实现测试属于Chef。
+
 幂等产品范围补充：独立学习LearningStore由可信Client.product构造Some(product)，共用replay/record及全部学习/收藏/复习调用显式传入；legacy new只兼容未分离Brioche，不能在split布局启动。layout learning_000003_product_operations主键增加product_id，原scope/key/hash/result不变。实际受限split HTTP预放同账号同key异产品记录，B忽略异产品结果/hash、独立登记、精确重放及改参409通过。identity_service合成fixture明确安装同一SQL步骤，真实命令/rollback在split套件。其余事实和内容媒体仍未隔离，Hargow关闭，生产pin不变。
 
 学习事实产品准备补充：layout learning_000002_product_facts为九张事实表添加默认brioche的product_id、同产品会话/卡片复合外键和禁止改归属trigger，保留全部原字段/全局唯一键。SQL文件定义仅CRLF→LF规范。非空九表指纹、同产品九表正例事务回滚、跨产品父引用/改归属拒绝及步骤中途失败整批回滚验证属于Chef。此阶段未完成查询/RLS/内容/媒体租户，Hargow路由仍关闭，禁止生产迁移或把准备当完整隔离；产品无迁移副本。

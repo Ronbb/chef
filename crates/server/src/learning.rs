@@ -119,6 +119,7 @@ pub(crate) async fn record<T: Serialize>(
     Ok(())
 }
 struct SessionRow {
+    product: Option<crate::product::ProductId>,
     id: String,
     user: i64,
     lesson: PublicLesson,
@@ -128,8 +129,37 @@ struct SessionRow {
     completed: Option<String>,
     first_completed: Option<String>,
 }
+/// Both inputs come from framework constants/configuration, never browser text.
+pub(crate) fn product_filter(
+    product: Option<crate::product::ProductId>,
+    column: &'static str,
+) -> String {
+    product.map_or_else(String::new, |p| format!(" AND {column}='{}'", p.as_str()))
+}
+async fn insert_fact(
+    tx: &DatabaseTransaction,
+    product: Option<crate::product::ProductId>,
+    table: &'static str,
+    columns: &'static str,
+    mut values: Vec<Value>,
+    conflict: &str,
+) -> Result<u64, AppError> {
+    if let Some(product) = product {
+        values.push(product.as_str().into());
+    }
+    let params = (1..=values.len())
+        .map(|i| format!("${i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "INSERT INTO {table} ({columns}{}) VALUES ({params}){conflict}",
+        if product.is_some() { ",product_id" } else { "" }
+    );
+    exec(tx, &sql, values).await
+}
 async fn load<C: ConnectionTrait>(
     db: &C,
+    product: Option<crate::product::ProductId>,
     user: i64,
     id: &str,
     lock: bool,
@@ -137,7 +167,10 @@ async fn load<C: ConnectionTrait>(
     if lock {
         let reference = one(
             db,
-            "SELECT lesson_id,revision FROM learning_sessions WHERE user_id=$1 AND id=$2",
+            &format!(
+                "SELECT lesson_id,revision FROM learning_sessions WHERE user_id=$1 AND id=$2{}",
+                product_filter(product, "product_id")
+            ),
             vec![user.into(), id.into()],
         )
         .await?
@@ -150,7 +183,13 @@ async fn load<C: ConnectionTrait>(
         .await?;
     }
     let sql = format!(
-        "SELECT s.id,s.lesson_id,s.revision,s.schema_version,s.version,s.last_step_id,r.public_document,r.server_document,r.published,to_char(s.completed_at AT TIME ZONE 'UTC','{STAMP}') AS completed,to_char(p.first_completed_at AT TIME ZONE 'UTC','{STAMP}') AS first_completed FROM learning_sessions s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.lesson_id,s.revision) LEFT JOIN lesson_progress p ON (p.user_id,p.lesson_id)=(s.user_id,s.lesson_id) WHERE s.user_id=$1 AND s.id=$2 {}",
+        "SELECT s.id,s.lesson_id,s.revision,s.schema_version,s.version,s.last_step_id,r.public_document,r.server_document,r.published,to_char(s.completed_at AT TIME ZONE 'UTC','{STAMP}') AS completed,to_char(p.first_completed_at AT TIME ZONE 'UTC','{STAMP}') AS first_completed FROM learning_sessions s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.lesson_id,s.revision) LEFT JOIN lesson_progress p ON (p.user_id,p.lesson_id)=(s.user_id,s.lesson_id){} WHERE s.user_id=$1 AND s.id=$2{} {}",
+        if product.is_some() {
+            " AND p.product_id=s.product_id"
+        } else {
+            ""
+        },
+        product_filter(product, "s.product_id"),
         if lock { "FOR UPDATE OF s" } else { "" }
     );
     let row = one(db, &sql, vec![user.into(), id.into()])
@@ -170,6 +209,7 @@ async fn load<C: ConnectionTrait>(
         return Err(AppError::Unavailable);
     }
     Ok(SessionRow {
+        product,
         id: field(&row, "id")?,
         user,
         lesson,
@@ -188,7 +228,10 @@ async fn progress<C: ConnectionTrait>(
     let steps = db
         .query_all_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            "SELECT step_id FROM step_progress WHERE session_id=$1",
+            format!(
+                "SELECT step_id FROM step_progress WHERE session_id=$1{}",
+                product_filter(session.product, "product_id")
+            ),
             [session.id.clone().into()],
         ))
         .await
@@ -200,12 +243,15 @@ async fn progress<C: ConnectionTrait>(
     let hints = db
         .query_all_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            "SELECT exercise_id FROM exercise_hints WHERE session_id=$1 ORDER BY exercise_id",
+            format!(
+                "SELECT exercise_id FROM exercise_hints WHERE session_id=$1{} ORDER BY exercise_id",
+                product_filter(session.product, "product_id")
+            ),
             [session.id.clone().into()],
         ))
         .await
         .map_err(|_| AppError::Unavailable)?;
-    let rows = db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT id,exercise_id,attempt_index,answer,result,hint_used FROM exercise_attempts WHERE session_id=$1 AND user_id=$2 ORDER BY exercise_id,attempt_index",[session.id.clone().into(),session.user.into()])).await.map_err(|_| AppError::Unavailable)?;
+    let rows = db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT id,exercise_id,attempt_index,answer,result,hint_used FROM exercise_attempts WHERE session_id=$1 AND user_id=$2{} ORDER BY exercise_id,attempt_index",product_filter(session.product,"product_id")),[session.id.clone().into(),session.user.into()])).await.map_err(|_| AppError::Unavailable)?;
     let attempts = rows
         .iter()
         .map(|r| {
@@ -269,7 +315,7 @@ async fn bump(
     step: Option<&str>,
     complete: bool,
 ) -> Result<(), AppError> {
-    let changed = exec(tx,"UPDATE learning_sessions SET version=version+1,last_step_id=COALESCE($3,last_step_id),completed_at=CASE WHEN $4 THEN COALESCE(completed_at,CURRENT_TIMESTAMP) ELSE completed_at END,updated_at=CURRENT_TIMESTAMP WHERE user_id=$1 AND id=$2 AND version=$5",vec![session.user.into(),session.id.clone().into(),step.map(str::to_owned).into(),complete.into(),i32::try_from(session.version).map_err(|_| AppError::Unavailable)?.into()]).await?;
+    let changed = exec(tx,&format!("UPDATE learning_sessions SET version=version+1,last_step_id=COALESCE($3,last_step_id),completed_at=CASE WHEN $4 THEN COALESCE(completed_at,CURRENT_TIMESTAMP) ELSE completed_at END,updated_at=CURRENT_TIMESTAMP WHERE user_id=$1 AND id=$2 AND version=$5{}",product_filter(session.product,"product_id")),vec![session.user.into(),session.id.clone().into(),step.map(str::to_owned).into(),complete.into(),i32::try_from(session.version).map_err(|_| AppError::Unavailable)?.into()]).await?;
     if changed != 1 {
         return Err(AppError::Conflict);
     }
@@ -287,7 +333,7 @@ async fn begin(
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    let session = load(&tx, user, id, true).await?;
+    let session = load(&tx, backend.product, user, id, true).await?;
     Ok((tx, session))
 }
 async fn start(
@@ -310,10 +356,19 @@ async fn start(
         .await
         .map_err(|_| AppError::Unavailable)?;
     // Lock idempotency scope first, then the user's lesson, even for different request keys.
+    let product_prefix = backend
+        .product
+        .map_or_else(String::new, |p| format!("{}:", p.as_str()));
     exec(
         &tx,
         "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-        vec![format!("learning-start-key:{user}:{}", request.idempotency_key).into()],
+        vec![
+            format!(
+                "{product_prefix}learning-start-key:{user}:{}",
+                request.idempotency_key
+            )
+            .into(),
+        ],
     )
     .await?;
     if let Some(cached) = replay::<LearningSession>(
@@ -326,16 +381,22 @@ async fn start(
     )
     .await?
     {
-        load(&tx, user, &cached.progress.id, false).await?; // Withdrawn snapshots never escape through a replay.
+        load(&tx, backend.product, user, &cached.progress.id, false).await?; // Withdrawn snapshots never escape through a replay.
         return Ok(Json(cached));
     }
     exec(
         &tx,
         "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-        vec![format!("learning-start-lesson:{user}:{}", request.lesson_id).into()],
+        vec![
+            format!(
+                "{product_prefix}learning-start-lesson:{user}:{}",
+                request.lesson_id
+            )
+            .into(),
+        ],
     )
     .await?;
-    let existing = one(&tx,"SELECT id FROM learning_sessions WHERE user_id=$1 AND lesson_id=$2 AND completed_at IS NULL",vec![user.into(),request.lesson_id.clone().into()]).await?;
+    let existing = one(&tx,&format!("SELECT id FROM learning_sessions WHERE user_id=$1 AND lesson_id=$2 AND completed_at IS NULL{}",product_filter(backend.product,"product_id")),vec![user.into(),request.lesson_id.clone().into()]).await?;
     let id = if let Some(existing) = existing {
         field::<String>(&existing, "id")?
     } else {
@@ -357,11 +418,26 @@ async fn start(
             return Err(AppError::Conflict);
         }
         let id = random_id()?;
-        exec(&tx,"INSERT INTO learning_sessions (id,user_id,lesson_id,revision,schema_version,last_step_id) VALUES ($1,$2,$3,$4,$5,$6)",vec![id.clone().into(),user.into(),request.lesson_id.clone().into(),field::<i32>(&row,"revision")?.into(),request.schema_version.clone().into(),lesson.steps.first().map(|s| s.id.clone()).into()]).await?;
-        exec(&tx,"INSERT INTO lesson_progress (user_id,lesson_id,last_session_id) VALUES ($1,$2,$3) ON CONFLICT (user_id,lesson_id) DO UPDATE SET last_session_id=EXCLUDED.last_session_id",vec![user.into(),request.lesson_id.clone().into(),id.clone().into()]).await?;
+        insert_fact(
+            &tx,
+            backend.product,
+            "learning_sessions",
+            "id,user_id,lesson_id,revision,schema_version,last_step_id",
+            vec![
+                id.clone().into(),
+                user.into(),
+                request.lesson_id.clone().into(),
+                field::<i32>(&row, "revision")?.into(),
+                request.schema_version.clone().into(),
+                lesson.steps.first().map(|s| s.id.clone()).into(),
+            ],
+            "",
+        )
+        .await?;
+        insert_fact(&tx,backend.product,"lesson_progress","user_id,lesson_id,last_session_id",vec![user.into(),request.lesson_id.clone().into(),id.clone().into()],if backend.product.is_some(){" ON CONFLICT (product_id,user_id,lesson_id) DO UPDATE SET last_session_id=EXCLUDED.last_session_id"}else{" ON CONFLICT (user_id,lesson_id) DO UPDATE SET last_session_id=EXCLUDED.last_session_id"}).await?;
         id
     };
-    let session = load(&tx, user, &id, true).await?;
+    let session = load(&tx, backend.product, user, &id, true).await?;
     if session.lesson.schema_version != request.schema_version {
         return Err(AppError::Conflict);
     }
@@ -394,7 +470,7 @@ async fn get_session(
         .await
         .map_err(|_| AppError::Unavailable)?;
     // The row lock makes the document and progress a consistent read while a writer commits.
-    let session = load(&tx, user, &id, true).await?;
+    let session = load(&tx, backend.product, user, &id, true).await?;
     let result = LearningSession {
         progress: progress(&tx, &session).await?,
         lesson: session.lesson,
@@ -450,10 +526,13 @@ async fn confirm_step(
         {
             return Err(AppError::Conflict);
         }
-        exec(
+        insert_fact(
             &tx,
-            "INSERT INTO step_progress (session_id,step_id) VALUES ($1,$2)",
+            backend.product,
+            "step_progress",
+            "session_id,step_id",
             vec![id.clone().into(), step.clone().into()],
+            "",
         )
         .await?;
         // Resume at the following step; optional steps can be revisited without erasing confirmations.
@@ -465,7 +544,7 @@ async fn confirm_step(
             .unwrap_or(&step);
         bump(&tx, &session, Some(next), false).await?;
     }
-    let state = progress(&tx, &load(&tx, user, &id, false).await?).await?;
+    let state = progress(&tx, &load(&tx, backend.product, user, &id, false).await?).await?;
     record(
         &tx,
         backend.product,
@@ -530,11 +609,35 @@ async fn submit(
     if attempt_index > 100 {
         return Err(AppError::RateLimited);
     }
-    exec(&tx,"INSERT INTO exercise_attempts (id,session_id,user_id,exercise_id,attempt_index,answer,result,hint_used) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",vec![random_id()?.into(),id.clone().into(),user.into(),request.exercise_id.clone().into(),(attempt_index as i32).into(),serde_json::to_value(&request.answer).map_err(|_| AppError::Unavailable)?.into(),serde_json::to_value(&result).map_err(|_| AppError::Unavailable)?.into(),state.hinted_exercise_ids.contains(&request.exercise_id).into()]).await?;
+    insert_fact(
+        &tx,
+        backend.product,
+        "exercise_attempts",
+        "id,session_id,user_id,exercise_id,attempt_index,answer,result,hint_used",
+        vec![
+            random_id()?.into(),
+            id.clone().into(),
+            user.into(),
+            request.exercise_id.clone().into(),
+            (attempt_index as i32).into(),
+            serde_json::to_value(&request.answer)
+                .map_err(|_| AppError::Unavailable)?
+                .into(),
+            serde_json::to_value(&result)
+                .map_err(|_| AppError::Unavailable)?
+                .into(),
+            state
+                .hinted_exercise_ids
+                .contains(&request.exercise_id)
+                .into(),
+        ],
+        "",
+    )
+    .await?;
     bump(&tx, &session, Some(&session.lesson.steps[index].id), false).await?;
     let response = AttemptResult {
         result,
-        progress: progress(&tx, &load(&tx, user, &id, false).await?).await?,
+        progress: progress(&tx, &load(&tx, backend.product, user, &id, false).await?).await?,
     };
     record(
         &tx,
@@ -594,10 +697,13 @@ async fn hint(
         .position(|s| s.block_ids.contains(&exercise))
         .ok_or(AppError::Unavailable)?;
     prerequisites(&session.lesson, &progress(&tx, &session).await?, index)?;
-    if exec(
+    if insert_fact(
         &tx,
-        "INSERT INTO exercise_hints (session_id,exercise_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+        backend.product,
+        "exercise_hints",
+        "session_id,exercise_id",
         vec![id.clone().into(), exercise.into()],
+        " ON CONFLICT DO NOTHING",
     )
     .await?
         > 0
@@ -606,7 +712,7 @@ async fn hint(
     }
     let response = HintResult {
         hint_zh: hint,
-        progress: progress(&tx, &load(&tx, user, &id, false).await?).await?,
+        progress: progress(&tx, &load(&tx, backend.product, user, &id, false).await?).await?,
     };
     record(
         &tx,
@@ -662,7 +768,7 @@ async fn complete(
             return Err(AppError::Conflict);
         }
         bump(&tx, &session, None, true).await?;
-        exec(&tx,"UPDATE lesson_progress SET first_completed_at=COALESCE(first_completed_at,CURRENT_TIMESTAMP),latest_completed_revision=$3 WHERE user_id=$1 AND lesson_id=$2",vec![user.into(),session.lesson.id.clone().into(),i32::try_from(session.lesson.revision).map_err(|_| AppError::Unavailable)?.into()]).await?;
+        exec(&tx,&format!("UPDATE lesson_progress SET first_completed_at=COALESCE(first_completed_at,CURRENT_TIMESTAMP),latest_completed_revision=$3 WHERE user_id=$1 AND lesson_id=$2{}",product_filter(backend.product,"product_id")),vec![user.into(),session.lesson.id.clone().into(),i32::try_from(session.lesson.revision).map_err(|_| AppError::Unavailable)?.into()]).await?;
         // Deterministic knowledge lock order avoids deadlocks when different lessons share expressions.
         for knowledge in session
             .lesson
@@ -677,10 +783,29 @@ async fn complete(
                 .iter()
                 .find(|v| &v.id == knowledge)
                 .ok_or(AppError::Unavailable)?;
-            exec(&tx,"INSERT INTO review_cards (id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (user_id,knowledge_id) DO NOTHING",vec![random_id()?.into(),user.into(),knowledge.clone().into(),session.lesson.id.clone().into(),i32::try_from(session.lesson.revision).map_err(|_| AppError::Unavailable)?.into(),serde_json::to_value(vocabulary).map_err(|_| AppError::Unavailable)?.into()]).await?;
+            insert_fact(
+                &tx,
+                backend.product,
+                "review_cards",
+                "id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot",
+                vec![
+                    random_id()?.into(),
+                    user.into(),
+                    knowledge.clone().into(),
+                    session.lesson.id.clone().into(),
+                    i32::try_from(session.lesson.revision)
+                        .map_err(|_| AppError::Unavailable)?
+                        .into(),
+                    serde_json::to_value(vocabulary)
+                        .map_err(|_| AppError::Unavailable)?
+                        .into(),
+                ],
+                " ON CONFLICT (user_id,knowledge_id) DO NOTHING",
+            )
+            .await?;
         }
     }
-    let state = progress(&tx, &load(&tx, user, &id, false).await?).await?;
+    let state = progress(&tx, &load(&tx, backend.product, user, &id, false).await?).await?;
     record(
         &tx,
         backend.product,
@@ -719,7 +844,13 @@ async fn overview(
         (None, None)
     };
     let sql = format!(
-        "SELECT s.id,s.lesson_id,s.revision,s.last_step_id,r.public_document->'title' AS title,to_char(s.completed_at AT TIME ZONE 'UTC','{STAMP}') AS completed,to_char(p.first_completed_at AT TIME ZONE 'UTC','{STAMP}') AS first_completed,to_char(s.updated_at AT TIME ZONE 'UTC','{STAMP}') AS updated FROM lesson_progress p JOIN learning_sessions s ON s.id=p.last_session_id AND s.user_id=p.user_id JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.lesson_id,s.revision) WHERE p.user_id=$1 AND r.published=true AND ($2::timestamptz IS NULL OR (s.updated_at,s.id)<($2::timestamptz,$3::text)) ORDER BY s.updated_at DESC,s.id DESC LIMIT 21"
+        "SELECT s.id,s.lesson_id,s.revision,s.last_step_id,r.public_document->'title' AS title,to_char(s.completed_at AT TIME ZONE 'UTC','{STAMP}') AS completed,to_char(p.first_completed_at AT TIME ZONE 'UTC','{STAMP}') AS first_completed,to_char(s.updated_at AT TIME ZONE 'UTC','{STAMP}') AS updated FROM lesson_progress p JOIN learning_sessions s ON s.id=p.last_session_id AND s.user_id=p.user_id{} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.lesson_id,s.revision) WHERE p.user_id=$1 AND r.published=true{} AND ($2::timestamptz IS NULL OR (s.updated_at,s.id)<($2::timestamptz,$3::text)) ORDER BY s.updated_at DESC,s.id DESC LIMIT 21",
+        if backend.product.is_some() {
+            " AND p.product_id=s.product_id"
+        } else {
+            ""
+        },
+        product_filter(backend.product, "p.product_id"),
     );
     let rows = backend
         .db
@@ -756,7 +887,7 @@ async fn overview(
     } else {
         None
     };
-    let count = one(&backend.db,"SELECT count(*)::bigint AS completed FROM lesson_progress WHERE user_id=$1 AND first_completed_at IS NOT NULL",vec![user.into()]).await?.ok_or(AppError::Unavailable)?;
+    let count = one(&backend.db,&format!("SELECT count(*)::bigint AS completed FROM lesson_progress WHERE user_id=$1 AND first_completed_at IS NOT NULL{}",product_filter(backend.product,"product_id")),vec![user.into()]).await?.ok_or(AppError::Unavailable)?;
     Ok(Json(LearningOverview {
         items,
         next_cursor,

@@ -404,7 +404,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=4 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=5 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -868,6 +868,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         200
     );
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO learning_operations(product_id,user_id,scope,idempotency_key,request_hash,result) VALUES('hargow',$1,'start','split-start-learning-01',$2,$3)",[account.into(),"b".repeat(64).into(),serde_json::json!({"marker":"other product only"}).into()])).await.unwrap();
+    let other_session = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO learning_sessions(id,product_id,user_id,lesson_id,revision,schema_version) VALUES($1,'hargow',$2,$3,$4,'1.0')",[other_session.into(),account.into(),lesson.id.clone().into(),(lesson.revision as i32).into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_progress(product_id,user_id,lesson_id,last_session_id,first_completed_at,latest_completed_revision) VALUES('hargow',$1,$2,$3,'2026-01-01T00:00:00Z',$4)",[account.into(),lesson.id.clone().into(),other_session.into(),(lesson.revision as i32).into()])).await.unwrap();
     let start_body = serde_json::json!({"lessonId":lesson.id,"schemaVersion":"1.0","idempotencyKey":"split-start-learning-01"});
     let start = Request::builder()
         .method("POST")
@@ -888,6 +891,60 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(response.status().as_u16(), 200);
     let started: serde_json::Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_ne!(started["progress"]["id"], other_session);
+    assert!(started["progress"]["firstCompletedAt"].is_null());
+    let other_path = format!("/api/v1/learning-sessions/{other_session}");
+    for (method, path, body) in [
+        ("GET", other_path.clone(), None),
+        (
+            "PUT",
+            format!("{other_path}/steps/unknown"),
+            Some(serde_json::json!({"version":1,"idempotencyKey":"other-step-test-01"})),
+        ),
+        (
+            "POST",
+            format!("{other_path}/attempts"),
+            Some(
+                serde_json::json!({"version":1,"idempotencyKey":"other-attempt-test-01","exerciseId":"unknown","answer":{"kind":"text","text":"Bonjour"}}),
+            ),
+        ),
+        (
+            "POST",
+            format!("{other_path}/hints/unknown"),
+            Some(serde_json::json!({"version":1,"idempotencyKey":"other-hint-test-01"})),
+        ),
+        (
+            "POST",
+            format!("{other_path}/complete"),
+            Some(serde_json::json!({"version":1,"idempotencyKey":"other-complete-test-01"})),
+        ),
+    ] {
+        assert_eq!(
+            request(&remote, method, &path, body, &mut cookie, &mut csrf)
+                .await
+                .0,
+            404,
+            "{method} {path}"
+        );
+    }
+    let (status, history) = request(
+        &remote,
+        "GET",
+        "/api/v1/me/learning",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(history["completedLessons"], 0);
+    assert_eq!(history["items"].as_array().unwrap().len(), 1);
+    assert_eq!(history["items"][0]["sessionId"], started["progress"]["id"]);
+    let untouched=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT s.version,s.completed_at IS NULL AS active,p.first_completed_at='2026-01-01T00:00:00Z'::timestamptz AS preserved,(SELECT count(*) FROM learning_sessions WHERE user_id=$1 AND lesson_id=$2 AND completed_at IS NULL)::bigint AS active_count FROM learning_sessions s JOIN lesson_progress p ON p.product_id=s.product_id AND p.last_session_id=s.id WHERE s.id=$3",[account.into(),lesson.id.clone().into(),other_session.into()])).await.unwrap().unwrap();
+    assert_eq!(untouched.try_get::<i32>("", "version").unwrap(), 1);
+    assert!(untouched.try_get::<bool>("", "active").unwrap());
+    assert!(untouched.try_get::<bool>("", "preserved").unwrap());
+    assert_eq!(untouched.try_get::<i64>("", "active_count").unwrap(), 2);
     let (status, replayed) = request(
         &remote,
         "POST",
@@ -917,6 +974,32 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n,count(DISTINCT request_hash)::bigint AS hashes FROM learning_operations WHERE user_id=$1 AND scope='start' AND idempotency_key='split-start-learning-01'",[account.into()])).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 2);
     assert_eq!(row.try_get::<i64>("", "hashes").unwrap(), 2);
+    let session_id = started["progress"]["id"].as_str().unwrap();
+    let first_step = &lesson.steps[0].id;
+    let (status, confirmed) = request(
+        &remote,
+        "PUT",
+        &format!("/api/v1/learning-sessions/{session_id}/steps/{first_step}"),
+        Some(serde_json::json!({"version":1,"idempotencyKey":"split-confirm-step-01"})),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{confirmed}");
+    assert_eq!(confirmed["confirmedStepIds"][0], *first_step);
+    let stored = owner
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT product_id FROM step_progress WHERE session_id=$1 AND step_id=$2",
+            [session_id.into(), first_step.clone().into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.try_get::<String>("", "product_id").unwrap(),
+        "brioche"
+    );
     let invalid = learning.execute_unprepared("INSERT INTO product_user_settings(product_id,user_id,settings) VALUES('brioche',999999,'{}')")
         .await.unwrap_err();
     assert!(invalid.to_string().contains("foreign key constraint"));
