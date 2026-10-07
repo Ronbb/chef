@@ -3322,6 +3322,26 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             .is_empty()
     );
     let mut h_lesson = lesson.clone();
+    let (status, admin_before) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/overview",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{admin_before}");
+    let (status, history_before) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/history",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{history_before}");
     h_lesson.id = "hargow-catalog-fixture".into();
     h_lesson.title.fr = "Hargow catalogue sentinel".into();
     h_lesson.title.zh = "Hargow 合成目录测试".into();
@@ -3331,6 +3351,41 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO content_releases(product_id,id,manifest,content_hash) VALUES('hargow','hargow-catalog-release',$1,repeat('a',64))",[manifest.into()])).await.unwrap();
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO release_entries(product_id,release_id,lesson_id,revision,position) VALUES('hargow','hargow-catalog-release',$1,$2,0)",[h_lesson.id.clone().into(),(h_lesson.revision as i32).into()])).await.unwrap();
     owner.execute_unprepared("UPDATE content_state SET active_release='hargow-catalog-release' WHERE product_id='hargow'").await.unwrap();
+    owner.execute_unprepared("INSERT INTO content_audit(product_id,action,release_id,actor,reason,generation) VALUES('hargow','activate','hargow-catalog-release','synthetic','Foreign course audit sentinel',1)").await.unwrap();
+    let (status, admin_after) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/overview",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{admin_after}");
+    assert_eq!(admin_after, admin_before);
+    let (status, history_after) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/history",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{history_after}");
+    assert_eq!(history_after, history_before);
+    let (status, filtered) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/overview?lessonQ=sentinel&releaseQ=hargow",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{filtered}");
+    assert!(filtered["lessons"].as_array().unwrap().is_empty());
+    assert!(filtered["releases"].as_array().unwrap().is_empty());
     let h_catalog =
         chef_engine::content::catalog_matching_for_product(&learning, Some(ProductId::Hargow), &[])
             .await

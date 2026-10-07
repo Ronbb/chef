@@ -3,7 +3,7 @@ use crate::{
     AppError,
     admin_auth::AdminAuth,
     identity::Backend,
-    learning::{exec, field, one, owner},
+    learning::{exec, field, one, owner, product_filter},
 };
 use axum::{
     Json, Router,
@@ -23,7 +23,7 @@ pub fn router(root: std::path::PathBuf, db: sea_orm::DatabaseConnection) -> Rout
         .merge(crate::account_admin::router(
             crate::product::ProductId::Brioche,
         ))
-        .merge(content_router(db, root.clone(), true))
+        .merge(content_router(db, root.clone(), true, None))
         .layer(axum::Extension(root))
         .layer(axum::Extension(std::sync::Arc::new(
             tokio::sync::Semaphore::new(2),
@@ -33,6 +33,7 @@ pub fn router(root: std::path::PathBuf, db: sea_orm::DatabaseConnection) -> Rout
 struct Store {
     db: sea_orm::DatabaseConnection,
     include_accounts: bool,
+    product: Option<crate::product::ProductId>,
 }
 pub fn independent_router(
     db: sea_orm::DatabaseConnection,
@@ -48,12 +49,17 @@ pub fn independent_router(
         .layer(axum::Extension(std::sync::Arc::new(
             tokio::sync::Semaphore::new(2),
         )));
-    Ok(crate::learning_identity::protect(content_router(db, root, false), client).merge(delivery))
+    let product = client.product();
+    Ok(
+        crate::learning_identity::protect(content_router(db, root, false, Some(product)), client)
+            .merge(delivery),
+    )
 }
 pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
     root: std::path::PathBuf,
     include_accounts: bool,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .merge(crate::admin_assets::router(db.clone()))
@@ -100,6 +106,7 @@ pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
         .with_state(Store {
             db,
             include_accounts,
+            product,
         })
 }
 #[derive(serde::Deserialize)]
@@ -137,16 +144,17 @@ async fn history(
     } else {
         ""
     };
+    let course_scope = product_filter(backend.product, "product_id");
     let rows = backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, format!(r#"
         WITH events AS (
             SELECT 'review:'||lesson_id||':'||revision||':'||version AS key,
                 CASE WHEN approved THEN 'approve' ELSE 'reject' END AS action,
                 lesson_id||' v'||revision AS target, 'user:'||actor_id AS actor, reason, created_at
-            FROM editorial_reviews
+            FROM editorial_reviews WHERE true{course_scope}
             UNION ALL
-            SELECT 'content:'||id, action, COALESCE(release_id,lesson_id||' v'||revision,'未指定对象'), actor, reason, created_at FROM content_audit
+            SELECT 'content:'||id, action, COALESCE(release_id,lesson_id||' v'||revision,'未指定对象'), actor, reason, created_at FROM content_audit WHERE true{course_scope}
             UNION ALL
-            SELECT 'import:'||lesson_id||':'||revision, 'import', lesson_id||' v'||revision, actor, reason, created_at FROM lesson_import_audit
+            SELECT 'import:'||lesson_id||':'||revision, 'import', lesson_id||' v'||revision, actor, reason, created_at FROM lesson_import_audit WHERE true{course_scope}
             {account_events}
             UNION ALL
             SELECT 'voice:'||character_id||':'||character_revision||':'||revision, 'voiceProfile', character_id||' v'||character_revision||' / voice v'||revision, 'user:'||actor_id, reason, created_at FROM character_voice_profiles
@@ -155,9 +163,9 @@ async fn history(
             UNION ALL
             SELECT 'alignmentReview:'||alignment_id||':'||clip_id,CASE WHEN accepted THEN 'alignmentAccepted' ELSE 'alignmentRejected' END,alignment_id||':'||clip_id,'user:'||actor_id,reason,created_at FROM speech_alignment_reviews
             UNION ALL
-            SELECT 'lessonAudio:'||lesson_id||':'||revision||':'||version,CASE WHEN accepted THEN 'lessonAudioAccepted' ELSE 'lessonAudioRejected' END,lesson_id||' v'||revision,'user:'||actor_id,reason,created_at FROM lesson_audio_reviews
+            SELECT 'lessonAudio:'||lesson_id||':'||revision||':'||version,CASE WHEN accepted THEN 'lessonAudioAccepted' ELSE 'lessonAudioRejected' END,lesson_id||' v'||revision,'user:'||actor_id,reason,created_at FROM lesson_audio_reviews WHERE true{course_scope}
             UNION ALL
-            SELECT 'directPublication:'||lesson_id||':'||revision,'lessonDirectPublication',lesson_id||' v'||revision,'user:'||actor_id,reason,created_at FROM lesson_direct_publications
+            SELECT 'directPublication:'||lesson_id||':'||revision,'lessonDirectPublication',lesson_id||' v'||revision,'user:'||actor_id,reason,created_at FROM lesson_direct_publications WHERE true{course_scope}
             UNION ALL
             SELECT 'speechPackage:'||id,'speechPackageImport',lesson_id||' v'||revision,'user:'||actor_id,reason,created_at FROM speech_package_imports
             UNION ALL
@@ -391,13 +399,30 @@ async fn overview(
         .map_err(|_| AppError::Unavailable)?;
     let state = one(
         &tx,
-        "SELECT active_release,generation FROM content_state WHERE singleton",
+        &format!(
+            "SELECT active_release,generation FROM content_state WHERE {}",
+            backend.product.map_or_else(
+                || "singleton".to_owned(),
+                |p| format!("product_id='{}'", p.as_str())
+            )
+        ),
         vec![],
     )
     .await?
     .ok_or(AppError::Unavailable)?;
+    let lesson_scope = product_filter(backend.product, "r.product_id");
+    let same_withdrawal = if backend.product.is_some() {
+        " AND w.product_id=r.product_id"
+    } else {
+        ""
+    };
+    let same_review = if backend.product.is_some() {
+        " AND product_id=r.product_id"
+    } else {
+        ""
+    };
     let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-        "SELECT r.lesson_id,r.revision,r.public_document,r.published,r.server_document AS source,r.server_document->'editorial' AS editorial,v.version,v.approved,v.reason,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision)) AS withdrawn FROM lesson_revisions r LEFT JOIN LATERAL (SELECT version,approved,reason FROM editorial_reviews WHERE (lesson_id,revision)=(r.lesson_id,r.revision) ORDER BY version DESC LIMIT 1) v ON true WHERE (r.lesson_id>$1 OR (r.lesson_id=$1 AND r.revision<$2)) AND ($3='' OR strpos(lower(r.lesson_id),lower($3))>0 OR strpos(lower(r.public_document->'title'->>'zh'),lower($3))>0 OR strpos(lower(r.public_document->'title'->>'fr'),lower($3))>0 OR strpos(lower(r.public_document->>'levelId'),lower($3))>0 OR strpos(lower(r.public_document->>'unitId'),lower($3))>0) ORDER BY r.lesson_id,r.revision DESC LIMIT 21",
+        format!("SELECT r.lesson_id,r.revision,r.public_document,r.published,r.server_document AS source,r.server_document->'editorial' AS editorial,v.version,v.approved,v.reason,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){same_withdrawal}) AS withdrawn FROM lesson_revisions r LEFT JOIN LATERAL (SELECT version,approved,reason FROM editorial_reviews WHERE (lesson_id,revision)=(r.lesson_id,r.revision){same_review} ORDER BY version DESC LIMIT 1) v ON true WHERE (r.lesson_id>$1 OR (r.lesson_id=$1 AND r.revision<$2)) AND ($3='' OR strpos(lower(r.lesson_id),lower($3))>0 OR strpos(lower(r.public_document->'title'->>'zh'),lower($3))>0 OR strpos(lower(r.public_document->'title'->>'fr'),lower($3))>0 OR strpos(lower(r.public_document->>'levelId'),lower($3))>0 OR strpos(lower(r.public_document->>'unitId'),lower($3))>0) {lesson_scope} ORDER BY r.lesson_id,r.revision DESC LIMIT 21"),
         vec![query.lesson_after_id.unwrap_or_default().into(),(query.lesson_after_revision.unwrap_or(0) as i32).into(),query.lesson_q.unwrap_or_default().trim().to_owned().into()])).await.map_err(|_|AppError::Unavailable)?;
     let lesson_more = rows.len() > 20;
     let mut lessons = Vec::new();
@@ -450,7 +475,7 @@ async fn overview(
     } else {
         None
     };
-    let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT r.id,count(e.lesson_id) AS lesson_count FROM content_releases r LEFT JOIN release_entries e ON e.release_id=r.id WHERE r.id>$1 AND ($2='' OR strpos(lower(r.id),lower($2))>0) GROUP BY r.id ORDER BY r.id LIMIT 21", vec![query.release_after_id.unwrap_or_default().into(),query.release_q.unwrap_or_default().trim().to_owned().into()])).await.map_err(|_|AppError::Unavailable)?;
+    let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT r.id,count(e.lesson_id) AS lesson_count FROM content_releases r LEFT JOIN release_entries e ON e.release_id=r.id{} WHERE r.id>$1 AND ($2='' OR strpos(lower(r.id),lower($2))>0){} GROUP BY r.id ORDER BY r.id LIMIT 21",if backend.product.is_some(){" AND e.product_id=r.product_id"}else{""},product_filter(backend.product,"r.product_id")), vec![query.release_after_id.unwrap_or_default().into(),query.release_q.unwrap_or_default().trim().to_owned().into()])).await.map_err(|_|AppError::Unavailable)?;
     let release_more = rows.len() > 20;
     let releases = rows
         .iter()

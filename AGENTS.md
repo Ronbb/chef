@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立管理员课程读取补充：Store.product取可信Client，legacy传None；概览按固定产品读状态/课程/目录，撤回与编辑审核同产品，条目计数同产品。history仅已具product_id的五类课程记录加范围；媒体/音色/素材等历史仍待迁移。actual split加入H合成课程/目录/发布审计，B概览与history JSON不变、H独特搜索为空；空H私有document不进入B解析。写入/预览/audio accepted及媒体仍待产品化，H后台保持拒绝，生产pin不变，实现只Chef，产品无后台副本。
+
 产品课程锁补充：learning_000010_product_locks安装固定schema/search_path=pg_catalog SECURITY DEFINER chef_lock_product_lesson(TEXT,TEXT,INTEGER)，仅FOR SHARE返回是否存在，不返回课源；PUBLIC EXECUTE撤销，split附加授权显式授学习角色。lock_lesson使用可信LearningStore.product，Some缺课404，None仅legacy旧函数；所有学习/收藏/复习写入传产品。独立ready要求新课程/状态锁。actual split受限学习角色验证外产品在持有课行写锁时false且不阻塞、同产品触发lock timeout、释放后true，身份角色拒执行。全局课ID、旧函数移除、媒体后台及真实粤语仍待迁移，H入口/生产pin保持，产品无锁实现副本。
 
 课源数据库约束补充：learning_000009_product_sources为learning_sessions/review_cards/saved_items及lesson_progress.latest_completed_revision建立同产品课源复合外键，安装时立即验证已有行，不使用NOT VALID或自动改归属。固定维护命令整批原子DDL/账本；冲突回滚和旧九表字段指纹由actual split验证。H合成事实必须引用独立H课源，三类跨产品引用和不存在的已完成版本由具体外键拒绝，正向H九事实在事务中验证后回滚。产品局部课ID、课程锁、媒体后台及真实粤语仍待完成，H入口/生产pin保持，SQL仅Chef。
