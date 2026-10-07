@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/Ronbb/brioche",
+  "commit": "3bfcd84716114fad71cc97958e5e99495b23a3d6",
+  "paths": [
+    "crates/server",
+    "crates/migration"
+  ],
+  "compatibilityFixtures": [
+    "docs/examples",
+    "docs/characters/voices.json",
+    "docs/preview/avatars",
+    "test-fixtures/visuals"
+  ],
+  "note": "Legacy French defaults retained; independent identity runtime and product isolation not yet implemented"
+}

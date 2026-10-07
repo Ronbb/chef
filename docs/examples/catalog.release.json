@@ -1,0 +1,19 @@
+{
+  "id": "a1-bakery-example-v1",
+  "schemaVersion": "1.0",
+  "levels": [
+    {
+      "id": "a1",
+      "label": "A1 入门",
+      "units": [
+        {
+          "id": "a1-breakfast-bakery",
+          "titleZh": "早餐与面包店",
+          "lessons": [
+            { "lessonId": "a1-bakery-buy-breakfast", "revision": 1 }
+          ]
+        }
+      ]
+    }
+  ]
+}

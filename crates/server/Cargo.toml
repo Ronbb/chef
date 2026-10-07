@@ -1,0 +1,46 @@
+[package]
+name = "chef-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+[dependencies]
+jiff = { version = "0.2.37", features = ["tzdb-bundle-always"] }
+brioche-course-contract = { path = "../course-contract" }
+brioche-migration = { path = "../migration" }
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error = "0.1.20"
+schemars = "1.2.2"
+tokio.workspace = true
+sea-orm.workspace = true
+sea-orm-migration.workspace = true
+axum = { version = "0.8.9", features = ["multipart"] }
+tower-http = { version = "0.6", features = ["trace", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
+anyhow = "1"
+unicode-normalization = "0.1.25"
+unicode-segmentation = "1.13.3"
+axum-login = "0.18.0"
+tower-sessions = { version = "0.14.0", default-features = false, features = ["axum-core"] }
+async-trait = "0.1"
+time = { version = "0.3", features = ["serde"] }
+sha2 = "0.10"
+getrandom = "0.4.3"
+subtle = "2.6"
+url = "2.5"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+argon2 = { version = "0.6.0", features = ["getrandom"] }
+quick-xml = "0.42.0"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "wav", "pcm", "id3v1", "id3v2"] }
+tar = "=0.4.46"
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[[bin]]
+name = "chef-server"
+path = "src/main.rs"

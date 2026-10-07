@@ -1,0 +1,3 @@
+[submodule "curriculum"]
+	path = curriculum
+	url = https://github.com/Ronbb/brioche-courses.git

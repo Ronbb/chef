@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "1.0",
+  "revision": 1,
+  "characters": [
+    { "id": "character-camille", "displayName": "Camille", "avatarId": "avatar-camille-v1", "previewAvatarPath": "avatars/camille.svg", "voice": { "locale": "fr-FR", "preferredName": null } },
+    { "id": "character-luc", "displayName": "Luc", "avatarId": "avatar-luc-v1", "previewAvatarPath": "avatars/luc.svg", "voice": { "locale": "fr-FR", "preferredName": null } },
+    { "id": "character-lea", "displayName": "Léa", "avatarId": "avatar-lea-v1", "previewAvatarPath": "avatars/lea.svg", "voice": { "locale": "fr-FR", "preferredName": null } }
+  ]
+}

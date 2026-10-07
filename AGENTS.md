@@ -5,3 +5,7 @@
 当前先抽取共享契约，暂保留 `brioche-course-contract` / `@brioche/contracts` 包名与 v1 法语字段以兼容既有不可变课程。这是明确的迁移阶段，不代表粤语支持已经完成。改变公共契约须通过版本化适配与 Rust 生成的 Schema/TS，不手改生成物。
 
 tests 的法语样本仅兼容 fixture，不是 Chef 拥有的正式课程。所有产品依赖固定已验证提交；身份服务、学习 API、数据产品隔离和完整引擎抽取尚待实施，边界见 docs/architecture.md。秘密、生产数据与私有声音资料不得提交。
+
+## 后端抽取阶段
+
+学习/账号/管理/配音实现与 SeaORM 迁移已迁入 `crates/server` / `crates/migration`；`chef-engine` 提供通用入口，产品只调用入口。所有数据库回归属于框架，使用隔离 PostgreSQL，不允许读取生产配置。`curriculum` 子模块固定法语课源版本，仅用于兼容测试；图片和少量旧例子是明确的测试 fixture。保持原依赖锁定、迁移顺序与公开载荷，不在抽取时顺带升级。当前身份仍同进程，独立身份服务、产品隔离、共享 Web 与粤语适配需继续实施。

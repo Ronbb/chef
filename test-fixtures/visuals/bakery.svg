@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 470" role="img" aria-labelledby="title desc">
+  <title id="title">清晨的社区面包店</title>
+  <desc id="desc">一位顾客走向带条纹遮阳篷的面包店，窗内有面包，旁边停着自行车。</desc>
+  <rect width="640" height="470" rx="24" fill="#ACD793"/>
+  <circle cx="531" cy="72" r="39" fill="#FFC96F"/>
+  <path d="M0 367Q169 344 335 369T640 356V470H0Z" fill="#D3DDCA"/>
+  <ellipse cx="338" cy="415" rx="247" ry="23" fill="#B6C5AD" opacity=".5"/>
+  <path d="M147 104L356 68 514 113V402H147Z" fill="#DFB991"/>
+  <path d="M356 68L514 113V402H356Z" fill="#C8A27D"/>
+  <rect x="160" y="130" width="333" height="273" rx="5" fill="#FAECD4"/>
+  <path d="M157 133H496L483 175H168Z" fill="#F7E8CB"/>
+  <path d="M169 133H204L197 175H169ZM239 133H274L271 175H235ZM309 133H344L345 175H308ZM379 133H414L420 175H382ZM449 133H484L494 175H456Z" fill="#9C4E27"/>
+  <path d="M168 175H197Q197 192 184 192T168 175ZM235 175H271Q271 192 253 192T235 175ZM308 175H345Q345 192 327 192T308 175ZM382 175H420Q420 192 402 192T382 175ZM456 175H494Q494 192 476 192T456 175Z" fill="#9C4E27"/>
+  <path d="M197 175H235Q235 192 216 192T197 175ZM271 175H308Q308 192 290 192T271 175ZM345 175H382Q382 192 363 192T345 175ZM420 175H456Q456 192 438 192T420 175Z" fill="#F7E8CB"/>
+  <rect x="216" y="93" width="222" height="34" rx="5" fill="#689D4B"/>
+  <g fill="#EBD6B4"><circle cx="237" cy="110" r="3"/><circle cx="416" cy="110" r="3"/><path d="M278 108Q295 89 312 108Q306 119 295 119T278 108M319 108Q336 89 353 108Q347 119 336 119T319 108M361 108Q378 89 395 108Q389 119 378 119T361 108"/></g>
+  <rect x="184" y="214" width="184" height="145" rx="3" fill="#689D4B"/>
+  <rect x="195" y="225" width="162" height="118" rx="2" fill="#A9BFA9"/>
+  <path d="M195 308H357V343H195Z" fill="#D4B290"/>
+  <path d="M195 264H357M276 225V343" stroke="#689D4B" stroke-width="8"/>
+  <path d="M200 281Q211 265 223 281L237 295Q222 308 207 296Z" fill="#E87F24"/>
+  <path d="M240 280Q258 264 272 282L269 301H242Z" fill="#FFA62F"/>
+  <path d="M290 297L323 280Q334 276 339 284Q344 294 333 299L300 315Q287 320 286 307Z" fill="#FFA62F"/>
+  <path d="M304 291L310 301M318 285L324 296" stroke="#F1D2A2" stroke-width="4" stroke-linecap="round"/>
+  <rect x="393" y="211" width="80" height="192" rx="3" fill="#689D4B"/>
+  <rect x="405" y="222" width="56" height="115" rx="2" fill="#9EB5A1"/>
+  <path d="M405 222H432L405 270ZM422 337H461V282Z" fill="#C3D0B8" opacity=".55"/>
+  <circle cx="456" cy="359" r="4" fill="#EDD8AB"/>
+  <rect x="386" y="399" width="94" height="11" rx="3" fill="#AC8C6B"/>
+  <path d="M168 361H377V373H168Z" fill="#C09B75"/>
+  <rect x="303" y="370" width="53" height="44" rx="3" fill="#826B4B"/>
+  <path d="M302 369Q327 346 357 369M309 363Q300 338 318 327Q335 337 327 361M329 359Q325 334 346 328Q361 345 340 361" fill="#789368"/>
+  <g stroke="#486150" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="523" cy="395" r="29"/><circle cx="603" cy="395" r="29"/><path d="M523 395L549 352 571 395H523L580 356 603 395M548 352H565M580 356L575 337H587"/></g>
+  <path d="M51 388L59 286" stroke="#72856A" stroke-width="8"/>
+  <path d="M59 320Q14 310 29 272Q67 267 62 316M61 301Q65 253 101 259Q121 286 65 304M57 350Q20 345 14 324Q43 305 57 342M59 337Q93 301 112 328Q98 354 59 353" fill="#7D9976"/>
+  <path d="M37 385H80L73 417H44Z" fill="#AD6C49"/>
+  <g><path d="M112 335L124 410H140L139 339Z" fill="#455C53"/><path d="M139 336L158 409H174L160 331Z" fill="#455C53"/><path d="M122 408L110 419H140V409M157 408L157 419H183L174 408" fill="#705C45"/>
+  <path d="M112 272Q135 258 152 275L171 330Q142 353 104 337Z" fill="#BA6345"/>
+  <path d="M151 286L185 304 191 296 165 277" fill="#BB835D"/>
+  <path d="M104 283L90 319 105 334 113 325 104 317 121 289" fill="#BB835D"/>
+  <path d="M165 291L184 291 197 325 175 331Z" fill="#EBC997"/>
+  <ellipse cx="137" cy="250" rx="19" ry="24" fill="#C08A66"/>
+  <path d="M117 251Q113 226 132 222Q158 219 158 242L141 236 119 248Z" fill="#4E4539"/>
+  <path d="M129 268V278H146V263" fill="#C08A66"/></g>
+  <path d="M530 170Q548 152 565 168M549 133Q564 118 579 133" stroke="#7C9375" stroke-width="3" fill="none" stroke-linecap="round"/>
+</svg>

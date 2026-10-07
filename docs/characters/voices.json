@@ -1,0 +1,16 @@
+{
+  "items": [
+    {
+      "character": { "characterId": "character-camille", "revision": 1, "displayName": "Camille", "avatarId": "avatar-camille-v1", "speechLocale": "fr-FR" },
+      "avatarRevision": 1,
+      "voiceRevision": 1,
+      "profile": { "personality": "友善、有好奇心，初次见面稍微含蓄；提出请求时自然礼貌。", "speakingStyle": "A warm, gently bright voice. Speak conversational French with clear articulation, without exaggeration or a theatrical accent.", "defaultEmotion": "Relaxed, friendly and polite.", "provider": "qwen", "model": "qwen-audio-3.1-tts-flash", "voiceId": "longanlingxin_v3.1", "voiceKind": "system", "locale": "fr-FR", "rate": 1, "referenceAudio": null }
+    },
+    {
+      "character": { "characterId": "character-luc", "revision": 1, "displayName": "Luc", "avatarId": "avatar-luc-v1", "speechLocale": "fr-FR" },
+      "avatarRevision": 1,
+      "voiceRevision": 1,
+      "profile": { "personality": "热情、耐心的社区面包店店员，熟悉日常服务节奏。", "speakingStyle": "A warm, steady voice with an easy conversational cadence. Friendly service, concise and clear, never like an advertisement.", "defaultEmotion": "Welcoming, patient and courteous.", "provider": "qwen", "model": "qwen-audio-3.1-tts-flash", "voiceId": "xunanchuan_v3.1", "voiceKind": "system", "locale": "fr-FR", "rate": 1, "referenceAudio": null }
+    }
+  ]
+}

@@ -1,0 +1,923 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:brioche:design:lesson:1.0",
+  "title": "Brioche normalized lesson design draft",
+  "description": "Design snapshot only. Implementation will export contracts from Rust Serde types. Cross-reference and publication validation is separate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "revision",
+    "levelId",
+    "unitId",
+    "title",
+    "summaryZh",
+    "estimatedMinutes",
+    "objectivesZh",
+    "knowledge",
+    "blocks",
+    "steps",
+    "completion",
+    "reviewItemIds",
+    "serverOnly",
+    "editorial"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "id": {
+      "$ref": "#/$defs/id"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "levelId": {
+      "$ref": "#/$defs/id"
+    },
+    "unitId": {
+      "$ref": "#/$defs/id"
+    },
+    "title": {
+      "$ref": "#/$defs/bilingual"
+    },
+    "summaryZh": {
+      "$ref": "#/$defs/text"
+    },
+    "estimatedMinutes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60
+    },
+    "objectivesZh": {
+      "$ref": "#/$defs/textList"
+    },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vocabulary",
+        "grammar"
+      ],
+      "properties": {
+        "vocabulary": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/vocabularyEntry"
+          }
+        },
+        "grammar": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/grammarEntry"
+          }
+        }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/block"
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strategy",
+        "requiredStepIds",
+        "requiredExerciseIds"
+      ],
+      "properties": {
+        "strategy": {
+          "const": "attempt-all"
+        },
+        "requiredStepIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "requiredExerciseIds": {
+          "$ref": "#/$defs/idList"
+        }
+      }
+    },
+    "reviewItemIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "serverOnly": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grading"
+      ],
+      "properties": {
+        "grading": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/grading"
+          }
+        }
+      }
+    },
+    "editorial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "note"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "draft",
+            "reviewed"
+          ]
+        },
+        "note": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "cast": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "characterId",
+          "revision",
+          "displayName",
+          "avatarId",
+          "speechLocale"
+        ],
+        "properties": {
+          "characterId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "avatarId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "speechLocale": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "maxLength": 120
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "textList": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/text"
+      }
+    },
+    "idList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "bilingual": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fr",
+        "zh"
+      ],
+      "properties": {
+        "fr": {
+          "$ref": "#/$defs/text"
+        },
+        "zh": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "vocabularyEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "lemma",
+        "partOfSpeech",
+        "meaningZh",
+        "noteZh"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "lemma": {
+          "$ref": "#/$defs/text"
+        },
+        "partOfSpeech": {
+          "enum": [
+            "noun",
+            "verb",
+            "adjective",
+            "adverb",
+            "pronoun",
+            "preposition",
+            "conjunction",
+            "interjection",
+            "determiner",
+            "phrase"
+          ]
+        },
+        "gender": {
+          "enum": [
+            "masculine",
+            "feminine"
+          ]
+        },
+        "meaningZh": {
+          "$ref": "#/$defs/text"
+        },
+        "noteZh": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "grammarEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "titleZh",
+        "bodyZh",
+        "examples"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "titleZh": {
+          "$ref": "#/$defs/text"
+        },
+        "bodyZh": {
+          "$ref": "#/$defs/text"
+        },
+        "examples": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/bilingual"
+          }
+        }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vocabularyId": {
+          "$ref": "#/$defs/id"
+        },
+        "grammarId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/segment"
+      }
+    },
+    "speaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "labelZh"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "labelZh": {
+          "$ref": "#/$defs/text"
+        },
+        "characterId": {
+          "$ref": "#/$defs/id"
+        },
+        "avatarId": {
+          "$ref": "#/$defs/id"
+        },
+        "displayName": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "speakerId",
+        "segments",
+        "translationZh"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "speakerId": {
+          "$ref": "#/$defs/id"
+        },
+        "segments": {
+          "$ref": "#/$defs/segments"
+        },
+        "translationZh": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "paragraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "segments",
+        "translationZh"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "segments": {
+          "$ref": "#/$defs/segments"
+        },
+        "translationZh": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "entryId"
+      ],
+      "properties": {
+        "blockId": {
+          "$ref": "#/$defs/id"
+        },
+        "entryId": {
+          "$ref": "#/$defs/id"
+        },
+        "segmentId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "choice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "text": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "block": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sceneBlock"
+        },
+        {
+          "$ref": "#/$defs/dialogueBlock"
+        },
+        {
+          "$ref": "#/$defs/articleBlock"
+        },
+        {
+          "$ref": "#/$defs/explanationBlock"
+        },
+        {
+          "$ref": "#/$defs/cultureBlock"
+        },
+        {
+          "$ref": "#/$defs/vocabularyBlock"
+        },
+        {
+          "$ref": "#/$defs/grammarBlock"
+        },
+        {
+          "$ref": "#/$defs/choiceExercise"
+        },
+        {
+          "$ref": "#/$defs/textExercise"
+        },
+        {
+          "$ref": "#/$defs/orderExercise"
+        },
+        {
+          "$ref": "#/$defs/habitBlock"
+        },
+        {
+          "$ref": "#/$defs/summaryBlock"
+        }
+      ]
+    },
+    "sceneBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "placeZh",
+        "situationZh"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "scene"
+        },
+        "placeZh": {
+          "$ref": "#/$defs/text"
+        },
+        "situationZh": {
+          "$ref": "#/$defs/text"
+        },
+        "illustrationId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "dialogueBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "titleZh",
+        "speakers",
+        "turns"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "dialogue"
+        },
+        "titleZh": {
+          "$ref": "#/$defs/text"
+        },
+        "speakers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/speaker"
+          }
+        },
+        "turns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/turn"
+          }
+        }
+      }
+    },
+    "articleBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "titleZh",
+        "paragraphs"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "article"
+        },
+        "titleZh": {
+          "$ref": "#/$defs/text"
+        },
+        "paragraphs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/paragraph"
+          }
+        },
+        "narratorId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "explanationBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "titleZh",
+        "bodyZh",
+        "targets"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "explanation"
+        },
+        "titleZh": {
+          "$ref": "#/$defs/text"
+        },
+        "bodyZh": {
+          "$ref": "#/$defs/text"
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/target"
+          }
+        }
+      }
+    },
+    "cultureBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "titleZh",
+        "bodyZh",
+        "scopeZh"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "culture"
+        },
+        "titleZh": {
+          "$ref": "#/$defs/text"
+        },
+        "bodyZh": {
+          "$ref": "#/$defs/text"
+        },
+        "scopeZh": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "vocabularyBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "entryIds"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "vocabulary"
+        },
+        "entryIds": {
+          "$ref": "#/$defs/idList"
+        }
+      }
+    },
+    "grammarBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "entryIds"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "grammar"
+        },
+        "entryIds": {
+          "$ref": "#/$defs/idList"
+        }
+      }
+    },
+    "choiceExercise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "exerciseType",
+        "promptZh",
+        "options"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "exercise"
+        },
+        "exerciseType": {
+          "const": "single-choice"
+        },
+        "promptZh": {
+          "$ref": "#/$defs/text"
+        },
+        "hintZh": {
+          "$ref": "#/$defs/text"
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/choice"
+          }
+        }
+      }
+    },
+    "textExercise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "exerciseType",
+        "promptZh",
+        "templateFr"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "exercise"
+        },
+        "exerciseType": {
+          "const": "fill-blank"
+        },
+        "promptZh": {
+          "$ref": "#/$defs/text"
+        },
+        "hintZh": {
+          "$ref": "#/$defs/text"
+        },
+        "templateFr": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "orderExercise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "exerciseType",
+        "promptZh",
+        "tokens"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "exercise"
+        },
+        "exerciseType": {
+          "const": "order"
+        },
+        "promptZh": {
+          "$ref": "#/$defs/text"
+        },
+        "hintZh": {
+          "$ref": "#/$defs/text"
+        },
+        "tokens": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/choice"
+          }
+        }
+      }
+    },
+    "habitBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "taskZh",
+        "alternativeZh"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "habit"
+        },
+        "taskZh": {
+          "$ref": "#/$defs/text"
+        },
+        "alternativeZh": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "summaryBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "takeawaysZh"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "summary"
+        },
+        "takeawaysZh": {
+          "$ref": "#/$defs/textList"
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "titleZh",
+        "blockIds"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "discover",
+            "read",
+            "explore",
+            "practice",
+            "apply",
+            "recap"
+          ]
+        },
+        "titleZh": {
+          "$ref": "#/$defs/text"
+        },
+        "blockIds": {
+          "$ref": "#/$defs/idList"
+        }
+      }
+    },
+    "grading": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "correctOptionId",
+            "feedbackZh"
+          ],
+          "properties": {
+            "kind": {
+              "const": "choice"
+            },
+            "correctOptionId": {
+              "$ref": "#/$defs/id"
+            },
+            "feedbackZh": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "accepted",
+            "caseSensitive",
+            "feedbackZh"
+          ],
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "accepted": {
+              "$ref": "#/$defs/textList"
+            },
+            "caseSensitive": {
+              "type": "boolean"
+            },
+            "feedbackZh": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "correctTokenIds",
+            "feedbackZh"
+          ],
+          "properties": {
+            "kind": {
+              "const": "order"
+            },
+            "correctTokenIds": {
+              "$ref": "#/$defs/idList"
+            },
+            "feedbackZh": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

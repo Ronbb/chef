@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "1.0",
+  "assets": [
+    {
+      "assetId": "art-bakery-morning",
+      "revision": 1,
+      "sha256": "2154bad9ebb6f592e210e24eacc5dd97cf0be05d5f8b33fedd313e1e58ba5412",
+      "mimeType": "image/svg+xml",
+      "width": 640,
+      "height": 470,
+      "altZh": "社区面包店的清晨",
+      "creditZh": "待确认署名",
+      "file": "bakery.svg",
+      "status": "planned",
+      "source": "待确认素材来源",
+      "license": "待确认授权",
+      "creator": "待确认作者",
+      "rightsConfirmed": false
+    },
+    {
+      "assetId": "avatar-camille-v1",
+      "revision": 1,
+      "sha256": "3ff6d718198b499e956f01729a5093352850f79538d6f2c1e0815be6a4a0db3e",
+      "mimeType": "image/svg+xml",
+      "width": 96,
+      "height": 96,
+      "altZh": "Camille 的头像",
+      "creditZh": "待确认署名",
+      "file": "avatars/camille.svg",
+      "status": "planned",
+      "source": "待确认素材来源",
+      "license": "待确认授权",
+      "creator": "待确认作者",
+      "rightsConfirmed": false
+    },
+    {
+      "assetId": "avatar-luc-v1",
+      "revision": 1,
+      "sha256": "75ab6b4e317ac3557b8e5b7e8644895068f5e13b4423a7d25965ad343290356b",
+      "mimeType": "image/svg+xml",
+      "width": 96,
+      "height": 96,
+      "altZh": "Luc 的头像",
+      "creditZh": "待确认署名",
+      "file": "avatars/luc.svg",
+      "status": "planned",
+      "source": "待确认素材来源",
+      "license": "待确认授权",
+      "creator": "待确认作者",
+      "rightsConfirmed": false
+    },
+    {
+      "assetId": "avatar-lea-v1",
+      "revision": 1,
+      "sha256": "54b7d0bd3dfa0d3189d154eee90c41b0a2f7bdf7155aa6c569f006abf9c1b1c9",
+      "mimeType": "image/svg+xml",
+      "width": 96,
+      "height": 96,
+      "altZh": "Léa 的头像",
+      "creditZh": "待确认署名",
+      "file": "avatars/lea.svg",
+      "status": "planned",
+      "source": "待确认素材来源",
+      "license": "待确认授权",
+      "creator": "待确认作者",
+      "rightsConfirmed": false
+    }
+  ],
+  "characters": [
+    {
+      "snapshot": {
+        "characterId": "character-camille",
+        "revision": 1,
+        "displayName": "Camille",
+        "avatarId": "avatar-camille-v1",
+        "speechLocale": "fr-FR"
+      },
+      "avatarRevision": 1
+    },
+    {
+      "snapshot": {
+        "characterId": "character-luc",
+        "revision": 1,
+        "displayName": "Luc",
+        "avatarId": "avatar-luc-v1",
+        "speechLocale": "fr-FR"
+      },
+      "avatarRevision": 1
+    },
+    {
+      "snapshot": {
+        "characterId": "character-lea",
+        "revision": 1,
+        "displayName": "Léa",
+        "avatarId": "avatar-lea-v1",
+        "speechLocale": "fr-FR"
+      },
+      "avatarRevision": 1
+    }
+  ]
+}
