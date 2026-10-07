@@ -3386,6 +3386,38 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(status, 200, "{filtered}");
     assert!(filtered["lessons"].as_array().unwrap().is_empty());
     assert!(filtered["releases"].as_array().unwrap().is_empty());
+    let foreign_review = format!(
+        "/api/v1/operator/lessons/{}/revisions/{}/review",
+        h_lesson.id, h_lesson.revision
+    );
+    for published in [true, false] {
+        owner
+            .execute_raw(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "UPDATE lesson_revisions SET published=$3 WHERE lesson_id=$1 AND revision=$2",
+                [
+                    h_lesson.id.clone().into(),
+                    (h_lesson.revision as i32).into(),
+                    published.into(),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(request(&content_app,"POST",&foreign_review,Some(serde_json::json!({"version":0,"approved":false,"reason":"Foreign review rejected"})),&mut cookie,&mut csrf).await.0,404);
+    }
+    owner
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE lesson_revisions SET published=true WHERE lesson_id=$1 AND revision=$2",
+            [
+                h_lesson.id.clone().into(),
+                (h_lesson.revision as i32).into(),
+            ],
+        ))
+        .await
+        .unwrap();
+    let count=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM editorial_reviews WHERE lesson_id=$1 AND revision=$2",[h_lesson.id.clone().into(),(h_lesson.revision as i32).into()])).await.unwrap().unwrap();
+    assert_eq!(count.try_get::<i64>("", "n").unwrap(), 0);
     let h_catalog =
         chef_engine::content::catalog_matching_for_product(&learning, Some(ProductId::Hargow), &[])
             .await

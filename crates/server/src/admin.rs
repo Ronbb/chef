@@ -35,6 +35,14 @@ struct Store {
     include_accounts: bool,
     product: Option<crate::product::ProductId>,
 }
+impl Store {
+    fn state_selector(&self) -> String {
+        self.product.map_or_else(
+            || "singleton".to_owned(),
+            |p| format!("product_id='{}'", p.as_str()),
+        )
+    }
+}
 pub fn independent_router(
     db: sea_orm::DatabaseConnection,
     client: crate::learning_identity::Client,
@@ -401,10 +409,7 @@ async fn overview(
         &tx,
         &format!(
             "SELECT active_release,generation FROM content_state WHERE {}",
-            backend.product.map_or_else(
-                || "singleton".to_owned(),
-                |p| format!("product_id='{}'", p.as_str())
-            )
+            backend.state_selector()
         ),
         vec![],
     )
@@ -522,12 +527,15 @@ async fn review(
     operator.lock_content(&tx).await?;
     one(
         &tx,
-        "SELECT generation FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            backend.state_selector()
+        ),
         vec![],
     )
     .await?
     .ok_or(AppError::Unavailable)?;
-    let row=one(&tx,"SELECT published,server_document,EXISTS(SELECT 1 FROM content_withdrawals WHERE lesson_id=$1 AND revision=$2) AS withdrawn FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2 FOR UPDATE",vec![id.clone().into(),(rev as i32).into()]).await?.ok_or(AppError::NotFound)?;
+    let row=one(&tx,&format!("SELECT published,server_document,EXISTS(SELECT 1 FROM content_withdrawals w WHERE lesson_id=$1 AND revision=$2{}) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2{} FOR UPDATE",product_filter(backend.product,"w.product_id"),product_filter(backend.product,"r.product_id")),vec![id.clone().into(),(rev as i32).into()]).await?.ok_or(AppError::NotFound)?;
     if field::<bool>(&row, "withdrawn")? {
         return Err(AppError::Gone);
     }
@@ -535,7 +543,7 @@ async fn review(
     if field::<bool>(&row, "published")? {
         return Err(AppError::Conflict);
     }
-    let latest=one(&tx,"SELECT version,approved,reason FROM editorial_reviews WHERE lesson_id=$1 AND revision=$2 ORDER BY version DESC LIMIT 1",vec![id.clone().into(),(rev as i32).into()]).await?;
+    let latest=one(&tx,&format!("SELECT version,approved,reason FROM editorial_reviews WHERE lesson_id=$1 AND revision=$2{} ORDER BY version DESC LIMIT 1",product_filter(backend.product,"product_id")),vec![id.clone().into(),(rev as i32).into()]).await?;
     let current = latest
         .as_ref()
         .map(|row| field::<i32>(row, "version"))
@@ -549,7 +557,7 @@ async fn review(
                     && field::<String>(row, "reason").ok().as_deref() == Some(&request.reason)
             })
         {
-            let original=one(&tx,"SELECT actor_id FROM editorial_reviews WHERE lesson_id=$1 AND revision=$2 AND version=$3",vec![id.into(),(rev as i32).into(),(current as i32).into()]).await?.ok_or(AppError::Unavailable)?;
+            let original=one(&tx,&format!("SELECT actor_id FROM editorial_reviews WHERE lesson_id=$1 AND revision=$2 AND version=$3{}",product_filter(backend.product,"product_id")),vec![id.into(),(rev as i32).into(),(current as i32).into()]).await?.ok_or(AppError::Unavailable)?;
             if field::<i64>(&original, "actor_id")? == actor {
                 return Ok(Json(AdminReviewRequest {
                     version: current,
@@ -574,7 +582,11 @@ async fn review(
         .ok()
         .and_then(|v| v.checked_add(1))
         .ok_or(AppError::Unavailable)?;
-    exec(&tx,"INSERT INTO editorial_reviews(lesson_id,revision,version,approved,actor_id,reason) VALUES($1,$2,$3,$4,$5,$6)",vec![id.into(),(rev as i32).into(),next.into(),request.approved.into(),actor.into(),request.reason.clone().into()]).await?;
+    if let Some(product) = backend.product {
+        exec(&tx,"INSERT INTO editorial_reviews(lesson_id,revision,version,approved,actor_id,reason,product_id) VALUES($1,$2,$3,$4,$5,$6,$7)",vec![id.into(),(rev as i32).into(),next.into(),request.approved.into(),actor.into(),request.reason.clone().into(),product.as_str().into()]).await?;
+    } else {
+        exec(&tx,"INSERT INTO editorial_reviews(lesson_id,revision,version,approved,actor_id,reason) VALUES($1,$2,$3,$4,$5,$6)",vec![id.into(),(rev as i32).into(),next.into(),request.approved.into(),actor.into(),request.reason.clone().into()]).await?;
+    }
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(AdminReviewRequest {
         version: next as u32,
