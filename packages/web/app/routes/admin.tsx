@@ -1,4 +1,5 @@
 import { useCommittedDialog } from "../components/committed-dialog";
+import product from "@chef/product";
 import { Form, Link, data, useLocation, useRevalidator } from "react-router";
 import { useId, useEffect, useRef, useState } from "react";
 import type { AdminImportResult } from "@brioche/contracts/AdminImportResult";
@@ -233,7 +234,7 @@ export default function Admin({ loaderData: overview }: Route.ComponentProps) {
     <section className="admin-page page-arrive">
       <div className="admin-heading">
         <div>
-          <p className="eyebrow">BRIOCHE STUDIO</p>
+          <p className="eyebrow">{`${product.name.toUpperCase()} STUDIO`}</p>
           <h1 ref={heading} tabIndex={-1}>
             管理员后台
           </h1>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import product from "@chef/product";
 import { Link } from "react-router";
 import type { AdminAlignment } from "@brioche/contracts/AdminAlignment";
 import type { AdminSpeechPackageRequest } from "@brioche/contracts/AdminSpeechPackageRequest";
@@ -23,7 +24,7 @@ export function SpeechPackage({
   const [source, setSource] = useState("Qwen 法语语音合成（固定角色声音版本）");
   const [license, setLicense] = useState("");
   const [creator, setCreator] = useState("");
-  const [credit, setCredit] = useState("AI 合成语音 · Brioche");
+  const [credit, setCredit] = useState(`AI 合成语音 · ${product.name}`);
   const [reason, setReason] = useState("");
   const [rights, setRights] = useState(false);
   const [pending, setPending] = useState(false);

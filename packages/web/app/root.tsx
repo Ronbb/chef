@@ -61,7 +61,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           href="/apple-touch-icon.png"
           sizes="180x180"
         />
-        <title>{product.name} · {product.tagline}</title>
+        <title>{`${product.name} · ${product.tagline}`}</title>
         <Meta />
         <Links />
       </head>

@@ -70,7 +70,7 @@ export default function Home({
     <section className="home page-arrive">
       <div className="intro">
         <div>
-          <h2>Bonjour，今天从一件小事开始。</h2>
+          <h2>{product.greeting}</h2>
           <p>{product.tagline}</p>
         </div>
       </div>

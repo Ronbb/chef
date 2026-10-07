@@ -1,4 +1,5 @@
 import { useLearning } from "../components/learning";
+import product from "@chef/product";
 import { Icon } from "../components/icon";
 import { Link, useBlocker, useRouteLoaderData } from "react-router";
 import type { loader } from "../root";
@@ -189,7 +190,7 @@ function ProfileContent() {
         <img src="/assets/avatars/learner.svg" alt="" />
         <div>
           <h2>{profile?.displayName ?? "法语学习者"}</h2>
-          <p>{profile?.email ?? "一点法语，一点生活。"}</p>
+          <p>{profile?.email ?? product.tagline}</p>
           <span className="profile-level">A1–A2</span>
         </div>
         {profile && (
