@@ -206,7 +206,8 @@ mod tests {
             .await
             .unwrap();
         db.execute_unprepared("INSERT INTO users(id,email,password_hash,display_name,role) VALUES(101,'operator-one@example.test','test','One','operator'),(102,'operator-two@example.test','test','Two','operator'),(103,'learner@example.test','test','Three','learner')").await.unwrap();
-        brioche_migration::Migrator::up(&db, None).await.unwrap();
+        // This regression exercises migration29 and its rollback, independently of later migrations.
+        brioche_migration::Migrator::up(&db, Some(1)).await.unwrap();
         let backend = Backend::new(db.clone()).await.unwrap();
         let stale_operator = require_operator(&db, ProductId::Brioche, 101)
             .await

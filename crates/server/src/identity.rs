@@ -152,10 +152,15 @@ impl Backend {
         }
         Ok(())
     }
-    async fn validate_token(&self, hash: &str, kind: &str) -> Result<(), AppError> {
+    async fn validate_token(
+        &self,
+        hash: &str,
+        kind: &str,
+        product: crate::product::ProductId,
+    ) -> Result<(), AppError> {
         let row = self.db.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-            "SELECT token_hash FROM identity_tokens WHERE token_hash=$1 AND kind=$2 AND consumed_at IS NULL AND expires_at>CURRENT_TIMESTAMP",
-            [hash.into(), kind.into()])).await.map_err(|_| AppError::Unavailable)?;
+            "SELECT token_hash FROM identity_tokens WHERE token_hash=$1 AND kind=$2 AND product_id=$3 AND consumed_at IS NULL AND expires_at>CURRENT_TIMESTAMP",
+            [hash.into(), kind.into(), product.as_str().into()])).await.map_err(|_| AppError::Unavailable)?;
         if row.is_none() {
             return Err(AppError::InvalidInput);
         }
@@ -176,7 +181,7 @@ impl Backend {
             return Err(AppError::InvalidInput);
         }
         let hash = token_hash(&request.token)?;
-        self.validate_token(&hash, "invite").await?;
+        self.validate_token(&hash, "invite", product).await?;
         self.throttle(&format!("invite:{hash}")).await?;
         let password_hash = self.passwords.hash(request.password).await?;
         let tx = self.db.begin().await.map_err(|_| AppError::Unavailable)?;
@@ -188,8 +193,8 @@ impl Backend {
         .await
         .map_err(|_| AppError::Unavailable)?;
         let token = tx.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-            "SELECT email, role FROM identity_tokens WHERE token_hash=$1 AND kind='invite' AND consumed_at IS NULL AND expires_at>CURRENT_TIMESTAMP FOR UPDATE",
-            [hash.clone().into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::InvalidInput)?;
+            "SELECT email, role FROM identity_tokens WHERE token_hash=$1 AND product_id=$2 AND kind='invite' AND consumed_at IS NULL AND expires_at>CURRENT_TIMESTAMP FOR UPDATE",
+            [hash.clone().into(), product.as_str().into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::InvalidInput)?;
         let invited_email: String = token
             .try_get("", "email")
             .map_err(|_| AppError::Unavailable)?;
@@ -201,7 +206,7 @@ impl Backend {
             .map_err(|_| AppError::Unavailable)?;
         let row = tx.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
             "INSERT INTO users (email,password_hash,display_name,role) VALUES ($1,$2,$3,$4) ON CONFLICT (email) DO NOTHING RETURNING id,email,password_hash,display_name,role,profile_version",
-            [email.into(), password_hash.into(), name.into(), role.into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::InvalidInput)?;
+            [email.into(), password_hash.into(), name.into(), (if product == crate::product::ProductId::Brioche { role.clone() } else { "learner".into() }).into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::InvalidInput)?;
         tx.execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
             "UPDATE identity_tokens SET consumed_at=CURRENT_TIMESTAMP WHERE token_hash=$1",
@@ -210,30 +215,36 @@ impl Backend {
         .await
         .map_err(|_| AppError::Unavailable)?;
         let user = row_user(row)?;
-        // Legacy invitations only authorize Brioche; they must not bootstrap Hargow operators.
-        if product == crate::product::ProductId::Brioche {
-            tx.execute_raw(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                "INSERT INTO product_memberships(product_id,user_id,role) VALUES('brioche',$1,$2)",
-                [user.id.into(), user.role.clone().into()],
-            ))
-            .await
-            .map_err(|_| AppError::Unavailable)?;
-        }
+        // A scoped invitation grants membership only in its issuing product.
+        tx.execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "INSERT INTO product_memberships(product_id,user_id,role) VALUES($3,$1,$2)",
+            [user.id.into(), role.into(), product.as_str().into()],
+        ))
+        .await
+        .map_err(|_| AppError::Unavailable)?;
         tx.commit().await.map_err(|_| AppError::Unavailable)?;
         Ok(user)
     }
     pub async fn reset_password(&self, request: ResetPasswordRequest) -> Result<(), AppError> {
+        self.reset_password_scoped(request, crate::product::ProductId::Brioche)
+            .await
+    }
+    async fn reset_password_scoped(
+        &self,
+        request: ResetPasswordRequest,
+        product: crate::product::ProductId,
+    ) -> Result<(), AppError> {
         let hash = token_hash(&request.token)?;
-        self.validate_token(&hash, "reset").await?;
+        self.validate_token(&hash, "reset", product).await?;
         self.throttle(&format!("reset:{hash}")).await?;
         let password_hash = self.passwords.hash(request.password).await?;
         let tx = self.db.begin().await.map_err(|_| AppError::Unavailable)?;
         let row = tx
             .query_one_raw(Statement::from_sql_and_values(
                 DbBackend::Postgres,
-                "SELECT email FROM identity_tokens WHERE token_hash=$1",
-                [hash.clone().into()],
+                "SELECT email FROM identity_tokens WHERE token_hash=$1 AND product_id=$2",
+                [hash.clone().into(), product.as_str().into()],
             ))
             .await
             .map_err(|_| AppError::Unavailable)?
@@ -249,8 +260,8 @@ impl Backend {
         .await
         .map_err(|_| AppError::Unavailable)?;
         let token = tx.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-            "SELECT user_id FROM identity_tokens WHERE token_hash=$1 AND kind='reset' AND consumed_at IS NULL AND expires_at>CURRENT_TIMESTAMP FOR UPDATE",
-            [hash.into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::InvalidInput)?;
+            "SELECT user_id FROM identity_tokens WHERE token_hash=$1 AND product_id=$2 AND kind='reset' AND consumed_at IS NULL AND expires_at>CURRENT_TIMESTAMP FOR UPDATE",
+            [hash.into(), product.as_str().into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::InvalidInput)?;
         let user_id: i64 = token
             .try_get("", "user_id")
             .map_err(|_| AppError::Unavailable)?;
@@ -279,18 +290,26 @@ impl Backend {
         reset: bool,
         operator: bool,
     ) -> Result<String, AppError> {
-        self.issue_token_impl(email, reset, operator, None).await
+        self.issue_token_impl(
+            email,
+            reset,
+            operator,
+            crate::product::ProductId::Brioche,
+            None,
+        )
+        .await
     }
     pub(crate) async fn issue_operator_token(
         &self,
+        product: crate::product::ProductId,
         email: &str,
         reset: bool,
         operator: bool,
         actor: i64,
         reason: &str,
     ) -> Result<String, AppError> {
-        crate::admin::reason(reason)?;
-        self.issue_token_impl(email, reset, operator, Some((actor, reason)))
+        crate::account_admin::reason(reason)?;
+        self.issue_token_impl(email, reset, operator, product, Some((actor, reason)))
             .await
     }
     async fn issue_token_impl(
@@ -298,6 +317,7 @@ impl Backend {
         email: &str,
         reset: bool,
         operator: bool,
+        product: crate::product::ProductId,
         audit: Option<(i64, &str)>,
     ) -> Result<String, AppError> {
         let email = normalize_email(email)?;
@@ -306,12 +326,7 @@ impl Backend {
         let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         let tx = self.db.begin().await.map_err(|_| AppError::Unavailable)?;
         if let Some((actor, _)) = audit {
-            crate::product_memberships::lock_operator(
-                &tx,
-                crate::product::ProductId::Brioche,
-                actor,
-            )
-            .await?;
+            crate::product_memberships::lock_operator(&tx, product, actor).await?;
         }
         tx.execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -337,18 +352,18 @@ impl Backend {
             .map_err(|_| AppError::Unavailable)?;
         let kind = if reset { "reset" } else { "invite" };
         tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-            "UPDATE identity_tokens SET consumed_at=CURRENT_TIMESTAMP WHERE email=$1 AND kind=$2 AND consumed_at IS NULL",
-            [email.clone().into(), kind.into()])).await.map_err(|_| AppError::Unavailable)?;
+            "UPDATE identity_tokens SET consumed_at=CURRENT_TIMESTAMP WHERE email=$1 AND kind=$2 AND product_id=$3 AND consumed_at IS NULL",
+            [email.clone().into(), kind.into(), product.as_str().into()])).await.map_err(|_| AppError::Unavailable)?;
         tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-            "INSERT INTO identity_tokens (token_hash,kind,email,user_id,role,expires_at) VALUES ($1,$2,$3,$4,$5,CURRENT_TIMESTAMP + ($6::bigint * interval '1 second'))",
-            [digest(&token).into(), kind.into(), email.clone().into(), user_id.into(), (if operator { "operator" } else { "learner" }).into(), (if reset { 1800_i64 } else { 172800_i64 }).into()])).await.map_err(|_| AppError::Unavailable)?;
+            "INSERT INTO identity_tokens (token_hash,kind,email,user_id,role,expires_at,product_id) VALUES ($1,$2,$3,$4,$5,CURRENT_TIMESTAMP + ($6::bigint * interval '1 second'),$7)",
+            [digest(&token).into(), kind.into(), email.clone().into(), user_id.into(), (if operator { "operator" } else { "learner" }).into(), (if reset { 1800_i64 } else { 172800_i64 }).into(), product.as_str().into()])).await.map_err(|_| AppError::Unavailable)?;
         if let Some((actor, reason)) = audit {
             let details = if reset {
                 serde_json::json!({})
             } else {
                 serde_json::json!({"role":if operator {"operator"} else {"learner"}})
             };
-            crate::learning::exec(&tx,"INSERT INTO account_admin_audit(action,actor_id,target_email,reason,details) VALUES($1,$2,$3,$4,$5)",vec![kind.into(),actor.into(),email.into(),reason.into(),details.into()]).await?;
+            crate::learning::exec(&tx,"INSERT INTO account_admin_audit(action,actor_id,target_email,reason,details,product_id) VALUES($1,$2,$3,$4,$5,$6)",vec![kind.into(),actor.into(),email.into(),reason.into(),details.into(),product.as_str().into()]).await?;
         }
         tx.commit().await.map_err(|_| AppError::Unavailable)?;
         Ok(token)
@@ -459,9 +474,10 @@ async fn logout(mut auth: AuthSession) -> Result<Json<CsrfToken>, AppError> {
 async fn reset(
     mut auth: AuthSession,
     State(backend): State<Backend>,
+    axum::Extension(product): axum::Extension<crate::product::ProductId>,
     Json(request): Json<ResetPasswordRequest>,
 ) -> Result<Json<CsrfToken>, AppError> {
-    backend.reset_password(request).await?;
+    backend.reset_password_scoped(request, product).await?;
     logout_after_reset(&mut auth).await
 }
 async fn logout_after_reset(auth: &mut AuthSession) -> Result<Json<CsrfToken>, AppError> {
@@ -616,7 +632,8 @@ pub fn router_with_media_root(
         .merge(crate::library::router())
         .merge(crate::dashboard::router())
         .merge(crate::admin::router(root.clone()))
-        .merge(crate::preview::router(root));
+        .merge(crate::preview::router(root))
+        .layer(axum::Extension(crate::product::ProductId::Brioche));
     protect_routes(
         routes,
         backend,
@@ -641,6 +658,7 @@ pub fn account_router(
         .route("/api/v1/auth/reset-password", post(reset))
         .route("/api/v1/account", get(account_me).patch(account_update))
         .merge(crate::product_memberships::router(backend.clone(), product))
+        .merge(crate::account_admin::router(product))
         .layer(axum::Extension(product));
     protect_routes(routes, backend, policy, secure, product)
 }

@@ -762,18 +762,10 @@ pub async fn run() -> Result<()> {
     } else {
         None
     };
-    let cleanup = db.clone().filter(|_| !remote_identity).map(|db| tokio::spawn(async move {
-        let store = crate::session_store::PgSessionStore::new(db.clone());
-        let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
-        loop {
-            timer.tick().await;
-            if store.delete_expired().await.is_err() { tracing::warn!("session cleanup unavailable"); }
-            use sea_orm::ConnectionTrait;
-            if db.execute_unprepared("DELETE FROM auth_throttle WHERE resets_at <= CURRENT_TIMESTAMP; DELETE FROM identity_tokens WHERE expires_at < CURRENT_TIMESTAMP - interval '7 days';").await.is_err() {
-                tracing::warn!("identity cleanup unavailable");
-            }
-        }
-    }));
+    let cleanup = db
+        .clone()
+        .filter(|_| !remote_identity)
+        .map(crate::identity_cleanup::spawn);
     let qwen = crate::qwen::Service::from_env()
         .map_err(|_| anyhow::anyhow!("Invalid private Qwen configuration"))?;
     let listener = tokio::net::TcpListener::bind(

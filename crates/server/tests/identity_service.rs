@@ -17,6 +17,488 @@ use tower_sessions::{
 };
 
 const KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+#[tokio::test]
+#[ignore = "set TEST_DATABASE_URL to a dedicated PostgreSQL database"]
+async fn identity_admin_tokens_roles_and_sessions_are_product_scoped() {
+    let url = std::env::var("TEST_DATABASE_URL").expect("dedicated test database required");
+    let admin = Database::connect(&url).await.unwrap();
+    let schema = format!(
+        "identity_admin_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    admin
+        .execute_unprepared(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let mut options = ConnectOptions::new(url);
+    options.set_schema_search_path(&schema).sqlx_logging(false);
+    let db = Database::connect(options).await.unwrap();
+    brioche_migration::Migrator::up(&db, Some(29))
+        .await
+        .unwrap();
+    // Actual old rows upgrade without editing immutable audit or inventing Hargow ownership.
+    db.execute_unprepared("INSERT INTO users(id,email,password_hash,display_name,role) VALUES(900,'old@example.test','synthetic','Old','learner'); INSERT INTO identity_tokens(token_hash,kind,email,expires_at) VALUES(repeat('0',64),'invite','legacy@example.test',CURRENT_TIMESTAMP+interval '1 day'); INSERT INTO account_admin_audit(action,actor_id,target_email,reason) VALUES('invite',900,'legacy@example.test','Old audit')").await.unwrap();
+    brioche_migration::Migrator::up(&db, Some(1)).await.unwrap();
+    for table in ["identity_tokens", "account_admin_audit"] {
+        let row = db
+            .query_one_raw(Statement::from_string(
+                DbBackend::Postgres,
+                format!("SELECT product_id FROM {table} LIMIT 1"),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.try_get::<String>("", "product_id").unwrap(), "brioche");
+    }
+    // Brioche-only rows can safely return to29, retaining both token and immutable audit.
+    brioche_migration::Migrator::down(&db, Some(1))
+        .await
+        .unwrap();
+    brioche_migration::Migrator::up(&db, Some(1)).await.unwrap();
+    assert!(
+        db.execute_unprepared("UPDATE identity_tokens SET product_id='unknown'")
+            .await
+            .is_err()
+    );
+    // Identity maintenance spans shared accounts but retains recent expired token history.
+    db.execute_unprepared("INSERT INTO auth_throttle(key_hash,attempts,resets_at) VALUES('expired',1,CURRENT_TIMESTAMP-interval '1 hour'),('future',1,CURRENT_TIMESTAMP+interval '1 hour'); INSERT INTO identity_tokens(token_hash,kind,email,expires_at,product_id) VALUES(repeat('1',64),'invite','old-expired@example.test',CURRENT_TIMESTAMP-interval '8 days','hargow'),(repeat('2',64),'invite','recent-expired@example.test',CURRENT_TIMESTAMP-interval '1 day','hargow'); INSERT INTO browser_sessions(id_hash,data,expires_at) VALUES(repeat('0',64),'{}',CURRENT_TIMESTAMP-interval '1 hour'),(repeat('1',64),'{\"chef.product\":\"hargow\"}',CURRENT_TIMESTAMP+interval '1 hour')").await.unwrap();
+    let cleanup = chef_engine::identity_cleanup::spawn(db.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let row = db.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM auth_throttle WHERE key_hash='expired')+(SELECT count(*) FROM identity_tokens WHERE token_hash=repeat('1',64))+(SELECT count(*) FROM browser_sessions WHERE id_hash=repeat('0',64)) AS n")).await.unwrap().unwrap();
+            if row.try_get::<i64>("","n").unwrap()==0 { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    cleanup.abort();
+    let retained = db.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM auth_throttle WHERE key_hash='future')+(SELECT count(*) FROM identity_tokens WHERE token_hash=repeat('2',64))+(SELECT count(*) FROM browser_sessions WHERE id_hash=repeat('1',64)) AS n")).await.unwrap().unwrap();
+    assert_eq!(retained.try_get::<i64>("", "n").unwrap(), 3);
+    let backend = Backend::new(db.clone()).await.unwrap();
+    let app = |product, origin: &str| {
+        identity_service::router(
+            backend.clone(),
+            CsrfPolicy::new([origin.to_owned()]).unwrap(),
+            false,
+            ServiceConfig::new(product, KEY).unwrap(),
+        )
+    };
+    let mut french = Browser {
+        app: app(ProductId::Brioche, "http://brioche.example.test"),
+        origin: "http://brioche.example.test",
+        cookie: String::new(),
+        csrf: String::new(),
+    };
+    let mut cantonese = Browser {
+        app: app(ProductId::Hargow, "http://hargow.example.test"),
+        origin: "http://hargow.example.test",
+        cookie: String::new(),
+        csrf: String::new(),
+    };
+    assert_eq!(
+        french
+            .request("GET", "/api/v1/auth/csrf", None, None)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        cantonese
+            .request("GET", "/api/v1/auth/csrf", None, None)
+            .await
+            .0,
+        200
+    );
+    let password = "a long shared account password";
+    let invite = backend
+        .issue_token("operator@example.test", false, true)
+        .await
+        .unwrap();
+    let (status,created) = french.request("POST","/api/v1/auth/accept-invite",Some(serde_json::json!({"token":invite,"email":"operator@example.test","displayName":"Operator","password":password})),None).await;
+    assert_eq!(status, 200);
+    let actor = created["user"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        cantonese
+            .request(
+                "POST",
+                "/api/v1/auth/login",
+                Some(serde_json::json!({"email":"operator@example.test","password":password})),
+                None
+            )
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        cantonese
+            .request("GET", "/api/v1/operator/accounts", None, None)
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        french
+            .request("GET", "/api/v1/operator/accounts", None, None)
+            .await
+            .0,
+        200
+    );
+    // Explicit synthetic bootstrap, never implicitly inherited from the global account role.
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "INSERT INTO product_memberships(product_id,user_id,role) VALUES('hargow',$1,'operator')",
+        [actor.parse::<i64>().unwrap().into()],
+    ))
+    .await
+    .unwrap();
+    let request = |email: &str, kind: &str, operator| serde_json::json!({"email":email,"kind":kind,"operator":operator,"reason":"Synthetic scoped administration"});
+    let (_, french_invite) = french
+        .request(
+            "POST",
+            "/api/v1/operator/accounts/token",
+            Some(request("new@example.test", "invite", true)),
+            None,
+        )
+        .await;
+    let (status, hargow_invite) = cantonese
+        .request(
+            "POST",
+            "/api/v1/operator/accounts/token",
+            Some(request("new@example.test", "invite", true)),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert!(french_invite["token"].is_string());
+    let (_, fpending) = french
+        .request(
+            "GET",
+            "/api/v1/operator/accounts/pending-tokens",
+            None,
+            None,
+        )
+        .await;
+    let (_, hpending) = cantonese
+        .request(
+            "GET",
+            "/api/v1/operator/accounts/pending-tokens",
+            None,
+            None,
+        )
+        .await;
+    let ftoken = fpending["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["email"] == "new@example.test")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let htoken = hpending["items"][0]["id"].as_str().unwrap().to_owned();
+    assert_ne!(ftoken, htoken);
+    assert_eq!(hpending["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        french
+            .request(
+                "POST",
+                &format!("/api/v1/operator/accounts/pending-tokens/{htoken}/revoke"),
+                Some(serde_json::json!({"reason":"Wrong product"})),
+                None
+            )
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        cantonese
+            .request(
+                "POST",
+                &format!("/api/v1/operator/accounts/pending-tokens/{ftoken}/revoke"),
+                Some(serde_json::json!({"reason":"Wrong product"})),
+                None
+            )
+            .await
+            .0,
+        404
+    );
+    // A token cannot create an account through the other product, nor be consumed there.
+    let accept = |token: &serde_json::Value| serde_json::json!({"token":token,"email":"new@example.test","displayName":"New","password":password});
+    let mut new_hargow = Browser {
+        app: cantonese.app.clone(),
+        origin: cantonese.origin,
+        cookie: String::new(),
+        csrf: String::new(),
+    };
+    assert_eq!(
+        new_hargow
+            .request("GET", "/api/v1/auth/csrf", None, None)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        new_hargow
+            .request(
+                "POST",
+                "/api/v1/auth/accept-invite",
+                Some(accept(&french_invite["token"])),
+                None
+            )
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        french
+            .request(
+                "POST",
+                "/api/v1/auth/accept-invite",
+                Some(accept(&hargow_invite["token"])),
+                None
+            )
+            .await
+            .0,
+        400
+    );
+    let (status, new_account) = new_hargow
+        .request(
+            "POST",
+            "/api/v1/auth/accept-invite",
+            Some(accept(&hargow_invite["token"])),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(new_account["user"]["role"], "learner");
+    let target = new_account["user"]["id"].as_str().unwrap().to_owned();
+    let (_, scoped) = new_hargow
+        .request("GET", "/api/v1/account/membership", None, None)
+        .await;
+    assert_eq!(scoped["role"], "operator");
+    assert_eq!(
+        chef_engine::product_memberships::read(&db, ProductId::Brioche, target.parse().unwrap())
+            .await
+            .unwrap()
+            .version,
+        0
+    );
+    let (_, fsessions) = french
+        .request(
+            "GET",
+            &format!("/api/v1/operator/accounts/{actor}/sessions"),
+            None,
+            None,
+        )
+        .await;
+    let (_, hsessions) = cantonese
+        .request(
+            "GET",
+            &format!("/api/v1/operator/accounts/{actor}/sessions"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(fsessions["items"].as_array().unwrap().len(), 1);
+    assert_eq!(hsessions["items"].as_array().unwrap().len(), 1);
+    let fsid = fsessions["items"][0]["id"].as_str().unwrap();
+    let hsid = hsessions["items"][0]["id"].as_str().unwrap();
+    assert_ne!(fsid, hsid);
+    for (browser, foreign) in [(&mut french, hsid), (&mut cantonese, fsid)] {
+        assert_eq!(
+            browser
+                .request(
+                    "POST",
+                    &format!("/api/v1/operator/accounts/{actor}/sessions/{foreign}/revoke"),
+                    Some(serde_json::json!({"reason":"Wrong product session"})),
+                    None
+                )
+                .await
+                .0,
+            404
+        );
+        assert_eq!(
+            browser
+                .request("GET", "/api/v1/account", None, None)
+                .await
+                .0,
+            200
+        );
+    }
+    // Role changes affect only the configured product, and keep the other product's last operator.
+    let change = serde_json::json!({"expectedRole":"learner","role":"operator","reason":"Grant in French only"});
+    assert_eq!(
+        french
+            .request(
+                "POST",
+                &format!("/api/v1/operator/accounts/{target}/role"),
+                Some(change),
+                None
+            )
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        chef_engine::product_memberships::read(&db, ProductId::Hargow, target.parse().unwrap())
+            .await
+            .unwrap()
+            .version,
+        1
+    );
+    let (_, accounts) = french
+        .request("GET", "/api/v1/operator/accounts?q=new", None, None)
+        .await;
+    assert_eq!(accounts["items"][0]["role"], "operator");
+    // Reset tokens are bound to the issuing entry; successful password replacement revokes all product sessions.
+    let (_, freset) = french
+        .request(
+            "POST",
+            "/api/v1/operator/accounts/token",
+            Some(request("new@example.test", "reset", false)),
+            None,
+        )
+        .await;
+    let (_, hreset) = cantonese
+        .request(
+            "POST",
+            "/api/v1/operator/accounts/token",
+            Some(request("new@example.test", "reset", false)),
+            None,
+        )
+        .await;
+    let reset = |token: &serde_json::Value| serde_json::json!({"token":token,"password":"a replacement shared password"});
+    assert_eq!(
+        french
+            .request(
+                "POST",
+                "/api/v1/auth/reset-password",
+                Some(reset(&hreset["token"])),
+                None
+            )
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        new_hargow
+            .request(
+                "POST",
+                "/api/v1/auth/reset-password",
+                Some(reset(&freset["token"])),
+                None
+            )
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        new_hargow
+            .request(
+                "POST",
+                "/api/v1/auth/reset-password",
+                Some(reset(&hreset["token"])),
+                None
+            )
+            .await
+            .0,
+        200
+    );
+    let (_, remaining) = french
+        .request(
+            "GET",
+            "/api/v1/operator/accounts/pending-tokens?kind=reset",
+            None,
+            None,
+        )
+        .await;
+    assert!(remaining["items"].as_array().unwrap().is_empty());
+    assert!(
+        brioche_migration::Migrator::down(&db, Some(1))
+            .await
+            .is_err()
+    );
+    let audits = db
+        .query_all_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT product_id,action FROM account_admin_audit WHERE actor_id<>900 ORDER BY id",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(audits.len(), 5); // two invites, one role, two resets; foreign operations wrote nothing.
+    let (status, history) = cantonese
+        .request("GET", "/api/v1/operator/accounts/history", None, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(history["items"].as_array().unwrap().len(), 2);
+    assert_eq!(history["items"][0]["action"], "reset");
+    assert_eq!(history["items"][0]["actor"], format!("user:{actor}"));
+    let first = &history["items"][0];
+    let page = format!(
+        "/api/v1/operator/accounts/history?beforeTime={}&beforeKey={}",
+        first["createdAt"].as_str().unwrap(),
+        first["key"].as_str().unwrap()
+    );
+    let (status, older) = cantonese.request("GET", &page, None, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(older["items"].as_array().unwrap().len(), 1);
+    assert_eq!(older["items"][0]["action"], "inviteOperator");
+    assert_eq!(
+        cantonese
+            .request(
+                "GET",
+                "/api/v1/operator/accounts/history?beforeKey=account:1",
+                None,
+                None
+            )
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        audits
+            .iter()
+            .filter(|row| row.try_get::<String>("", "product_id").unwrap() == "hargow")
+            .count(),
+        2
+    );
+    // An operator revoked in one product cannot use its old session to issue a token there.
+    db.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"UPDATE product_memberships SET role='learner',version=version+1 WHERE product_id='hargow' AND user_id=$1",[actor.parse::<i64>().unwrap().into()])).await.unwrap();
+    assert_eq!(
+        cantonese
+            .request(
+                "POST",
+                "/api/v1/operator/accounts/token",
+                Some(request("denied@example.test", "invite", false)),
+                None
+            )
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        french
+            .request("GET", "/api/v1/operator/accounts", None, None)
+            .await
+            .0,
+        200
+    );
+    for path in [
+        "/api/v1/operator/overview",
+        "/api/v1/operator/releases/stage",
+        "/api/v1/learning/sessions",
+    ] {
+        assert_eq!(french.request("GET", path, None, None).await.0, 404);
+    }
+    // Owned disposable schema only; scoped audit deliberately makes production rollback unsafe.
+    admin
+        .execute_unprepared(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
 struct Browser {
     app: Router,
     origin: &'static str,

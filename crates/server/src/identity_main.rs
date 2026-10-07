@@ -11,7 +11,7 @@ async fn ready(
     State(db): State<DatabaseConnection>,
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
     db.execute_unprepared(
-        "SELECT users.id FROM users, browser_sessions, identity_tokens, auth_throttle, product_memberships, product_membership_audit LIMIT 0",
+        "SELECT users.id,identity_tokens.product_id,account_admin_audit.product_id FROM users, browser_sessions, identity_tokens, auth_throttle, product_memberships, product_membership_audit, account_admin_audit LIMIT 0",
     )
     .await
     .map_err(|_| axum::http::StatusCode::SERVICE_UNAVAILABLE)?;
@@ -70,15 +70,18 @@ async fn main() -> anyhow::Result<()> {
             get(|| async { Json(serde_json::json!({"status":"ok"})) }),
         )
         .route("/ready", get(ready))
-        .with_state(db);
+        .with_state(db.clone());
     let app = identity_service::router(backend, policy, secure, config).merge(health);
     let listener = tokio::net::TcpListener::bind(
         std::env::var("IDENTITY_BIND").unwrap_or_else(|_| "0.0.0.0:3002".into()),
     )
     .await?;
     tracing::info!(address=%listener.local_addr()?, "Identity service listening");
-    axum::serve(listener, app)
+    let cleanup = chef_engine::identity_cleanup::spawn(db);
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(chef_engine::command::shutdown())
-        .await?;
+        .await;
+    cleanup.abort();
+    result?;
     Ok(())
 }

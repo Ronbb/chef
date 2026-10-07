@@ -27,3 +27,5 @@ Web 真源补充：通用页面/播放器/管理员界面与完整 Web/SSR/浏�
 SSR会话边界：Product.sessionNamespace是可信构建配置（brioche/hargow），缺省仅兼容现有Brioche。SSR公共身份及私有读取都用相同精确Cookie过滤，拒绝重复或非法会话，不能依据浏览器参数、Host或header选择产品namespace。Hargow SSR测试使用隔离合成API，不代表其学习事实/目录/后台已产品隔离或生产已开放。登录返回账号全局operator/version也不能覆盖根SSR的产品learner/version。产品入口仍须匹配固定的产品学习服务/身份服务。
 
 后台授权事务：legacy Brioche HTTP入口每次读取product_memberships；导入/暂存/激活/撤回在事务中先取得account-admin锁并复核真实actor，再取得内容锁。Operator是内部可信证明，不允许反序列化客户端产品或actor。未完成内容租户迁移前明确拒绝Hargow证明操作Brioche内容。录音/媒体/音色事务及参考录音授权也复核产品成员权限；旧角色接口更新成员版本与审计，不修改全局users.role。可信本机CLI保留独立入口，不得用它绕过HTTP权限。账号后台所有权、带产品范围的邀请、远端管理员消费者和最小数据库角色仍待实施。
+
+账号后台归属补充：account_admin由独立identity装配，legacy组合路由复用同一实现；产品不复制账号管理。迁移30将旧identity_tokens/account_admin_audit仅归Brioche，新增产品字段与索引；令牌发行、接受、重置、列表、撤销及审计按可信配置范围执行，不能接受客户端product选择。密码仍全局共享，重置成功撤销全账号会话/重置令牌；普通会话管理只能读取/撤销当前产品（旧无范围记录仅Brioche）。Hargow邀请创建Hargow成员权限，不能赋予其他产品或全局operator。身份清理任务属于identity_cleanup，独立身份进程和legacy启用，远端学习进程不启动。Hargow首位管理员初始化、数据库schema/最小角色、独立内容后台消费者与生产装配仍未完成；不更新产品pin/生产迁移。
