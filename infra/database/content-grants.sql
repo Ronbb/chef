@@ -1,4 +1,4 @@
--- Core course administration only; media/voice runtime grants are not enabled yet.
+-- Core courses, visual assets and recordings; voice pipeline writes remain disabled.
 -- Apply as owner to a fresh non-owner NOINHERIT / NOSUPERUSER login.
 -- psql -v schema=... -v identity_schema=... -v role=... -f infra/database/content-grants.sql
 \set ON_ERROR_STOP on
@@ -32,8 +32,12 @@ GRANT INSERT ON TABLE
     :"schema".lesson_revisions, :"schema".lesson_import_audit,
     :"schema".content_releases, :"schema".release_entries,
     :"schema".content_withdrawals, :"schema".content_audit,
-    :"schema".editorial_reviews TO :"role";
+    :"schema".editorial_reviews,
+    :"schema".media_assets, :"schema".asset_import_audit,
+    :"schema".audio_assets, :"schema".audio_import_audit TO :"role";
 GRANT UPDATE(published) ON :"schema".lesson_revisions TO :"role";
 GRANT UPDATE(active_release,generation) ON :"schema".content_state TO :"role";
 GRANT USAGE ON SEQUENCE :"schema".content_audit_id_seq TO :"role";
+GRANT USAGE ON SEQUENCE :"schema".asset_import_audit_id_seq TO :"role";
+GRANT USAGE ON SEQUENCE :"schema".audio_import_audit_id_seq TO :"role";
 COMMIT;

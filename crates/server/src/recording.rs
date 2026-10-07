@@ -159,7 +159,7 @@ pub(crate) async fn import_operator_bundle(
     bundle: AudioBundle,
     source_root: &Path,
     store: &Path,
-    actor: i64,
+    operator: &crate::product_memberships::Operator,
     reason: &str,
 ) -> Result<()> {
     crate::admin::reason(reason)?;
@@ -168,8 +168,8 @@ pub(crate) async fn import_operator_bundle(
         bundle,
         source_root,
         store,
-        &format!("user:{actor}"),
-        Some((actor, reason)),
+        &operator.audit_actor(),
+        Some((operator, reason)),
     )
     .await
 }
@@ -179,7 +179,7 @@ async fn import_bundle_impl(
     source_root: &Path,
     store: &Path,
     actor: &str,
-    operator: Option<(i64, &str)>,
+    operator: Option<(&crate::product_memberships::Operator, &str)>,
 ) -> Result<()> {
     bundle.validate_author(actor)?;
     let source_root = source_root.canonicalize()?;
@@ -193,9 +193,8 @@ async fn import_bundle_impl(
     })
     .await??;
     let tx = db.begin().await?;
-    if let Some((actor, _)) = operator {
-        crate::product_memberships::lock_operator(&tx, crate::product::ProductId::Brioche, actor)
-            .await?;
+    if let Some((operator, _)) = operator {
+        operator.lock_content(&tx).await?;
     }
     one(
         &tx,
@@ -205,7 +204,15 @@ async fn import_bundle_impl(
     .await
     .map_err(anyhow::Error::msg)?
     .context("content state missing")?;
-    register_transaction(&tx, &bundle, recordings, actor, operator, false).await?;
+    register_transaction(
+        &tx,
+        &bundle,
+        recordings,
+        actor,
+        operator.map(|(proof, reason)| (proof.actor, reason)),
+        false,
+    )
+    .await?;
     tx.commit().await?;
     Ok(())
 }

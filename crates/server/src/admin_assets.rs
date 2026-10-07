@@ -1,8 +1,8 @@
 //! Private, paginated visual registry; registration does not publish a file.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{field, one, owner, random_id},
+    admin_auth::AdminAuth,
+    learning::{field, one, random_id},
 };
 use axum::{
     Json, Router,
@@ -12,7 +12,13 @@ use axum::{
 use brioche_course_contract::{AdminAsset, AdminAssetCursor, AdminAssets, MediaAsset};
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 
-pub fn router() -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route(
             "/api/v1/operator/assets",
@@ -21,6 +27,7 @@ pub fn router() -> Router<Backend> {
                 .layer(DefaultBodyLimit::max(34 * 1024 * 1024)),
         )
         .route("/api/v1/operator/assets/{id}/{revision}/file", get(file))
+        .with_state(Store { db })
 }
 // Owned scratch directory: neither the path nor filename comes from the upload.
 pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
@@ -31,14 +38,13 @@ impl Drop for Scratch {
     }
 }
 async fn upload(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     mut multipart: Multipart,
 ) -> Result<Json<AdminAssetCursor>, AppError> {
-    require_operator(&auth).await?;
-    let actor = owner(&auth)?;
+    let operator = auth.require_operator().await?;
     let _permit = permits
         .try_acquire_owned()
         .map_err(|_| AppError::RateLimited)?;
@@ -128,12 +134,13 @@ async fn upload(
         bundle,
         &scratch.0,
         &root,
-        actor,
+        &operator,
         &request.reason,
     )
     .await
     .map_err(|e| match e.downcast_ref::<AppError>() {
         Some(AppError::Forbidden) => AppError::Forbidden,
+        Some(AppError::Unauthorized) => AppError::Unauthorized,
         Some(AppError::Conflict) => AppError::Conflict,
         Some(_) => AppError::Unavailable,
         None => AppError::InvalidInput,
@@ -172,11 +179,11 @@ fn valid(id: &str, revision: u32) -> bool {
         && brioche_course_contract::valid_content_revision(revision)
 }
 async fn list(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Query(query): Query<AssetQuery>,
 ) -> Result<Json<AdminAssets>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     query.validate()?;
     let rows = backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, r#"
         SELECT descriptor,provenance->>'source' AS source,provenance->>'license' AS license,
@@ -219,13 +226,13 @@ async fn list(
     Ok(Json(AdminAssets { items, next }))
 }
 async fn file(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path((id, revision)): Path<(String, u32)>,
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     if !valid(&id, revision) {
         return Err(AppError::InvalidInput);
     }

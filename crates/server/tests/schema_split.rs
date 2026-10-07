@@ -18,6 +18,32 @@ mod assets;
 mod support;
 const KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const ORIGIN: &str = "http://brioche.example.test";
+fn asset_upload(id: &str, cookie: &str, csrf: &str) -> Request<Body> {
+    let document = serde_json::json!({"assetId":id,"revision":1,"mimeType":"image/svg+xml","altZh":"测试图片","creditZh":"隔离测试","source":"test:svg","license":"LicenseRef-TestOnly","creator":"test fixture","rightsConfirmed":true,"reason":"Independent asset upload"});
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 96 96\"><rect width=\"96\" height=\"96\" fill=\"red\"/></svg>";
+    Request::builder().method("POST").uri("/api/v1/operator/assets")
+        .header("origin", ORIGIN).header("cookie", cookie).header("x-csrf-token",csrf)
+        .header("content-type","multipart/form-data; boundary=chef-test-upload")
+        .body(Body::from(format!("--chef-test-upload\r\nContent-Disposition: form-data; name=\"document\"\r\n\r\n{document}\r\n--chef-test-upload\r\nContent-Disposition: form-data; name=\"file\"; filename=\"image.svg\"\r\nContent-Type: image/svg+xml\r\n\r\n{svg}\r\n--chef-test-upload--\r\n"))).unwrap()
+}
+fn recording_upload(id: &str, cookie: &str, csrf: &str) -> Request<Body> {
+    let document = serde_json::json!({"assetId":id,"revision":1,"mimeType":"audio/mpeg","creditZh":"隔离测试","source":"test:synthetic-audio","license":"LicenseRef-TestOnly","creator":"test fixture","rightsConfirmed":true,"reason":"Independent recording upload"});
+    let mut body = format!("--chef-test-recording\r\nContent-Disposition: form-data; name=\"document\"\r\n\r\n{document}\r\n--chef-test-recording\r\nContent-Disposition: form-data; name=\"file\"; filename=\"recording.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\n").into_bytes();
+    body.extend_from_slice(include_bytes!("fixtures/audio/synthetic.mp3"));
+    body.extend_from_slice(b"\r\n--chef-test-recording--\r\n");
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/operator/recordings")
+        .header("origin", ORIGIN)
+        .header("cookie", cookie)
+        .header("x-csrf-token", csrf)
+        .header(
+            "content-type",
+            "multipart/form-data; boundary=chef-test-recording",
+        )
+        .body(Body::from(body))
+        .unwrap()
+}
 const TABLES: [&str; 7] = [
     "users",
     "browser_sessions",
@@ -372,6 +398,112 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let content_app =
         chef_engine::admin::independent_router(content.clone(), client.clone(), root.clone())
             .unwrap();
+    for (session, token, expected) in [
+        (next_cookie.as_str(), next_csrf.as_str(), 403),
+        (cookie.as_str(), "bad-csrf", 403),
+        (cookie.as_str(), csrf.as_str(), 200),
+    ] {
+        let response = content_app
+            .clone()
+            .oneshot(asset_upload("split-upload", session, token))
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(status, expected, "{}", String::from_utf8_lossy(&body));
+    }
+    assert_eq!(
+        content_app
+            .clone()
+            .oneshot(asset_upload("split-upload", &cookie, &csrf))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        409
+    );
+    let (_, registry) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/assets?q=split-upload",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(registry["items"][0]["asset"]["assetId"], "split-upload");
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/operator/assets/split-upload/1/file")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .starts_with(b"<svg")
+    );
+    for (session, token, expected) in [
+        (next_cookie.as_str(), next_csrf.as_str(), 403),
+        (cookie.as_str(), "bad-csrf", 403),
+        (cookie.as_str(), csrf.as_str(), 200),
+    ] {
+        let response = content_app
+            .clone()
+            .oneshot(recording_upload("split-recording", session, token))
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(status, expected, "{}", String::from_utf8_lossy(&body));
+    }
+    assert_eq!(
+        content_app
+            .clone()
+            .oneshot(recording_upload("split-recording", &cookie, &csrf))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        409
+    );
+    let (status, registry) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/recordings?q=split-recording",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(registry["items"][0]["asset"]["assetId"], "split-recording");
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/operator/recordings/split-recording/1/file")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        &response.into_body().collect().await.unwrap().to_bytes()[..],
+        include_bytes!("fixtures/audio/synthetic.mp3")
+    );
     let remote = chef_engine::learning_identity::router(learning.clone(), client)
         .unwrap()
         .merge(chef_engine::independent_learning_router(
@@ -423,7 +555,12 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let invalid = learning.execute_unprepared("INSERT INTO product_user_settings(product_id,user_id,settings) VALUES('brioche',999999,'{}')")
         .await.unwrap_err();
     assert!(invalid.to_string().contains("foreign key constraint"));
-    for path in ["/api/v1/operator/overview", "/api/v1/operator/history"] {
+    for path in [
+        "/api/v1/operator/overview",
+        "/api/v1/operator/history",
+        "/api/v1/operator/assets",
+        "/api/v1/operator/recordings",
+    ] {
         assert_eq!(
             request(&content_app, "GET", path, None, &mut cookie, &mut csrf)
                 .await
@@ -522,34 +659,75 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(status, 200, "{result}");
     // Revoke after the first HTTP verification while the write waits on the same
     // database advisory lock used by identity membership mutations.
-    let held = owner.begin().await.unwrap();
-    held.execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
+    imported_source["id"] = "split-revoked-import".into();
+    let course_request = Request::builder().method("POST").uri("/api/v1/operator/lessons/import")
+        .header("origin", ORIGIN).header("cookie", &cookie).header("x-csrf-token", &csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::json!({"document":imported_source.to_string(),"reason":"Must not retain revoked authorization"}).to_string())).unwrap();
+    // Test each write separately: concurrent parsing is intentionally capped at two.
+    for pending in [
+        course_request,
+        asset_upload("split-revoked-upload", &cookie, &csrf),
+        recording_upload("split-revoked-recording", &cookie, &csrf),
+    ] {
+        let held = owner.begin().await.unwrap();
+        held.execute_unprepared(
+            "SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))",
+        )
         .await
         .unwrap();
-    imported_source["id"] = "split-revoked-import".into();
-    let copy = content_app.clone();
-    let mut blocked_cookie = cookie.clone();
-    let mut blocked_csrf = csrf.clone();
-    let blocked = tokio::spawn(async move {
-        request(&copy,"POST","/api/v1/operator/lessons/import",Some(serde_json::json!({"document":imported_source.to_string(),"reason":"Must not retain revoked authorization"})),&mut blocked_cookie,&mut blocked_csrf).await
-    });
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-            "SELECT EXISTS(SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE l.locktype='advisory' AND NOT l.granted AND a.usename=$1) AS waiting",[content_role.clone().into()])).await.unwrap().unwrap();
-        if row.try_get::<bool>("", "waiting").unwrap() {
-            break;
+        let copy = content_app.clone();
+        let blocked = tokio::spawn(async move { copy.oneshot(pending).await.unwrap() });
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+            "SELECT count(*)::bigint AS waiting FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE l.locktype='advisory' AND NOT l.granted AND a.usename=$1",[content_role.clone().into()])).await.unwrap().unwrap();
+            if row.try_get::<i64>("", "waiting").unwrap() == 1 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Content write did not reach authorization lock"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "Content write did not reach authorization lock"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    held.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        held.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
         format!("UPDATE \"{target}\".product_memberships SET role='learner',version=version+1 WHERE product_id='brioche' AND user_id=$1"),[account.into()])).await.unwrap();
-    held.commit().await.unwrap();
-    assert_eq!(blocked.await.unwrap().0, 403);
+        held.commit().await.unwrap();
+        assert_eq!(blocked.await.unwrap().status().as_u16(), 403);
+        let restore = owner.begin().await.unwrap();
+        restore
+            .execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
+            .await
+            .unwrap();
+        restore.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("UPDATE \"{target}\".product_memberships SET role='operator',version=version+1 WHERE product_id='brioche' AND user_id=$1"),[account.into()])).await.unwrap();
+        restore.commit().await.unwrap();
+    }
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM audio_assets WHERE asset_id='split-revoked-recording'")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT (SELECT count(*) FROM asset_import_audit WHERE actor_id=$1 AND target='split-upload v1') + (SELECT count(*) FROM audio_import_audit WHERE actor_id=$1 AND target='split-recording v1') AS n",[account.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 2);
+    assert!(
+        content
+            .execute_unprepared("UPDATE media_assets SET descriptor='{}' WHERE false")
+            .await
+            .is_err()
+    );
+    assert!(
+        content
+            .execute_unprepared("DELETE FROM audio_import_audit WHERE false")
+            .await
+            .is_err()
+    );
+    let row = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM media_assets WHERE asset_id='split-revoked-upload'",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM lesson_revisions WHERE lesson_id='split-revoked-import'")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     task.abort();
@@ -567,6 +745,14 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .0,
         503
     );
+    for path in ["/api/v1/operator/assets", "/api/v1/operator/recordings"] {
+        assert_eq!(
+            request(&content_app, "GET", path, None, &mut cookie, &mut csrf)
+                .await
+                .0,
+            503
+        );
+    }
     content.close().await.unwrap();
     assert!(
         root.canonicalize()

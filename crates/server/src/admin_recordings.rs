@@ -1,7 +1,7 @@
 //! Registered recordings stay private until a course explicitly publishes them.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
+    admin_auth::AdminAuth,
     learning::{field, one},
 };
 use axum::{
@@ -13,7 +13,13 @@ use axum::{
 use brioche_course_contract::{AdminAssetCursor, AdminRecording, AdminRecordings, AudioAsset};
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 
-pub fn router() -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route(
             "/api/v1/operator/recordings",
@@ -25,16 +31,16 @@ pub fn router() -> Router<Backend> {
             "/api/v1/operator/recordings/{id}/{revision}/file",
             get(file),
         )
+        .with_state(Store { db })
 }
 async fn upload(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     mut multipart: Multipart,
 ) -> Result<Json<AdminAssetCursor>, AppError> {
-    require_operator(&auth).await?;
-    let actor = crate::learning::owner(&auth)?;
+    let operator = auth.require_operator().await?;
     let _permit = permits
         .try_acquire_owned()
         .map_err(|_| AppError::RateLimited)?;
@@ -120,12 +126,13 @@ async fn upload(
         bundle,
         &scratch.0,
         &root,
-        actor,
+        &operator,
         &request.reason,
     )
     .await
     .map_err(|e| match e.downcast_ref::<AppError>() {
         Some(AppError::Forbidden) => AppError::Forbidden,
+        Some(AppError::Unauthorized) => AppError::Unauthorized,
         Some(AppError::Conflict) => AppError::Conflict,
         Some(_) => AppError::Unavailable,
         None => AppError::InvalidInput,
@@ -164,11 +171,11 @@ fn valid(id: &str, revision: u32) -> bool {
         && brioche_course_contract::valid_content_revision(revision)
 }
 async fn list(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Query(query): Query<RecordingQuery>,
 ) -> Result<Json<AdminRecordings>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     query.validate()?;
     let rows=backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, r#"
         SELECT descriptor,provenance->>'source' AS source,provenance->>'license' AS license,
@@ -215,14 +222,14 @@ async fn list(
     Ok(Json(AdminRecordings { items, next }))
 }
 async fn file(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path((id, revision)): Path<(String, u32)>,
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     if !valid(&id, revision) {
         return Err(AppError::InvalidInput);
     }

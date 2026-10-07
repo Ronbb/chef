@@ -493,7 +493,7 @@ pub(crate) async fn import_operator_bundle(
     bundle: AssetBundle,
     source_root: &Path,
     store: &Path,
-    actor: i64,
+    operator: &crate::product_memberships::Operator,
     reason: &str,
 ) -> Result<()> {
     crate::admin::reason(reason)?;
@@ -502,9 +502,9 @@ pub(crate) async fn import_operator_bundle(
         bundle,
         source_root,
         store,
-        &format!("user:{actor}"),
+        &operator.audit_actor(),
         Some(OperatorImport {
-            actor,
+            operator,
             reason,
             expected_character: None,
         }),
@@ -513,7 +513,7 @@ pub(crate) async fn import_operator_bundle(
 }
 #[derive(Clone, Copy)]
 struct OperatorImport<'a> {
-    actor: i64,
+    operator: &'a crate::product_memberships::Operator,
     reason: &'a str,
     expected_character: Option<(&'a str, u32)>,
 }
@@ -526,6 +526,9 @@ pub(crate) async fn import_operator_character(
     reason: &str,
 ) -> Result<()> {
     crate::admin::reason(reason)?;
+    let operator =
+        crate::product_memberships::require_operator(db, crate::product::ProductId::Brioche, actor)
+            .await?;
     let id = character.snapshot.character_id.clone();
     let bundle = AssetBundle {
         schema_version: "1.0".into(),
@@ -539,7 +542,7 @@ pub(crate) async fn import_operator_character(
         root,
         &format!("user:{actor}"),
         Some(OperatorImport {
-            actor,
+            operator: &operator,
             reason,
             expected_character: Some((&id, expected_revision)),
         }),
@@ -626,9 +629,8 @@ async fn import_bundle_impl(
         })
         .await??;
     let tx = db.begin().await?;
-    if let Some(OperatorImport { actor, .. }) = operator {
-        crate::product_memberships::lock_operator(&tx, crate::product::ProductId::Brioche, actor)
-            .await?;
+    if let Some(OperatorImport { operator, .. }) = operator {
+        operator.lock_content(&tx).await?;
     }
     one(
         &tx,
@@ -725,7 +727,7 @@ async fn import_bundle_impl(
             .collect::<Vec<_>>()
             .join(", ")
     });
-    exec(&tx,"INSERT INTO asset_import_audit(actor,bundle_hash,asset_count,character_count,actor_id,reason,target) VALUES($1,$2,$3,$4,$5,$6,$7)",vec![actor.into(),bundle_hash.into(),(bundle.assets.len() as i32).into(),(bundle.characters.len() as i32).into(),operator.map(|o|o.actor).into(),operator.map(|o|o.reason.to_owned()).into(),target.into()]).await.map_err(anyhow::Error::msg)?;
+    exec(&tx,"INSERT INTO asset_import_audit(actor,bundle_hash,asset_count,character_count,actor_id,reason,target) VALUES($1,$2,$3,$4,$5,$6,$7)",vec![actor.into(),bundle_hash.into(),(bundle.assets.len() as i32).into(),(bundle.characters.len() as i32).into(),operator.map(|o|o.operator.actor).into(),operator.map(|o|o.reason.to_owned()).into(),target.into()]).await.map_err(anyhow::Error::msg)?;
     tx.commit().await?;
     Ok(())
 }
