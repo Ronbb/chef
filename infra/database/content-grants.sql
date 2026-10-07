@@ -1,4 +1,4 @@
--- Courses, assets, character directions, references, enrollment, auditions, plans and clips.
+-- Courses, assets, character directions, references, voice jobs, speech plans/clips/alignments.
 -- Apply as owner to a fresh non-owner NOINHERIT / NOSUPERUSER login.
 -- psql -v schema=... -v identity_schema=... -v role=... -f infra/database/content-grants.sql
 \set ON_ERROR_STOP on
@@ -45,7 +45,8 @@ GRANT INSERT ON TABLE
     :"schema".voice_auditions, :"schema".voice_audition_events,
     :"schema".voice_audition_reviews, :"schema".course_speech_plans,
     :"schema".course_speech_clips, :"schema".course_speech_clip_events,
-    :"schema".course_speech_clip_reviews TO :"role";
+    :"schema".course_speech_clip_reviews,
+    :"schema".speech_alignments, :"schema".speech_alignment_reviews TO :"role";
 -- PostgreSQL FOR UPDATE requires UPDATE privilege; immutable trigger still
 -- rejects actual changes. Only the grant key is granted for locking.
 GRANT UPDATE(id) ON :"schema".voice_reference_grants TO :"role";

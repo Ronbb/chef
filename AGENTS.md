@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立导出/对齐补充：speech_export/speech_alignments使用db-only Store/AdminAuth进入共享content_router，CLI仅在边界构造本地Operator。导出打包前/交付前均lock_content复核原请求，交付前content_state锁重新比对snapshot；保持私有no-store/128MiB/原始与规范化音频hash验证。对齐导入/审核事务先lock_content，固定引擎/报告hash/原课音频/words/sourceArchiveSHA/CAS/精确重试不变。内容角色仅新增speech_alignments/reviews INSERT，无身份表/UPDATEDELETE。实际受限schema模拟完整计划课音频后验证tar完整hash/对齐导入和审核/列表读取/幂等/协议字段及十八类等待撤权403零额外报告/决定/合成；合成时间/人工字段仅测试fixture，非真实对齐/审听。余下打包/发布/私有课程预览/完整租户/粤语仍待迁移，不更新生产pin。
+
 独立课程语音片段补充：speech_clips共享路由采用db-only Store/AdminAuth；HTTP生成/审核传Operator到kernel，事务先lock_content再content_state。CLI只在边界构造本地proof，worker仅内容db。保留先登记submitted再调用、未知不自动重试、固定计划hash/previous CAS、精确重试、音频哈希验证和复用审计；审核仍为显式协议，不自动伪造heard。内容角色新增clips/events/reviews SELECT/INSERT，无身份权限或片段UPDATE/DELETE。真实分离schema模拟WAV验证生成/私有读取/列表/精确重试不重发/改参409/审核精确重试/复用ready与继承决定，十五类请求等待后撤权拒绝且零额外记录/调用。合成heard只是测试fixture；余下导出/对齐/打包/发布/私有预览、完整租户与粤语仍待迁移，保持生产pin。
 
 独立课程配音计划补充：admin_speech_plans采用db-only Store/AdminAuth进入共享content_router；HTTP预览/保存向kernel传可信Operator，事务先lock_content再编译/内容锁。CLI只在边界从本地身份db构造proof，复用kernel。保持固定角色/声音/课源选择、plan hash、actor与reason、精确重试和撤回过滤；编译/保存不调用供应商。内容角色仅增加course_speech_plans INSERT，不授UPDATE/DELETE。真实分离schema验证选项/编译/保存/读取/列表/精确重试/hash冲突及十三类等待后撤权拒绝，原模拟供应商调用数不变。余下片段生成/对齐/打包/发布/私有预览与完整租户仍需迁移，不更新生产或产品pin。

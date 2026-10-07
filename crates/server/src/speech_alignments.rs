@@ -1,10 +1,11 @@
 //! Private model predictions and explicit human timing decisions. Never audio publication.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{exec, field, one, owner},
+    admin_auth::AdminAuth,
+    identity::Backend,
+    learning::{exec, field, one},
     speech_clips,
-    voice_references::{hex, lock_operator},
+    voice_references::hex,
 };
 use axum::{
     Extension, Json, Router,
@@ -22,7 +23,13 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
 const MAX_REPORT: usize = 4 * 1024 * 1024;
-pub fn router() -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route(
             "/api/v1/operator/speech-alignments",
@@ -34,6 +41,7 @@ pub fn router() -> Router<Backend> {
             "/api/v1/operator/speech-alignments/{id}/clips/{clip}/review",
             post(review),
         )
+        .with_state(Store { db })
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -383,15 +391,15 @@ async fn view(db: &impl ConnectionTrait, row: &QueryResult) -> Result<AdminAlign
     })
 }
 async fn import(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminAlignmentImport>,
 ) -> Result<Json<AdminAlignment>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     Ok(Json(
-        import_for_actor(&b, owner(&auth)?, root, permits, request).await?,
+        import_for_actor(&b, &operator, root, permits, request).await?,
     ))
 }
 
@@ -403,9 +411,15 @@ pub async fn import_local(
     mut request: AdminAlignmentImport,
 ) -> Result<AdminAlignment, AppError> {
     request.reason = format!("[local-cli] {}", request.reason);
-    import_for_actor(
-        b,
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
         actor,
+    )
+    .await?;
+    import_for_actor(
+        &Store { db: b.db.clone() },
+        &operator,
         root,
         Arc::new(tokio::sync::Semaphore::new(2)),
         request,
@@ -414,12 +428,13 @@ pub async fn import_local(
 }
 
 async fn import_for_actor(
-    b: &Backend,
-    actor: i64,
+    b: &Store,
+    operator: &crate::product_memberships::Operator,
     root: PathBuf,
     permits: Arc<tokio::sync::Semaphore>,
     request: AdminAlignmentImport,
 ) -> Result<AdminAlignment, AppError> {
+    let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !hex(&request.id, 32) || !hex(&request.plan_id, 32) || !hex(&request.expected_plan_hash, 64)
     {
@@ -436,7 +451,7 @@ async fn import_for_actor(
         crate::media::digest(&serde_json::to_vec(&value).map_err(|_| AppError::InvalidInput)?);
     let request_json = serde_json::to_value(&request).map_err(|_| AppError::InvalidInput)?;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     exec(
         &tx,
         "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
@@ -478,11 +493,11 @@ async fn import_for_actor(
     Ok(view)
 }
 async fn read(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminAlignment>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     Ok(Json(view(&b.db, &load(&b.db, &id).await?).await?))
 }
 #[derive(Deserialize)]
@@ -491,12 +506,12 @@ struct Cursor {
     after: Option<String>,
 }
 async fn list(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
     Query(query): Query<Cursor>,
 ) -> Result<Json<AdminAlignments>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     speech_clips::plan(&b.db, &id).await?;
     let after = query.after.unwrap_or_default();
     if !after.is_empty() && !hex(&after, 32) {
@@ -525,14 +540,14 @@ async fn list(
     Ok(Json(AdminAlignments { items, next }))
 }
 async fn review(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path((id, clip_id)): Path<(String, String)>,
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminAlignmentReview>,
 ) -> Result<Json<AdminAlignment>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     crate::admin::reason(&request.reason)?;
     if !hex(&id, 32)
         || !hex(&clip_id, 32)
@@ -543,9 +558,9 @@ async fn review(
     {
         return Err(AppError::InvalidInput);
     }
-    let actor = owner(&auth)?;
+    let actor = operator.actor;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     exec(
         &tx,
         "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",

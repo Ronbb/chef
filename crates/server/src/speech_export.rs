@@ -1,10 +1,10 @@
 //! Bounded, private export of an immutable plan and its reviewed audio. Never publication.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{exec, field, owner},
+    admin_auth::AdminAuth,
+    identity::Backend,
+    learning::{exec, field},
     speech_clips,
-    voice_references::lock_operator,
 };
 use axum::{
     Extension, Router,
@@ -19,8 +19,16 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 const MAX_EXPORT: usize = 128 * 1024 * 1024;
-pub fn router() -> Router<Backend> {
-    Router::new().route("/api/v1/operator/speech-plans/{id}/export", get(export))
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
+    Router::new()
+        .route("/api/v1/operator/speech-plans/{id}/export", get(export))
+        .with_state(Store { db })
 }
 pub(crate) async fn snapshot(db: &impl ConnectionTrait, id: &str) -> Result<Value, AppError> {
     snapshot_policy(db, id, true).await
@@ -149,18 +157,17 @@ pub(crate) fn pack(root: &std::path::Path, mut manifest: Value) -> Result<Vec<u8
     builder.into_inner().map_err(|_| AppError::Unavailable)
 }
 async fn export(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
 ) -> Result<Response, AppError> {
-    require_operator(&auth).await?;
-    let actor = owner(&auth)?;
+    let operator = auth.require_operator().await?;
     let _permit = permits
         .try_acquire_owned()
         .map_err(|_| AppError::RateLimited)?;
-    let bytes = export_for_actor(&b, actor, id.clone(), root).await?;
+    let bytes = export_policy(&b, &operator, id.clone(), root, true).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         "content-type",
@@ -187,7 +194,13 @@ pub async fn export_for_actor(
     id: String,
     root: PathBuf,
 ) -> Result<Vec<u8>, AppError> {
-    export_policy(b, actor, id, root, true).await
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
+        actor,
+    )
+    .await?;
+    export_policy(&Store { db: b.db.clone() }, &operator, id, root, true).await
 }
 /// Technical input delivery for the owner's direct publication workflow.
 /// Ready clips are required; no human listening declaration is generated.
@@ -197,17 +210,23 @@ pub async fn export_direct_for_actor(
     id: String,
     root: PathBuf,
 ) -> Result<Vec<u8>, AppError> {
-    export_policy(b, actor, id, root, false).await
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
+        actor,
+    )
+    .await?;
+    export_policy(&Store { db: b.db.clone() }, &operator, id, root, false).await
 }
 async fn export_policy(
-    b: &Backend,
-    actor: i64,
+    b: &Store,
+    operator: &crate::product_memberships::Operator,
     id: String,
     root: PathBuf,
     reviewed: bool,
 ) -> Result<Vec<u8>, AppError> {
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     let tx =
         b.db.begin_with_config(Some(IsolationLevel::RepeatableRead), None)
@@ -221,7 +240,7 @@ async fn export_policy(
         .map_err(|_| AppError::Unavailable)??;
     // Do not deliver an archive built under a subsequently revoked role/review/source.
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     exec(
         &tx,
         "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",

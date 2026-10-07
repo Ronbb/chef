@@ -12,6 +12,7 @@ use sea_orm::{
     TransactionTrait,
 };
 use sea_orm_migration::MigratorTrait;
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 #[path = "support/assets.rs"]
 mod assets;
@@ -1649,6 +1650,267 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(status, 200, "{clips}");
     assert_eq!(clips["configured"], true);
     assert_eq!(clips["items"], serde_json::json!([receipt]));
+    let plan_id = "cccccccccccccccccccccccccccccccc";
+    let export_path = format!("{plan_route}/{plan_id}/export");
+    // All unique requests need ready reviewed clips before private export.
+    let keys: std::collections::BTreeSet<_> = preview["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["generationKey"].as_str().unwrap().to_owned())
+        .collect();
+    for (index, key) in keys
+        .iter()
+        .filter(|k| **k != clip["generationKey"].as_str().unwrap())
+        .enumerate()
+    {
+        let id = format!("{index:032x}");
+        let body = serde_json::json!({"id":id,"planId":plan_id,"generationKey":key,"expectedPlanHash":preview["planHash"],"expectedPreviousId":null,"costConfirmed":true,"retryUnknownConfirmed":false,"reason":"Synthetic export completion"});
+        let (status, value) = request(
+            &content_app,
+            "POST",
+            clip_route,
+            Some(body),
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, 200, "{value}");
+        assert_eq!(
+            settled_job(
+                &content_app,
+                &format!("{clip_route}/{id}"),
+                &mut cookie,
+                &mut csrf
+            )
+            .await["status"],
+            "ready"
+        );
+        assert_eq!(
+            request(
+                &content_app,
+                "POST",
+                &format!("{clip_route}/{id}/review"),
+                Some(clip_review.clone()),
+                &mut cookie,
+                &mut csrf
+            )
+            .await
+            .0,
+            200
+        );
+    }
+    assert_eq!(
+        request(
+            &content_app,
+            "GET",
+            &export_path,
+            None,
+            &mut next_cookie,
+            &mut next_csrf
+        )
+        .await
+        .0,
+        403
+    );
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&export_path)
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    assert_eq!(response.headers()["content-type"], "application/x-tar");
+    let archive_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let mut archive = tar::Archive::new(std::io::Cursor::new(&archive_bytes));
+    let mut members = std::collections::BTreeMap::new();
+    for entry in archive.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let path = entry.path().unwrap().to_string_lossy().into_owned();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+        assert!(members.insert(path, bytes).is_none());
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(&members["manifest.json"]).unwrap();
+    assert_eq!(manifest["plan"]["planHash"], preview["planHash"]);
+    assert_eq!(manifest["clips"].as_array().unwrap().len(), keys.len());
+    for exported in manifest["clips"].as_array().unwrap() {
+        assert_eq!(exported["review"]["actorId"], account);
+        for (file, hash) in [("file", "sha256"), ("providerFile", "providerSha256")] {
+            assert_eq!(
+                format!(
+                    "{:x}",
+                    Sha256::digest(&members[exported[file].as_str().unwrap()])
+                ),
+                exported["result"][hash]
+            );
+        }
+    }
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../../../scripts/alignment/model.json")).unwrap();
+    let runtime: serde_json::Value =
+        serde_json::from_str(include_str!("../../../scripts/alignment/runtime.json")).unwrap();
+    let engine = serde_json::json!({"repository":model["repository"],"revision":model["revision"],"files":model["files"],"versions":runtime,"device":"cpu","dtype":"float32","attention":"eager","transcript":"NFC source word units, apostrophes normalized; original scalar ranges retained; raw timestamp classes without interpolation"});
+    // Synthetic prediction times test protocol validation, never actual model accuracy.
+    let report_clips: Vec<_> = manifest["clips"].as_array().unwrap().iter().map(|c| {
+        let words:Vec<_> = c["words"].as_array().unwrap().iter().enumerate().map(|(i,w)|{let mut w=w.clone();w["startMs"]=serde_json::json!(i);w["endMs"]=serde_json::json!(i+1);w}).collect();
+        let raw:Vec<_> = words.iter().map(|w|serde_json::json!({"text":w["text"],"startSeconds":w["startMs"].as_u64().unwrap() as f64 / 1000.0,"endSeconds":w["endMs"].as_u64().unwrap() as f64 / 1000.0})).collect();
+        let targets:Vec<_> = manifest["plan"]["targets"].as_array().unwrap().iter().filter(|t|t["generationKey"]==c["generationKey"]).map(|t|serde_json::json!({"pointer":t["pointer"],"blockId":t["blockId"],"entryId":t["entryId"],"words":[],"issues":[]})).collect();
+        serde_json::json!({"clipId":c["id"],"generationKey":c["generationKey"],"sha256":c["result"]["sha256"],"durationMs":c["result"]["durationMs"],"words":words,"rawPredictions":raw,"issues":[],"targets":targets})
+    }).collect();
+    let report = serde_json::json!({"schemaVersion":"1.0","kind":"brioche-alignment-predictions","planId":plan_id,"planHash":preview["planHash"],"sourceArchiveSha256":format!("{:x}",Sha256::digest(&archive_bytes)),"engine":engine,"reviewRequired":true,"clips":report_clips});
+    let alignment_route = "/api/v1/operator/speech-alignments";
+    let alignment_id = "88888888888888888888888888888888";
+    let alignment_request = serde_json::json!({"id":alignment_id,"planId":plan_id,"expectedPlanHash":preview["planHash"],"reportJson":report.to_string(),"reason":"Independent synthetic alignment"});
+    for (session, token) in [
+        (next_cookie.as_str(), next_csrf.as_str()),
+        (cookie.as_str(), "bad-csrf"),
+    ] {
+        assert_eq!(
+            content_app
+                .clone()
+                .oneshot(json_write(
+                    alignment_route,
+                    &alignment_request,
+                    session,
+                    token
+                ))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            403
+        );
+    }
+    let (status, alignment) = request(
+        &content_app,
+        "POST",
+        alignment_route,
+        Some(alignment_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{alignment}");
+    let (status, retry) = request(
+        &content_app,
+        "POST",
+        alignment_route,
+        Some(alignment_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(retry, alignment);
+    let mut changed = alignment_request.clone();
+    changed["reason"] = "Changed immutable alignment".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            alignment_route,
+            Some(changed),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let first = &alignment["clips"][0];
+    let alignment_review_path = format!(
+        "{alignment_route}/{alignment_id}/clips/{}/review",
+        first["clipId"].as_str().unwrap()
+    );
+    let alignment_review = serde_json::json!({"expectedReportHash":alignment["reportHash"],"accepted":true,"heard":true,"timingsChecked":true,"words":first["words"],"reason":"Synthetic alignment protocol decision"});
+    for (session, token) in [
+        (next_cookie.as_str(), next_csrf.as_str()),
+        (cookie.as_str(), "bad-csrf"),
+    ] {
+        assert_eq!(
+            content_app
+                .clone()
+                .oneshot(json_write(
+                    &alignment_review_path,
+                    &alignment_review,
+                    session,
+                    token
+                ))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            403
+        );
+    }
+    let mut unchecked = alignment_review.clone();
+    unchecked["timingsChecked"] = false.into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &alignment_review_path,
+            Some(unchecked),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    let (status, reviewed) = request(
+        &content_app,
+        "POST",
+        &alignment_review_path,
+        Some(alignment_review.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{reviewed}");
+    assert_eq!(reviewed["clips"][0]["accepted"], true);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &alignment_review_path,
+            Some(alignment_review.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    let (status, read) = request(
+        &content_app,
+        "GET",
+        &format!("{alignment_route}/{alignment_id}"),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(read, reviewed);
+    let (status, list) = request(
+        &content_app,
+        "GET",
+        &format!("{plan_route}/{plan_id}/alignments"),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{list}");
+    assert_eq!(list["items"][0]["acceptedCount"], 1);
     // Revoke after the first HTTP verification while the write waits on the same
     // database advisory lock used by identity membership mutations.
     imported_source["id"] = "split-revoked-import".into();
@@ -1668,6 +1930,8 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let mut revoked_clip = clip_request;
     revoked_clip["id"] = "99999999999999999999999999999999".into();
     revoked_clip["expectedPreviousId"] = "ffffffffffffffffffffffffffffffff".into();
+    let mut revoked_alignment = alignment_request;
+    revoked_alignment["id"] = "77777777777777777777777777777777".into();
     for pending in [
         course_request,
         asset_upload("split-revoked-upload", &cookie, &csrf),
@@ -1699,6 +1963,13 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         json_write(plan_route, &revoked_plan, &cookie, &csrf),
         json_write(clip_route, &revoked_clip, &cookie, &csrf),
         json_write(&clip_review_path, &clip_review, &cookie, &csrf),
+        Request::builder()
+            .uri(&export_path)
+            .header("cookie", &cookie)
+            .body(Body::empty())
+            .unwrap(),
+        json_write(alignment_route, &revoked_alignment, &cookie, &csrf),
+        json_write(&alignment_review_path, &alignment_review, &cookie, &csrf),
     ] {
         let held = owner.begin().await.unwrap();
         held.execute_unprepared(
@@ -1873,15 +2144,29 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         enrollment
             .syntheses
             .load(std::sync::atomic::Ordering::SeqCst),
-        2
+        keys.len() + 1
     );
     let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM course_speech_clips WHERE id='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' AND actor_id=$1 AND reason='Independent synthetic course clip'",[account.into()])).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
     let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM course_speech_clip_reviews WHERE clip_id='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' AND actor_id=$1 AND reason='Synthetic clip decision'",[account.into()])).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM course_speech_clips) AS clips,(SELECT count(*) FROM course_speech_clip_events) AS events,(SELECT count(*) FROM course_speech_clip_reviews) AS reviews")).await.unwrap().unwrap();
-    assert_eq!(row.try_get::<i64>("", "clips").unwrap(), 2);
-    assert_eq!(row.try_get::<i64>("", "events").unwrap(), 3);
+    assert_eq!(
+        row.try_get::<i64>("", "clips").unwrap(),
+        keys.len() as i64 + 1
+    );
+    assert_eq!(
+        row.try_get::<i64>("", "events").unwrap(),
+        2 * keys.len() as i64 + 1
+    );
+    assert_eq!(
+        row.try_get::<i64>("", "reviews").unwrap(),
+        keys.len() as i64
+    );
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM speech_alignments WHERE id='88888888888888888888888888888888' AND actor_id=$1 AND reason='Independent synthetic alignment'",[account.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_alignments) AS reports,(SELECT count(*) FROM speech_alignment_reviews) AS reviews")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "reports").unwrap(), 1);
     assert_eq!(row.try_get::<i64>("", "reviews").unwrap(), 1);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_auditions WHERE id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') + (SELECT count(*) FROM voice_audition_events WHERE audition_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') AS n")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
