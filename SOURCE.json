@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/Ronbb/brioche",
+  "commit": "41c58fd54f94532ce1281612249e2e6edb2ff548",
+  "extractedPaths": [
+    "crates/course-contract/",
+    "packages/contracts/"
+  ],
+  "compatibilityFixture": "docs/examples/a1-bakery.lesson.json",
+  "status": "contracts extracted; legacy French v1 fields retained until versioned adapter"
+}

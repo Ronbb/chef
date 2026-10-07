@@ -1,0 +1,1014 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PublicLesson",
+  "type": "object",
+  "properties": {
+    "audio": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AudioAsset"
+      }
+    },
+    "audioTracks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AudioTrack"
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Block"
+      }
+    },
+    "cast": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Character"
+      }
+    },
+    "completion": {
+      "$ref": "#/$defs/Completion"
+    },
+    "estimatedMinutes": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "id": {
+      "type": "string"
+    },
+    "knowledge": {
+      "$ref": "#/$defs/Knowledge"
+    },
+    "levelId": {
+      "type": "string"
+    },
+    "media": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MediaAsset"
+      }
+    },
+    "objectivesZh": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reviewItemIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "revision": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "schemaVersion": {
+      "type": "string"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Step"
+      }
+    },
+    "summaryZh": {
+      "type": "string"
+    },
+    "title": {
+      "$ref": "#/$defs/Title"
+    },
+    "unitId": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "revision",
+    "levelId",
+    "unitId",
+    "title",
+    "summaryZh",
+    "estimatedMinutes",
+    "objectivesZh",
+    "knowledge",
+    "blocks",
+    "steps",
+    "completion",
+    "reviewItemIds",
+    "cast"
+  ],
+  "$defs": {
+    "AudioAsset": {
+      "type": "object",
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "creditZh": {
+          "type": "string"
+        },
+        "durationMs": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "assetId",
+        "revision",
+        "sha256",
+        "mimeType",
+        "durationMs",
+        "creditZh",
+        "url"
+      ]
+    },
+    "AudioCue": {
+      "type": "object",
+      "properties": {
+        "endMs": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "segmentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startMs": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "wordRange": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioWordRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "entryId",
+        "startMs",
+        "endMs"
+      ]
+    },
+    "AudioTrack": {
+      "type": "object",
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "blockId": {
+          "type": "string"
+        },
+        "cues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AudioCue"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "assetId",
+        "cues"
+      ]
+    },
+    "AudioWordRange": {
+      "type": "object",
+      "properties": {
+        "end": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ]
+    },
+    "Block": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "illustrationId": {
+              "type": "string"
+            },
+            "placeZh": {
+              "type": "string"
+            },
+            "situationZh": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "scene"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "placeZh",
+            "situationZh",
+            "illustrationId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "speakers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Speaker"
+              }
+            },
+            "titleZh": {
+              "type": "string"
+            },
+            "turns": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Turn"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "dialogue"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "titleZh",
+            "speakers",
+            "turns"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "narratorId": {
+              "type": "string"
+            },
+            "paragraphs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Paragraph"
+              }
+            },
+            "titleZh": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "article"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "titleZh",
+            "narratorId",
+            "paragraphs"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bodyZh": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "targets": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Target"
+              }
+            },
+            "titleZh": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "explanation"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "titleZh",
+            "bodyZh",
+            "targets"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bodyZh": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "scopeZh": {
+              "type": "string"
+            },
+            "titleZh": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "culture"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "titleZh",
+            "bodyZh",
+            "scopeZh"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "entryIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "vocabulary"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "entryIds"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "entryIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "grammar"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "entryIds"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "alternativeZh": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "taskZh": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "habit"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "taskZh",
+            "alternativeZh"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "takeawaysZh": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "summary"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "takeawaysZh"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "exercise"
+            }
+          },
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "exerciseType": {
+                  "type": "string",
+                  "const": "single-choice"
+                },
+                "options": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/OptionItem"
+                  }
+                },
+                "promptZh": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "exerciseType",
+                "promptZh",
+                "options"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "exerciseType": {
+                  "type": "string",
+                  "const": "fill-blank"
+                },
+                "hintZh": {
+                  "type": "string"
+                },
+                "promptZh": {
+                  "type": "string"
+                },
+                "templateFr": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "exerciseType",
+                "promptZh",
+                "templateFr",
+                "hintZh"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "exerciseType": {
+                  "type": "string",
+                  "const": "order"
+                },
+                "promptZh": {
+                  "type": "string"
+                },
+                "tokens": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/OptionItem"
+                  }
+                }
+              },
+              "required": [
+                "exerciseType",
+                "promptZh",
+                "tokens"
+              ]
+            }
+          ],
+          "required": [
+            "type",
+            "id"
+          ],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "Character": {
+      "type": "object",
+      "properties": {
+        "avatarId": {
+          "type": "string"
+        },
+        "characterId": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "speechLocale": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "characterId",
+        "revision",
+        "displayName",
+        "avatarId",
+        "speechLocale"
+      ]
+    },
+    "Completion": {
+      "type": "object",
+      "properties": {
+        "requiredExerciseIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requiredStepIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "strategy": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "strategy",
+        "requiredStepIds",
+        "requiredExerciseIds"
+      ]
+    },
+    "Grammar": {
+      "type": "object",
+      "properties": {
+        "bodyZh": {
+          "type": "string"
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GrammarExample"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "titleZh": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "titleZh",
+        "bodyZh",
+        "examples"
+      ]
+    },
+    "GrammarExample": {
+      "type": "object",
+      "properties": {
+        "fr": {
+          "type": "string"
+        },
+        "recording": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KnowledgeRecording"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "zh": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fr",
+        "zh"
+      ]
+    },
+    "Knowledge": {
+      "type": "object",
+      "properties": {
+        "grammar": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Grammar"
+          }
+        },
+        "vocabulary": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Vocabulary"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "vocabulary",
+        "grammar"
+      ]
+    },
+    "KnowledgeRecording": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/AudioAsset"
+        },
+        "endMs": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "startMs": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "asset",
+        "startMs",
+        "endMs"
+      ]
+    },
+    "MediaAsset": {
+      "type": "object",
+      "properties": {
+        "altZh": {
+          "type": "string"
+        },
+        "assetId": {
+          "type": "string"
+        },
+        "creditZh": {
+          "type": "string"
+        },
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "assetId",
+        "revision",
+        "sha256",
+        "mimeType",
+        "width",
+        "height",
+        "altZh",
+        "creditZh",
+        "url"
+      ]
+    },
+    "OptionItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text"
+      ]
+    },
+    "Paragraph": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Segment"
+          }
+        },
+        "translationZh": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "segments",
+        "translationZh"
+      ]
+    },
+    "Segment": {
+      "type": "object",
+      "properties": {
+        "grammarId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "vocabularyId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text"
+      ]
+    },
+    "Speaker": {
+      "type": "object",
+      "properties": {
+        "avatarId": {
+          "type": "string"
+        },
+        "characterId": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "labelZh": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "labelZh",
+        "characterId",
+        "displayName",
+        "avatarId"
+      ]
+    },
+    "Step": {
+      "type": "object",
+      "properties": {
+        "blockIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "titleZh": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "titleZh",
+        "blockIds"
+      ]
+    },
+    "Target": {
+      "type": "object",
+      "properties": {
+        "blockId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "segmentId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "entryId",
+        "segmentId"
+      ]
+    },
+    "Title": {
+      "type": "object",
+      "properties": {
+        "fr": {
+          "type": "string"
+        },
+        "zh": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fr",
+        "zh"
+      ]
+    },
+    "Turn": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Segment"
+          }
+        },
+        "speakerId": {
+          "type": "string"
+        },
+        "translationZh": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "speakerId",
+        "segments",
+        "translationZh"
+      ]
+    },
+    "Vocabulary": {
+      "type": "object",
+      "properties": {
+        "gender": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "lemma": {
+          "type": "string"
+        },
+        "meaningZh": {
+          "type": "string"
+        },
+        "noteZh": {
+          "type": "string"
+        },
+        "partOfSpeech": {
+          "type": "string"
+        },
+        "recording": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KnowledgeRecording"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "lemma",
+        "partOfSpeech",
+        "meaningZh",
+        "noteZh"
+      ]
+    }
+  }
+}

@@ -1,0 +1,561 @@
+{
+  "schemaVersion": "1.0",
+  "id": "a1-bakery-buy-breakfast",
+  "revision": 1,
+  "levelId": "a1",
+  "unitId": "a1-breakfast-bakery",
+  "title": {
+    "fr": "Un matin à la boulangerie",
+    "zh": "在面包店买早餐"
+  },
+  "summaryZh": "用简单而礼貌的表达买一根法棍，并询问价格。",
+  "estimatedMinutes": 12,
+  "objectivesZh": [
+    "进入店内时打招呼",
+    "礼貌地请求一种商品",
+    "询问价格并道别"
+  ],
+  "knowledge": {
+    "vocabulary": [
+      {
+        "id": "word-bonjour",
+        "lemma": "bonjour",
+        "partOfSpeech": "interjection",
+        "meaningZh": "你好；您好",
+        "noteZh": "白天问候。进入店内时可先用它向店员打招呼。"
+      },
+      {
+        "id": "expr-je-voudrais",
+        "lemma": "je voudrais",
+        "partOfSpeech": "phrase",
+        "meaningZh": "我想要……",
+        "noteZh": "礼貌地提出请求。本课先作为常用语块学习。"
+      },
+      {
+        "id": "word-baguette",
+        "lemma": "baguette",
+        "partOfSpeech": "noun",
+        "gender": "feminine",
+        "meaningZh": "法棍面包",
+        "noteZh": "在面包店场景中指法棍；一根法棍说 une baguette。"
+      },
+      {
+        "id": "expr-sil-vous-plait",
+        "lemma": "s’il vous plaît",
+        "partOfSpeech": "phrase",
+        "meaningZh": "请",
+        "noteZh": "这里使用 vous，适用于不熟悉的人和服务场景。"
+      },
+      {
+        "id": "expr-cest-combien",
+        "lemma": "c’est combien",
+        "partOfSpeech": "phrase",
+        "meaningZh": "多少钱？",
+        "noteZh": "询价的常用口语。本例的价格只是教学情景设定。"
+      },
+      {
+        "id": "expr-au-revoir",
+        "lemma": "au revoir",
+        "partOfSpeech": "phrase",
+        "meaningZh": "再见",
+        "noteZh": "结束交谈、离开时使用。"
+      }
+    ],
+    "grammar": [
+      {
+        "id": "grammar-indefinite-un-une",
+        "titleZh": "un / une：一个或一种",
+        "bodyZh": "法语名词有语法性别，冠词与它配合。baguette 是阴性名词，所以这里说 une baguette。不要根据物品的自然属性猜语法性别。",
+        "examples": [
+          {
+            "fr": "une baguette",
+            "zh": "一根法棍"
+          },
+          {
+            "fr": "un café",
+            "zh": "一杯咖啡"
+          }
+        ]
+      },
+      {
+        "id": "grammar-polite-voudrais-chunk",
+        "titleZh": "Je voudrais…：礼貌请求",
+        "bodyZh": "voudrais 是 vouloir 的条件式形式。A1 这里先掌握 Je voudrais + 想要的东西，用来礼貌提出请求；后续再系统学习条件式。",
+        "examples": [
+          {
+            "fr": "Je voudrais une baguette, s’il vous plaît.",
+            "zh": "我想要一根法棍，谢谢。"
+          }
+        ]
+      }
+    ]
+  },
+  "blocks": [
+    {
+      "id": "scene-bakery",
+      "type": "scene",
+      "placeZh": "一家社区面包店",
+      "situationZh": "你准备买早餐。先向店员问好，再说想要什么。",
+      "illustrationId": "art-bakery-morning"
+    },
+    {
+      "id": "dialogue-buy-bread",
+      "type": "dialogue",
+      "titleZh": "顾客与店员",
+      "speakers": [
+        {
+          "id": "customer",
+          "labelZh": "顾客",
+          "characterId": "character-camille",
+          "displayName": "Camille",
+          "avatarId": "avatar-camille-v1"
+        },
+        {
+          "id": "clerk",
+          "labelZh": "店员",
+          "characterId": "character-luc",
+          "displayName": "Luc",
+          "avatarId": "avatar-luc-v1"
+        }
+      ],
+      "turns": [
+        {
+          "id": "turn-greeting",
+          "speakerId": "customer",
+          "segments": [
+            {
+              "id": "seg-bonjour",
+              "text": "Bonjour",
+              "vocabularyId": "word-bonjour"
+            },
+            {
+              "id": "seg-greeting-mark",
+              "text": " !"
+            }
+          ],
+          "translationZh": "您好！"
+        },
+        {
+          "id": "turn-clerk-greeting",
+          "speakerId": "clerk",
+          "segments": [
+            {
+              "id": "seg-clerk-bonjour",
+              "text": "Bonjour",
+              "vocabularyId": "word-bonjour"
+            },
+            {
+              "id": "seg-clerk-mark",
+              "text": " !"
+            }
+          ],
+          "translationZh": "您好！"
+        },
+        {
+          "id": "turn-request",
+          "speakerId": "customer",
+          "segments": [
+            {
+              "id": "seg-request-chunk",
+              "text": "Je voudrais",
+              "vocabularyId": "expr-je-voudrais",
+              "grammarId": "grammar-polite-voudrais-chunk"
+            },
+            {
+              "id": "seg-request-article",
+              "text": " une ",
+              "grammarId": "grammar-indefinite-un-une"
+            },
+            {
+              "id": "seg-request-bread",
+              "text": "baguette",
+              "vocabularyId": "word-baguette"
+            },
+            {
+              "id": "seg-request-comma",
+              "text": ", "
+            },
+            {
+              "id": "seg-request-please",
+              "text": "s’il vous plaît",
+              "vocabularyId": "expr-sil-vous-plait"
+            },
+            {
+              "id": "seg-request-period",
+              "text": "."
+            }
+          ],
+          "translationZh": "我想要一根法棍，谢谢。"
+        },
+        {
+          "id": "turn-handover",
+          "speakerId": "clerk",
+          "segments": [
+            {
+              "id": "seg-handover",
+              "text": "Voilà !"
+            }
+          ],
+          "translationZh": "给您！"
+        },
+        {
+          "id": "turn-price-question",
+          "speakerId": "customer",
+          "segments": [
+            {
+              "id": "seg-thank",
+              "text": "Merci. "
+            },
+            {
+              "id": "seg-price-question",
+              "text": "C’est combien",
+              "vocabularyId": "expr-cest-combien"
+            },
+            {
+              "id": "seg-price-mark",
+              "text": " ?"
+            }
+          ],
+          "translationZh": "谢谢。多少钱？"
+        },
+        {
+          "id": "turn-price-answer",
+          "speakerId": "clerk",
+          "segments": [
+            {
+              "id": "seg-price-answer",
+              "text": "Un euro vingt, s’il vous plaît."
+            }
+          ],
+          "translationZh": "一欧元二十分，谢谢。"
+        },
+        {
+          "id": "turn-goodbye",
+          "speakerId": "customer",
+          "segments": [
+            {
+              "id": "seg-goodbye-thanks",
+              "text": "Merci, "
+            },
+            {
+              "id": "seg-goodbye",
+              "text": "au revoir",
+              "vocabularyId": "expr-au-revoir"
+            },
+            {
+              "id": "seg-goodbye-mark",
+              "text": " !"
+            }
+          ],
+          "translationZh": "谢谢，再见！"
+        },
+        {
+          "id": "turn-clerk-goodbye",
+          "speakerId": "clerk",
+          "segments": [
+            {
+              "id": "seg-clerk-goodbye",
+              "text": "Au revoir !"
+            }
+          ],
+          "translationZh": "再见！"
+        }
+      ]
+    },
+    {
+      "id": "article-breakfast",
+      "type": "article",
+      "titleZh": "早餐前的一次采购",
+      "narratorId": "character-lea",
+      "paragraphs": [
+        {
+          "id": "paragraph-morning",
+          "segments": [
+            {
+              "id": "seg-morning-text",
+              "text": "Le matin, Camille va à la boulangerie."
+            }
+          ],
+          "translationZh": "早晨，Camille 去面包店。"
+        },
+        {
+          "id": "paragraph-order",
+          "segments": [
+            {
+              "id": "seg-article-order-start",
+              "text": "Elle dit bonjour et demande une "
+            },
+            {
+              "id": "seg-article-baguette",
+              "text": "baguette",
+              "vocabularyId": "word-baguette"
+            },
+            {
+              "id": "seg-article-order-end",
+              "text": "."
+            }
+          ],
+          "translationZh": "她问好，然后要了一根法棍。"
+        },
+        {
+          "id": "paragraph-leaving",
+          "segments": [
+            {
+              "id": "seg-article-leaving",
+              "text": "Elle demande le prix, puis dit au revoir."
+            }
+          ],
+          "translationZh": "她询问价格，然后道别。"
+        }
+      ]
+    },
+    {
+      "id": "explanation-request",
+      "type": "explanation",
+      "titleZh": "把想要的东西放在 Je voudrais 后面",
+      "bodyZh": "这个语块表达礼貌请求。换成 un café 可以请求一杯咖啡；冠词随名词改变。句末的 s’il vous plaît 让请求更完整。",
+      "targets": [
+        {
+          "blockId": "dialogue-buy-bread",
+          "entryId": "turn-request",
+          "segmentId": "seg-request-chunk"
+        }
+      ]
+    },
+    {
+      "id": "culture-shop-greeting",
+      "type": "culture",
+      "titleZh": "先打招呼，再提出请求",
+      "bodyZh": "在本课模拟的小店交谈里，bonjour 为请求建立友好的开场。观察实际场合的互动方式，离开时可以说 au revoir。",
+      "scopeZh": "教学情景为法国社区小店的顾客服务交流；不是对所有法语地区或个人行为的统一规定。"
+    },
+    {
+      "id": "vocabulary-targets",
+      "type": "vocabulary",
+      "entryIds": [
+        "word-bonjour",
+        "expr-je-voudrais",
+        "word-baguette",
+        "expr-sil-vous-plait",
+        "expr-cest-combien",
+        "expr-au-revoir"
+      ]
+    },
+    {
+      "id": "grammar-targets",
+      "type": "grammar",
+      "entryIds": [
+        "grammar-indefinite-un-une",
+        "grammar-polite-voudrais-chunk"
+      ]
+    },
+    {
+      "id": "exercise-intention",
+      "type": "exercise",
+      "exerciseType": "single-choice",
+      "promptZh": "顾客说 Je voudrais une baguette 的主要目的是什么？",
+      "options": [
+        {
+          "id": "ask-price",
+          "text": "询问价格"
+        },
+        {
+          "id": "request-bread",
+          "text": "礼貌地请求一根法棍"
+        },
+        {
+          "id": "say-goodbye",
+          "text": "道别"
+        }
+      ]
+    },
+    {
+      "id": "exercise-article",
+      "type": "exercise",
+      "exerciseType": "fill-blank",
+      "promptZh": "根据 baguette 的语法性别，填入合适的冠词。",
+      "templateFr": "Je voudrais ___ baguette, s’il vous plaît.",
+      "hintZh": "baguette 是阴性名词。"
+    },
+    {
+      "id": "exercise-order",
+      "type": "exercise",
+      "exerciseType": "order",
+      "promptZh": "把下面的语块排成一句礼貌的请求。",
+      "tokens": [
+        {
+          "id": "please",
+          "text": "s’il vous plaît."
+        },
+        {
+          "id": "bread",
+          "text": "une baguette,"
+        },
+        {
+          "id": "request",
+          "text": "Je voudrais"
+        }
+      ]
+    },
+    {
+      "id": "habit-breakfast",
+      "type": "habit",
+      "taskZh": "下次准备早餐时，用 Je voudrais… 练说一句自己的选择。不需要真的到店里购买。",
+      "alternativeZh": "如果没有合适场景，想象自己站在面包店，把 une baguette 换成 un café，练说两次。"
+    },
+    {
+      "id": "summary-breakfast",
+      "type": "summary",
+      "takeawaysZh": [
+        "我能用 Bonjour 开始交流。",
+        "我能用 Je voudrais… 请求商品。",
+        "我能用 C’est combien ? 询价，并用 Au revoir 道别。"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-discover",
+      "kind": "discover",
+      "titleZh": "走进面包店",
+      "blockIds": [
+        "scene-bakery"
+      ]
+    },
+    {
+      "id": "step-read",
+      "kind": "read",
+      "titleZh": "读一段对话",
+      "blockIds": [
+        "dialogue-buy-bread",
+        "article-breakfast"
+      ]
+    },
+    {
+      "id": "step-explore",
+      "kind": "explore",
+      "titleZh": "理解表达",
+      "blockIds": [
+        "explanation-request",
+        "culture-shop-greeting",
+        "vocabulary-targets",
+        "grammar-targets"
+      ]
+    },
+    {
+      "id": "step-practice",
+      "kind": "practice",
+      "titleZh": "试着用一用",
+      "blockIds": [
+        "exercise-intention",
+        "exercise-article",
+        "exercise-order"
+      ]
+    },
+    {
+      "id": "step-apply",
+      "kind": "apply",
+      "titleZh": "带进日常",
+      "blockIds": [
+        "habit-breakfast"
+      ]
+    },
+    {
+      "id": "step-recap",
+      "kind": "recap",
+      "titleZh": "今天能做到什么",
+      "blockIds": [
+        "summary-breakfast"
+      ]
+    }
+  ],
+  "completion": {
+    "strategy": "attempt-all",
+    "requiredStepIds": [
+      "step-read",
+      "step-practice",
+      "step-recap"
+    ],
+    "requiredExerciseIds": [
+      "exercise-intention",
+      "exercise-article",
+      "exercise-order"
+    ]
+  },
+  "reviewItemIds": [
+    "expr-je-voudrais",
+    "word-baguette",
+    "expr-cest-combien"
+  ],
+  "serverOnly": {
+    "grading": {
+      "exercise-intention": {
+        "kind": "choice",
+        "correctOptionId": "request-bread",
+        "feedbackZh": "Je voudrais + 商品表示礼貌请求；询价则用 C’est combien ?。"
+      },
+      "exercise-article": {
+        "kind": "text",
+        "accepted": [
+          "une"
+        ],
+        "caseSensitive": false,
+        "feedbackZh": "baguette 是阴性名词，所以用 une。"
+      },
+      "exercise-order": {
+        "kind": "order",
+        "correctTokenIds": [
+          "request",
+          "bread",
+          "please"
+        ],
+        "feedbackZh": "Je voudrais une baguette, s’il vous plaît. 先提出请求，接商品，再加礼貌用语。"
+      }
+    }
+  },
+  "editorial": {
+    "status": "reviewed",
+    "note": "2026-10-07：项目所有者明确指示通过目录顺序的前六课，按该指示批准此课 revision 1。此记录是用户授权的课程批准，不声称完成独立法语专家审校。素材来源授权与登记、正式录音和发布校验单独处理；虚构价格、路线和时间不代表当前真实信息。"
+  },
+  "cast": [
+    {
+      "characterId": "character-camille",
+      "revision": 1,
+      "displayName": "Camille",
+      "avatarId": "avatar-camille-v1",
+      "speechLocale": "fr-FR"
+    },
+    {
+      "characterId": "character-luc",
+      "revision": 1,
+      "displayName": "Luc",
+      "avatarId": "avatar-luc-v1",
+      "speechLocale": "fr-FR"
+    },
+    {
+      "characterId": "character-lea",
+      "revision": 1,
+      "displayName": "Léa",
+      "avatarId": "avatar-lea-v1",
+      "speechLocale": "fr-FR"
+    }
+  ],
+  "assetRefs": [
+    {
+      "assetId": "art-bakery-morning",
+      "revision": 1
+    },
+    {
+      "assetId": "avatar-camille-v1",
+      "revision": 1
+    },
+    {
+      "assetId": "avatar-luc-v1",
+      "revision": 1
+    },
+    {
+      "assetId": "avatar-lea-v1",
+      "revision": 1
+    }
+  ]
+}
