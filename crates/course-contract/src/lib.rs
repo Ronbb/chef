@@ -499,6 +499,22 @@ dto!(UserProfile {
     settings: UserSettings,
     version: u32
 });
+// Shared account versions are independent from product learning preference versions.
+dto!(AccountProfile {
+    id: String,
+    email: String,
+    display_name: String,
+    role: String,
+    version: u32
+});
+dto!(AccountProfileUpdateRequest {
+    expected_account_version: u32,
+    display_name: String
+});
+dto!(AccountAuthResult {
+    user: AccountProfile,
+    csrf_token: String
+});
 dto!(UserSettings {
     time_zone: String,
     weekly_days: u8,

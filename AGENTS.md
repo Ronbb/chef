@@ -21,3 +21,5 @@ Web 真源补充：通用页面/播放器/管理员界面与完整 Web/SSR/浏�
 内省消费者补充：learning_identity按每个私有请求验证，严格Cookie/产品/ID/载荷与有界HTTP，无缓存/失败回退。写请求在独立identity核验原method+Origin+CSRF；远端模式仍Brioche learner-only，globalrole不作为其他产品管理员授权。原本地AuthSession仅legacy及未迁移后台。不得切生产或给Hargow开放未隔离的业务路由，余下角色/后台/账号编辑/schema隔离仍待完成。
 
 产品成员授权补充：迁移29将既有全局role仅复制为Brioche product_memberships，Hargow不继承；独立identity内省必填membership，消费者profile取产品role。成员修改在account-admin锁内复核产品actor+CAS/lastoperator/audit；旧后台仍globalrole未接入，不能据此称全后台授权迁移完成或切生产。旧无scope邀请只在B入口建立B成员，不bootstrapHargow管理员，明确初始化流程仍待实施。
+
+账号编辑契约补充：AccountProfile/AccountProfileUpdateRequest/AccountAuthResult真源在Rust契约，TS由export生成。独立GET/PATCH /account只改名称，expectedAccountVersion不能取UserProfile产品version。旧Web组合编辑与新登录DTO组合仍待迁移；不允许在learning新增账号数据库写入，或用隐式From转换混淆版本。

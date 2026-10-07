@@ -607,6 +607,7 @@ pub fn router_with_media_root(
         .route("/api/v1/auth/accept-invite", post(accept))
         .route("/api/v1/auth/reset-password", post(reset))
         .route("/api/v1/me", get(me))
+        .route("/api/v1/account", get(account_me).patch(account_update))
         .route("/api/v1/me/settings", axum::routing::patch(update_profile))
         .merge(crate::learning::router())
         .merge(crate::reviews::router())
@@ -636,7 +637,7 @@ pub fn account_router(
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/accept-invite", post(account_accept))
         .route("/api/v1/auth/reset-password", post(reset))
-        .route("/api/v1/account", get(account_me))
+        .route("/api/v1/account", get(account_me).patch(account_update))
         .merge(crate::product_memberships::router(backend.clone(), product))
         .layer(axum::Extension(product));
     protect_routes(routes, backend, policy, secure, product)
@@ -677,6 +678,44 @@ async fn account_me(
     auth: AuthSession,
 ) -> Result<Json<crate::identity_service::AccountProfile>, AppError> {
     Ok(Json(account_identity(auth)?))
+}
+async fn account_update(
+    auth: AuthSession,
+    State(backend): State<Backend>,
+    Json(request): Json<brioche_course_contract::AccountProfileUpdateRequest>,
+) -> Result<Json<brioche_course_contract::AccountProfile>, AppError> {
+    let id = crate::learning::owner(&auth)?;
+    let name = request.display_name.trim();
+    if name.is_empty()
+        || name.chars().count() > 80
+        || name.chars().any(char::is_control)
+        || request.expected_account_version == 0
+        || request.expected_account_version > 2147483647
+    {
+        return Err(AppError::InvalidInput);
+    }
+    let row=backend.db.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        "UPDATE users SET display_name=$2,profile_version=profile_version+1 WHERE id=$1 AND profile_version=$3 AND profile_version<2147483647 RETURNING id,email,display_name,role,profile_version",
+        [id.into(),name.into(),i32::try_from(request.expected_account_version).map_err(|_|AppError::InvalidInput)?.into()]))
+        .await.map_err(|_|AppError::Unavailable)?.ok_or(AppError::Conflict)?;
+    Ok(Json(brioche_course_contract::AccountProfile {
+        id: row
+            .try_get::<i64>("", "id")
+            .map_err(|_| AppError::Unavailable)?
+            .to_string(),
+        email: row
+            .try_get("", "email")
+            .map_err(|_| AppError::Unavailable)?,
+        display_name: row
+            .try_get("", "display_name")
+            .map_err(|_| AppError::Unavailable)?,
+        role: row.try_get("", "role").map_err(|_| AppError::Unavailable)?,
+        version: u32::try_from(
+            row.try_get::<i32>("", "profile_version")
+                .map_err(|_| AppError::Unavailable)?,
+        )
+        .map_err(|_| AppError::Unavailable)?,
+    }))
 }
 pub(crate) fn account_identity(
     auth: AuthSession,

@@ -12,46 +12,11 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use brioche_course_contract::{AuthResult, UserProfile};
+pub use brioche_course_contract::{AccountAuthResult, AccountProfile};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AccountProfile {
-    pub id: String,
-    pub email: String,
-    pub display_name: String,
-    /// Global account role; consumers must separately authorize product operations.
-    pub role: String,
-    pub version: u32,
-}
-impl From<UserProfile> for AccountProfile {
-    fn from(user: UserProfile) -> Self {
-        Self {
-            id: user.id,
-            email: user.email,
-            display_name: user.display_name,
-            role: user.role,
-            version: user.version,
-        }
-    }
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountAuthResult {
-    pub user: AccountProfile,
-    pub csrf_token: String,
-}
-impl From<AuthResult> for AccountAuthResult {
-    fn from(result: AuthResult) -> Self {
-        Self {
-            user: result.user.into(),
-            csrf_token: result.csrf_token,
-        }
-    }
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionIdentity {

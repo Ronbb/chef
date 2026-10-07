@@ -61,3 +61,11 @@ docker build -f infra/Dockerfile.identity -t chef-identity:local .
 迁移29回滚拒绝存在其他产品授权、任何产品审计或与原全局角色不同的Brioche权限，避免删除授权历史。测试中的合成数据清理不是生产回滚流程。当前旧后台还用global role及旧账号操作，尚未迁移到上述产品授权；远端学习仍不开放后台。继续完成后台事务内权限复核、账号编辑/管理UI、产品事实/schema及数据库最小权限后才可正式切换。
 
 实际验证：14项专用PG回归通过，新增28→29升级保留Brioche、Hargow不继承、双产品grant隔离、并发CAS、actor撤销复核、最后管理员、5条准确审计及回滚拒绝；真实身份HTTP确认global operator在Hargow membership为learner，修改Hargow授权403。常规工作区、Clippy全目标、fmt和公共生成契约无diff通过；内部HTTP协议同步更新。无生产迁移或授权变更。
+
+## 账号资料编辑与独立版本
+
+GET/PATCH /api/v1/account是身份服务的账号资料资源，兼容旧组合进程也提供同一路径。PATCH只接受displayName和expectedAccountVersion；不接受settings、role、email或userId。账号ID来自真实会话，姓名经过trim、非空/80字符/控制字符校验；单条SQL以账号profile_version执行CAS并递增，过期版本409，超过持久化范围拒绝。只更新账号名称，不读写产品设置、产品授权或密码字段。Brioche/Hargow共享该名称及账号版本，产品学习设置版本独立。
+
+AccountProfile、AccountProfileUpdateRequest、AccountAuthResult已成为共享Rust契约并由ts-rs生成TS，替代服务端手写重复DTO。旧v1 UserProfile的version继续表示产品学习设置；不能从它构造expectedAccountVersion，也不能把旧登录UserProfile直接当新账号响应。移除了旧From<UserProfile>/From<AuthResult>隐式转换，以避免混用这两类版本。
+
+真实双产品HTTP+PG验证包含名称trim/跨产品读取、两入口同账号版本并发只有一个200另一个409、设置版本仍1且身份流程不创建设置行、超长/空白/控制字符拒绝、额外settings/userId/role字段422。14项专用PG、普通工作区、Clippy和fmt通过。当前共享Web仍使用旧组合资料编辑，前端分开编辑账号与学习日常以及新登录响应组合仍待实施；本次没有宣称Web已切换或生产已完成双服务部署。

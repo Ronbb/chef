@@ -104,6 +104,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     brioche_course_contract::LearningOverview::export_all(&config)?;
     brioche_course_contract::StudyDashboard::export_all(&config)?;
     brioche_course_contract::UserProfile::export_all(&config)?;
+    brioche_course_contract::AccountProfile::export_all(&config)?;
+    brioche_course_contract::AccountProfileUpdateRequest::export_all(&config)?;
+    brioche_course_contract::AccountAuthResult::export_all(&config)?;
     brioche_course_contract::UpdateProfileRequest::export_all(&config)?;
     brioche_course_contract::AuthResult::export_all(&config)?;
     brioche_course_contract::LoginRequest::export_all(&config)?;

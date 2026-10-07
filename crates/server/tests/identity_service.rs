@@ -159,6 +159,80 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         .await;
     assert_eq!(status, 200);
     assert_eq!(hargow["account"]["id"], account);
+    for invalid in [
+        serde_json::json!({"expectedAccountVersion":1,"displayName":"","settings":{"showTranslation":true}}),
+        serde_json::json!({"expectedAccountVersion":1,"displayName":"Bad","userId":"999"}),
+        serde_json::json!({"expectedAccountVersion":1,"displayName":"Bad","role":"operator"}),
+    ] {
+        assert_eq!(
+            french
+                .request("PATCH", "/api/v1/account", Some(invalid), None)
+                .await
+                .0,
+            422
+        );
+    }
+    for name in [" ".to_string(), "x".repeat(81), "Wrong\nName".into()] {
+        assert_eq!(
+            french
+                .request(
+                    "PATCH",
+                    "/api/v1/account",
+                    Some(serde_json::json!({"expectedAccountVersion":1,"displayName":name})),
+                    None
+                )
+                .await
+                .0,
+            400
+        );
+    }
+    let (_, renamed) = french
+        .request(
+            "PATCH",
+            "/api/v1/account",
+            Some(serde_json::json!({"expectedAccountVersion":1,"displayName":" Shared name "})),
+            None,
+        )
+        .await;
+    assert_eq!(renamed["displayName"], "Shared name");
+    assert_eq!(renamed["version"], 2);
+    assert!(renamed.get("settings").is_none());
+    let (_, shared) = cantonese
+        .request("GET", "/api/v1/account", None, None)
+        .await;
+    assert_eq!(shared["displayName"], "Shared name");
+    assert_eq!(shared["version"], 2);
+    let (left, right) = tokio::join!(
+        french.request(
+            "PATCH",
+            "/api/v1/account",
+            Some(serde_json::json!({"expectedAccountVersion":2,"displayName":"French edit"})),
+            None
+        ),
+        cantonese.request(
+            "PATCH",
+            "/api/v1/account",
+            Some(serde_json::json!({"expectedAccountVersion":2,"displayName":"Cantonese edit"})),
+            None
+        )
+    );
+    let mut statuses = [left.0, right.0];
+    statuses.sort();
+    assert_eq!(statuses, [200, 409]);
+    assert_eq!(
+        chef_engine::product_settings::read(&db, ProductId::Brioche, account.parse().unwrap())
+            .await
+            .unwrap()
+            .version,
+        1
+    );
+    assert_eq!(
+        chef_engine::product_settings::read(&db, ProductId::Hargow, account.parse().unwrap())
+            .await
+            .unwrap()
+            .version,
+        1
+    );
     assert_eq!(hargow["membership"]["role"], "learner");
     let (_, scoped) = french
         .request("GET", "/internal/v1/session", None, Some((KEY, "brioche")))
