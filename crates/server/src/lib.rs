@@ -151,13 +151,23 @@ impl IntoResponse for AppError {
     }
 }
 pub fn router(state: AppState) -> Router {
-    build_router(state, false)
+    build_router(state, false, None)
 }
 /// Independent identity deployments check learning persistence without account table access.
 pub fn independent_learning_router(state: AppState) -> Router {
-    build_router(state, true)
+    independent_product_router(state, product::ProductId::Brioche)
 }
-fn build_router(state: AppState, independent_identity: bool) -> Router {
+/// Product is selected by trusted deployment assembly, never an HTTP field.
+pub fn independent_product_router(state: AppState, product: product::ProductId) -> Router {
+    build_router(state, true, Some(product))
+}
+#[derive(Clone, Copy)]
+struct ContentProduct(Option<product::ProductId>);
+fn build_router(
+    state: AppState,
+    independent_identity: bool,
+    product: Option<product::ProductId>,
+) -> Router {
     Router::new()
         .route(
             "/api/health",
@@ -172,15 +182,21 @@ fn build_router(state: AppState, independent_identity: bool) -> Router {
         .route("/api/demo/lessons/{id}/grade", post(demo_grade))
         .fallback(|| async { AppError::NotFound })
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
+        .layer(axum::Extension(ContentProduct(product)))
         .with_state(Arc::new(state))
 }
 /// Development only, stateless grading. Production learning submissions require authenticated sessions.
 async fn demo_grade(
     State(state): State<Arc<AppState>>,
+    axum::Extension(product): axum::Extension<ContentProduct>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<GradeRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    // The bundled stateless fixture is French; no cross-product fallback.
+    if product.0 == Some(product::ProductId::Hargow) {
+        return Err(AppError::NotFound);
+    }
     let lesson = state
         .fixture
         .as_ref()
@@ -243,11 +259,17 @@ struct CatalogQuery {
 }
 async fn catalog(
     State(state): State<Arc<AppState>>,
+    axum::Extension(product): axum::Extension<ContentProduct>,
     Query(query): Query<CatalogQuery>,
 ) -> Result<Json<Catalog>, AppError> {
     let query = content::search_terms(query.q.as_deref().unwrap_or(""))?;
     if let Some(db) = &state.db {
-        return content::catalog_matching(db, &query).await.map(Json);
+        return content::catalog_matching_for_product(db, product.0, &query)
+            .await
+            .map(Json);
+    }
+    if product.0 == Some(product::ProductId::Hargow) {
+        return Err(AppError::NotFound);
     }
     let vocabulary = state
         .fixture
@@ -306,9 +328,13 @@ struct LessonQuery {
 }
 async fn lesson(
     State(state): State<Arc<AppState>>,
+    axum::Extension(product): axum::Extension<ContentProduct>,
     Path(id): Path<String>,
     Query(query): Query<LessonQuery>,
 ) -> Result<Json<PublicLesson>, AppError> {
+    if state.fixture.is_some() && product.0 == Some(product::ProductId::Hargow) {
+        return Err(AppError::NotFound);
+    }
     if let Some(revision) = query.revision {
         if revision == 0 || revision > i32::MAX as u32 {
             return Err(AppError::InvalidInput);
@@ -321,8 +347,10 @@ async fn lesson(
             };
         }
         let db = state.db.as_ref().ok_or(AppError::Unavailable)?;
-        let row=learning::one(db,"SELECT public_document,published,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision)) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2",vec![id.into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
-        if !learning::field::<bool>(&row, "published")? {
+        let row=learning::one(db,&format!("SELECT public_document,published,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2{}",if product.0.is_some(){" AND w.product_id=r.product_id"}else{""},learning::product_filter(product.0,"r.product_id")),vec![id.into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
+        if !learning::field::<bool>(&row, "published")?
+            || learning::field::<bool>(&row, "withdrawn")?
+        {
             return Err(if learning::field::<bool>(&row, "withdrawn")? {
                 AppError::Gone
             } else {
@@ -345,7 +373,7 @@ async fn lesson(
     let db = state.db.as_ref().ok_or(AppError::Unavailable)?;
     // Read only the requested revision, together with the current release pointer.
     // Old published revisions remain available only through the explicit revision path.
-    let row = learning::one(db, "SELECT r.public_document FROM content_state s JOIN release_entries e ON e.release_id=s.active_release JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision) WHERE s.singleton AND e.lesson_id=$1 AND r.published AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision))", vec![id.into()]).await?.ok_or(AppError::NotFound)?;
+    let row = learning::one(db, &format!("SELECT r.public_document FROM content_state s JOIN release_entries e ON e.release_id=s.active_release{} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision){} WHERE {} AND e.lesson_id=$1 AND r.published AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){})",if product.0.is_some(){" AND e.product_id=s.product_id"}else{""},if product.0.is_some(){" AND r.product_id=e.product_id"}else{""},product.0.map_or_else(||"s.singleton".to_owned(),|p|format!("s.product_id='{}'",p.as_str())),if product.0.is_some(){" AND w.product_id=r.product_id"}else{""}), vec![id.into()]).await?.ok_or(AppError::NotFound)?;
     let lesson: PublicLesson = serde_json::from_value(learning::field(&row, "public_document")?)
         .map_err(|_| AppError::Unavailable)?;
     lesson.validate().map_err(|_| AppError::Unavailable)?;

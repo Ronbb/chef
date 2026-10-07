@@ -3317,6 +3317,98 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         serde_json::to_value(&before_b).unwrap()
     );
     assert_ne!(dashboard["recommendedLesson"]["id"], h_lesson.id);
+    let h_public = chef_engine::independent_product_router(
+        chef_engine::AppState {
+            db: Some(learning.clone()),
+            fixture: None,
+        },
+        ProductId::Hargow,
+    );
+    let (status, h_public_catalog) = request(
+        &h_public,
+        "GET",
+        "/api/catalog",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(h_public_catalog, serde_json::to_value(&h_catalog).unwrap());
+    for (app, foreign) in [
+        (&remote, h_lesson.id.as_str()),
+        (&h_public, lesson.id.as_str()),
+    ] {
+        for path in [
+            format!("/api/lessons/{foreign}"),
+            format!("/api/lessons/{foreign}?revision={}", lesson.revision),
+        ] {
+            assert_eq!(
+                request(app, "GET", &path, None, &mut cookie, &mut csrf)
+                    .await
+                    .0,
+                404,
+                "{path}"
+            );
+        }
+    }
+    let (status, h_detail) = request(
+        &h_public,
+        "GET",
+        &format!("/api/lessons/{}", h_lesson.id),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{h_detail}");
+    assert_eq!(h_detail, serde_json::to_value(&h_lesson).unwrap());
+    assert!(h_detail.get("serverOnly").is_none());
+    assert_eq!(
+        request(
+            &h_public,
+            "GET",
+            &format!(
+                "/api/lessons/{}?revision={}",
+                h_lesson.id, h_lesson.revision
+            ),
+            None,
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        request(
+            &remote,
+            "GET",
+            "/api/catalog?product=hargow",
+            None,
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    assert_eq!(request(&h_public,"POST",&format!("/api/demo/lessons/{}/grade",h_lesson.id),Some(serde_json::json!({"revision":h_lesson.revision,"exerciseId":"unknown","answer":{"kind":"text","text":"test"}})),&mut cookie,&mut csrf).await.0,404);
+    let spoofed = remote
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/catalog")
+                .header("x-chef-product", "hargow")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(spoofed.status().as_u16(), 200);
+    let spoofed: serde_json::Value =
+        serde_json::from_slice(&spoofed.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(spoofed, serde_json::to_value(&before_b).unwrap());
     let tx = owner.begin().await.unwrap();
     tx.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,

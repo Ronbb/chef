@@ -1,5 +1,11 @@
 # 身份与学习schema分离
 
+## 公共课程API的服务器产品上下文
+
+independent_product_router接收可信部署选择的ProductId，不能从浏览器query、header或Host选产品。目录、当前课程及指定版本课程都按该上下文查询；指定版本同时拒绝已撤回记录。legacy router仍兼容原组合布局。Hargow不能回退到内置法语演示课程或演示判分。
+
+实际受限split HTTP验证H自有目录及公开详情200、B/H双向外产品ID当前及指定版本404、公开详情无私有字段、伪造x-chef-product不改变B目录、product查询400和H演示判分404。测试使用合成法语夹具，不表示实际粤语课程能力。生产命令仍装配Brioche，H认证学习入口关闭；完整课源外键、后台/媒体及产品局部编号继续迁移，生产pin保持。
+
 ## 产品目录读取内核及首页推荐
 
 catalog_matching_for_product接受服务器可信产品上下文，共用原单语句摘要/搜索投影；按产品选择状态并要求目录、条目、课程和撤回同产品。未发布目录返回空，不回退Brioche；catalog_matching legacy包装仍传None兼容旧32。首页调用该内核，推荐也选择同产品状态/课程并排除撤回。

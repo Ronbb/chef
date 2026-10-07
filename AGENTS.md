@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+公共课程API产品范围补充：independent_product_router由可信部署装配传ProductId，Extension固定目录与当前/指定版本详情范围，客户端query/header不能选产品。受限actual split HTTP覆盖跨产品ID两路径404、自有H公开详情200且无私有字段、伪造header目录保持、product查询400；H禁止回退法语演示判分/fixture。independent_learning_router仍固定B，H认证业务关闭；合成法语夹具不代表粤语能力。后台/媒体、学习事实到课源约束及全局编号仍待迁移，生产pin保持，产品不复制API。
+
 目录读取产品范围补充：catalog_matching_for_product共用查询按可信Option<ProductId>选状态、同产品目录/条目/课程/撤回，legacy catalog_matching传None仅原B查询；首页目录/推荐使用固定产品并过滤撤回，无目录返回空不回退。actual split受限学习连接读取双发布合成法语夹具，H返回独立summary、独特搜索只H、H撤回事务不影响B、B整目录指纹及HTTP首页目录/推荐保持。H夹具不是真实粤语课程。公共catalog/lesson API上下文、后台/global课ID/媒体及legacy选择器移除仍待实施，H业务保持关闭，生产pin不变；实现仅Chef。
 
 发布状态产品范围补充：learning_000008_product_release_state将content_state主键改为product_id；singleton暂为legacy Brioche选择器，约束为等于(product_id=brioche)，H插入false，后续全部调用迁移后移除旧选择器。新chef_lock_product_release_state(TEXT)固定schema/pg_catalog SECURITY DEFINER只FOR SHARE，PUBLIC EXECUTE撤销，split-only learning-product-grants显式授运行角色；远端开始课程用可信产品调用，legacy旧函数保持。actual split验证双状态/读取H目录/旧B选择器单行、Hgeneration改17 B指纹不变、B引用H目录拒绝、身份role拒执行及双状态下B学习/内容后台回归。全局课ID/媒体及后台产品scope/目录查询仍待迁移，H入口和生产pin保持，不声明完整租户。
