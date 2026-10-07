@@ -174,7 +174,7 @@ async fn dashboard(
     let totals=one(&tx,&format!("SELECT count(*) FILTER (WHERE c.due_at <= $2::timestamptz)::bigint AS due,to_char(min(c.due_at) FILTER (WHERE c.due_at > $2::timestamptz) AT TIME ZONE 'UTC','{STAMP}') AS next FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND NOT c.suspended AND r.published",product_filter(backend.product,"c.product_id")),vec![user.into(),now.to_string().into()]).await?.ok_or(AppError::Unavailable)?;
     let completed=one(&tx,&format!("SELECT count(*)::bigint AS n FROM lesson_progress WHERE user_id=$1{} AND first_completed_at IS NOT NULL",product_filter(backend.product,"product_id")),vec![user.into()]).await?.ok_or(AppError::Unavailable)?;
     // Prefer unfinished courses in the active release's explicit editorial order.
-    let recommendation=one(&tx,&format!("SELECT r.public_document,EXISTS(SELECT 1 FROM lesson_progress p WHERE p.user_id=$1 AND p.lesson_id=r.lesson_id{} AND p.first_completed_at IS NOT NULL) AS learned FROM content_state s JOIN release_entries e ON e.release_id=s.active_release JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision) WHERE s.singleton AND r.published ORDER BY learned,e.position LIMIT 1",product_filter(backend.product,"p.product_id")),vec![user.into()]).await?;
+    let recommendation=one(&tx,&format!("SELECT r.public_document,EXISTS(SELECT 1 FROM lesson_progress p WHERE p.user_id=$1 AND p.lesson_id=r.lesson_id{} AND p.first_completed_at IS NOT NULL) AS learned FROM content_state s JOIN release_entries e ON e.release_id=s.active_release{} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision){} WHERE {} AND r.published AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) ORDER BY learned,e.position LIMIT 1",product_filter(backend.product,"p.product_id"),if backend.product.is_some(){" AND e.product_id=s.product_id"}else{""},if backend.product.is_some(){" AND r.product_id=e.product_id"}else{""},backend.product.map_or_else(||"s.singleton".to_owned(),|p|format!("s.product_id='{}'",p.as_str())),if backend.product.is_some(){" AND w.product_id=r.product_id"}else{""}),vec![user.into()]).await?;
     let (recommended_lesson, all_available_completed) = if let Some(row) = recommendation {
         let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
             .map_err(|_| AppError::Unavailable)?;
@@ -184,7 +184,7 @@ async fn dashboard(
         (None, false)
     };
     let result = StudyDashboard {
-        catalog: crate::content::catalog(&tx).await?,
+        catalog: crate::content::catalog_matching_for_product(&tx, backend.product, &[]).await?,
         local_date: today.to_string(),
         time_zone: settings.time_zone,
         week_start: days

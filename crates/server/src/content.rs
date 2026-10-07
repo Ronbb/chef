@@ -770,12 +770,20 @@ pub async fn catalog_matching<C: ConnectionTrait>(
     db: &C,
     terms: &[String],
 ) -> Result<Catalog, AppError> {
+    catalog_matching_for_product(db, None, terms).await
+}
+pub async fn catalog_matching_for_product<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    terms: &[String],
+) -> Result<Catalog, AppError> {
     // One statement observes the pointer, immutable manifest and availability together.
     // Import/publication validate full immutable documents; catalog reads need only
     // the public summary, not every dialogue, answer-free exercise and audio timeline.
     // jsonb_to_record detoasts each immutable document once rather than once per
     // summary key. The full body and private grading document are never returned.
-    let rows = db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, r#"
+    let scoped = product.is_some();
+    let rows = db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, format!(r#"
         SELECT cr.manifest, COALESCE(jsonb_agg(jsonb_build_object(
             'summary', jsonb_build_object(
                 'id',p.id,'revision',p.revision,'levelId',p."levelId",'unitId',p."unitId",
@@ -785,16 +793,22 @@ pub async fn catalog_matching<C: ConnectionTrait>(
                 FROM jsonb_array_elements(COALESCE(p.knowledge->'vocabulary','[]'::jsonb)) v
             ),'') ELSE '' END
         ) ORDER BY e.position) FILTER(WHERE r.lesson_id IS NOT NULL),'[]'::jsonb) AS summaries
-        FROM content_state s JOIN content_releases cr ON cr.id=s.active_release
-        LEFT JOIN release_entries e ON e.release_id=cr.id
-        LEFT JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision)
+        FROM content_state s JOIN content_releases cr ON cr.id=s.active_release{}
+        LEFT JOIN release_entries e ON e.release_id=cr.id{}
+        LEFT JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision){}
             AND r.published AND NOT EXISTS(
-                SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision))
+                SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){})
         LEFT JOIN LATERAL jsonb_to_record(r.public_document) AS p(
             id text,revision integer,"levelId" text,"unitId" text,title jsonb,
             "summaryZh" text,"estimatedMinutes" integer,knowledge jsonb) ON true
-        WHERE s.singleton GROUP BY cr.id
-    "#,[(!terms.is_empty()).into()])).await.map_err(|_|AppError::Unavailable)?;
+        WHERE {} GROUP BY cr.id
+    "#,
+        if scoped{" AND cr.product_id=s.product_id"}else{""},
+        if scoped{" AND e.product_id=cr.product_id"}else{""},
+        if scoped{" AND r.product_id=e.product_id"}else{""},
+        if scoped{" AND w.product_id=r.product_id"}else{""},
+        product.map_or_else(||"s.singleton".to_owned(),|p|format!("s.product_id='{}'",p.as_str())),
+    ),[(!terms.is_empty()).into()])).await.map_err(|_|AppError::Unavailable)?;
     let Some(first) = rows.first() else {
         return Ok(Catalog {
             levels: vec![],

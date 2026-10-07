@@ -1,5 +1,11 @@
 # 身份与学习schema分离
 
+## 产品目录读取内核及首页推荐
+
+catalog_matching_for_product接受服务器可信产品上下文，共用原单语句摘要/搜索投影；按产品选择状态并要求目录、条目、课程和撤回同产品。未发布目录返回空，不回退Brioche；catalog_matching legacy包装仍传None兼容旧32。首页调用该内核，推荐也选择同产品状态/课程并排除撤回。
+
+actual split使用受限学习连接读取两个同时发布的合成法语目录夹具：空H目录不回退、H摘要独立、独特搜索只命中H、B目录JSON保持；H撤回在所有者事务中只过滤H，B保持，事务回滚。B HTTP首页目录等于原B目录且推荐不含H。该测试不是粤语教学或真实发布验证，H公共业务入口仍关闭。公共catalog/lesson API上下文、后台、产品局部课编号/媒体和legacy选择器移除待实施，生产不变。
+
 ## 独立发布状态及学习锁
 
 learning_000008_product_release_state将content_state主键替换为product_id，保留原Brioche active_release/generation。singleton暂为legacy选择器，约束singleton=(product_id='brioche')；新增Hargow状态必须显式false，未自动创建生产H行。所有调用按产品迁移后需移除旧选择器，不将其作为最终多产品接口。

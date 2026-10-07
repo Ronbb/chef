@@ -3234,6 +3234,117 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(row.try_get::<i64>("", "direct").unwrap(), 1);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_auditions WHERE id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') + (SELECT count(*) FROM voice_audition_events WHERE audition_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') AS n")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    let before_b = chef_engine::content::catalog_matching_for_product(
+        &learning,
+        Some(ProductId::Brioche),
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(
+        chef_engine::content::catalog_matching_for_product(&learning, Some(ProductId::Hargow), &[])
+            .await
+            .unwrap()
+            .levels
+            .is_empty()
+    );
+    let mut h_lesson = lesson.clone();
+    h_lesson.id = "hargow-catalog-fixture".into();
+    h_lesson.title.fr = "Hargow catalogue sentinel".into();
+    h_lesson.title.zh = "Hargow 合成目录测试".into();
+    h_lesson.validate().unwrap();
+    let manifest = serde_json::json!({"id":"hargow-catalog-release","schemaVersion":"1.0","levels":[{"id":h_lesson.level_id,"label":"Synthetic Hargow fixture","units":[{"id":h_lesson.unit_id,"titleZh":"合成测试单元","lessons":[{"lessonId":h_lesson.id,"revision":h_lesson.revision}]}]}]});
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) VALUES('hargow',$1,$2,true,$3,'{}')",[h_lesson.id.clone().into(),(h_lesson.revision as i32).into(),serde_json::to_value(&h_lesson).unwrap().into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO content_releases(product_id,id,manifest,content_hash) VALUES('hargow','hargow-catalog-release',$1,repeat('a',64))",[manifest.into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO release_entries(product_id,release_id,lesson_id,revision,position) VALUES('hargow','hargow-catalog-release',$1,$2,0)",[h_lesson.id.clone().into(),(h_lesson.revision as i32).into()])).await.unwrap();
+    owner.execute_unprepared("UPDATE content_state SET active_release='hargow-catalog-release' WHERE product_id='hargow'").await.unwrap();
+    let h_catalog =
+        chef_engine::content::catalog_matching_for_product(&learning, Some(ProductId::Hargow), &[])
+            .await
+            .unwrap();
+    assert_eq!(h_catalog.levels[0].units[0].lessons[0].id, h_lesson.id);
+    assert_eq!(
+        serde_json::to_value(&before_b).unwrap(),
+        serde_json::to_value(
+            chef_engine::content::catalog_matching_for_product(
+                &learning,
+                Some(ProductId::Brioche),
+                &[]
+            )
+            .await
+            .unwrap()
+        )
+        .unwrap()
+    );
+    let terms = chef_engine::content::search_terms("sentinel").unwrap();
+    assert_eq!(
+        chef_engine::content::catalog_matching_for_product(
+            &learning,
+            Some(ProductId::Hargow),
+            &terms
+        )
+        .await
+        .unwrap()
+        .levels[0]
+            .units[0]
+            .lessons[0]
+            .id,
+        h_lesson.id
+    );
+    assert!(
+        chef_engine::content::catalog_matching_for_product(
+            &learning,
+            Some(ProductId::Brioche),
+            &terms
+        )
+        .await
+        .unwrap()
+        .levels
+        .is_empty()
+    );
+    let (status, dashboard) = request(
+        &remote,
+        "GET",
+        "/api/v1/me/dashboard",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{dashboard}");
+    assert_eq!(
+        dashboard["catalog"],
+        serde_json::to_value(&before_b).unwrap()
+    );
+    assert_ne!(dashboard["recommendedLesson"]["id"], h_lesson.id);
+    let tx = owner.begin().await.unwrap();
+    tx.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "INSERT INTO content_withdrawals(product_id,lesson_id,revision) VALUES('hargow',$1,$2)",
+        [
+            h_lesson.id.clone().into(),
+            (h_lesson.revision as i32).into(),
+        ],
+    ))
+    .await
+    .unwrap();
+    assert!(
+        chef_engine::content::catalog_matching_for_product(&tx, Some(ProductId::Hargow), &[])
+            .await
+            .unwrap()
+            .levels
+            .is_empty()
+    );
+    assert_eq!(
+        serde_json::to_value(&before_b).unwrap(),
+        serde_json::to_value(
+            chef_engine::content::catalog_matching_for_product(&tx, Some(ProductId::Brioche), &[])
+                .await
+                .unwrap()
+        )
+        .unwrap()
+    );
+    tx.rollback().await.unwrap();
     task.abort();
     let _ = task.await;
     assert_eq!(
