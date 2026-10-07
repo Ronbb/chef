@@ -1,5 +1,7 @@
 # 身份与学习schema分离
 
+首页课源关联补充：继续学习/课程状态和复习计数/下次时间共用product_source_filter，同时限制事实与lesson_revisions归属；与学习/收藏/复习接口采用相同规则。实际split回归中的独立H课源、同账号异产品进度/事件/到期与未来复习继续覆盖B首页不串数据。数据库课源外键提供另一层约束；产品局部编号、媒体后台和真实粤语仍待完成，生产保持。
+
 ## 产品课程行锁
 
 learning_000010_product_locks新增chef_lock_product_lesson(TEXT,TEXT,INTEGER)，固定迁移schema及pg_catalog search_path，通过SECURITY DEFINER取得匹配产品/课程/版本的FOR SHARE锁，只返回boolean，PUBLIC EXECUTE撤销。split-only learning-product-grants显式授权有限学习角色。共享lock_lesson从LearningStore.product传参数，缺少当前产品课源返回404；所有学习、收藏及复习写入采用同一入口，legacy None仍用旧课程锁。独立readiness要求新的产品课程/状态函数存在。
