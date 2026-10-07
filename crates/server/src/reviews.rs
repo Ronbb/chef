@@ -74,14 +74,19 @@ pub fn schedule(
     Ok((next, due))
 }
 async fn zone(tx: &DatabaseTransaction, user: i64) -> Result<String, AppError> {
-    let row = one(
+    one(
         tx,
-        "SELECT settings->>'timeZone' AS zone FROM users WHERE id=$1 FOR SHARE",
+        "SELECT id FROM users WHERE id=$1 FOR SHARE",
         vec![user.into()],
     )
     .await?
     .ok_or(AppError::Unauthorized)?;
-    field(&row, "zone")
+    Ok(
+        crate::product_settings::read(tx, crate::product::ProductId::Brioche, user)
+            .await?
+            .settings
+            .time_zone,
+    )
 }
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

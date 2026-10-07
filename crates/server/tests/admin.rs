@@ -3392,7 +3392,7 @@ async fn approvals_permissions_concurrency_and_publication() {
     assert!(!history_text.contains(second_invite.1["token"].as_str().unwrap()));
     assert!(!history_text.contains(reset_link.1["token"].as_str().unwrap()));
     // Search and keyset pagination must not expose private user fields.
-    db.execute_unprepared("INSERT INTO users(email,password_hash,display_name,role,settings) SELECT 'page-'||n||'@example.test',password_hash,'Page account','learner',settings FROM users CROSS JOIN generate_series(1,25) n WHERE email='operator@example.test'").await.unwrap();
+    db.execute_unprepared("INSERT INTO users(email,password_hash,display_name,role) SELECT 'page-'||n||'@example.test',password_hash,'Page account','learner' FROM users CROSS JOIN generate_series(1,25) n WHERE email='operator@example.test'").await.unwrap();
     let accounts = operator
         .send("GET", "/api/v1/operator/accounts?q=PAGE", None, true)
         .await;

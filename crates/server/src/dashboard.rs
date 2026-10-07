@@ -111,15 +111,9 @@ async fn dashboard(
         .begin_with_config(Some(IsolationLevel::RepeatableRead), None)
         .await
         .map_err(|_| AppError::Unavailable)?;
-    let settings = one(
-        &tx,
-        "SELECT settings FROM users WHERE id=$1",
-        vec![user.into()],
-    )
-    .await?
-    .ok_or(AppError::Unauthorized)?;
-    let settings: UserSettings =
-        serde_json::from_value(field(&settings, "settings")?).map_err(|_| AppError::Unavailable)?;
+    let settings = crate::product_settings::read(&tx, crate::product::ProductId::Brioche, user)
+        .await?
+        .settings;
     let now = Timestamp::now();
     let (today, days) = days(&tx, user, now, &settings.time_zone).await?;
     let sql = format!(

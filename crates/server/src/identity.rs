@@ -29,7 +29,6 @@ pub struct User {
     display_name: String,
     role: String,
     password_hash: String,
-    settings: UserSettings,
     version: u32,
 }
 impl std::fmt::Debug for User {
@@ -40,13 +39,24 @@ impl std::fmt::Debug for User {
     }
 }
 impl User {
-    fn profile(&self) -> UserProfile {
-        UserProfile {
+    async fn profile(&self, db: &DatabaseConnection) -> Result<UserProfile, AppError> {
+        let preferences =
+            crate::product_settings::read(db, crate::product::ProductId::Brioche, self.id).await?;
+        Ok(UserProfile {
             id: self.id.to_string(),
             email: self.email.clone(),
             display_name: self.display_name.clone(),
             role: self.role.clone(),
-            settings: self.settings.clone(),
+            settings: preferences.settings,
+            version: preferences.version,
+        })
+    }
+    fn account(&self) -> crate::identity_service::AccountProfile {
+        crate::identity_service::AccountProfile {
+            id: self.id.to_string(),
+            email: self.email.clone(),
+            display_name: self.display_name.clone(),
+            role: self.role.clone(),
             version: self.version,
         }
     }
@@ -79,11 +89,6 @@ fn row_user(row: QueryResult) -> Result<User, AppError> {
         password_hash: row
             .try_get("", "password_hash")
             .map_err(|_| AppError::Unavailable)?,
-        settings: serde_json::from_value(
-            row.try_get("", "settings")
-                .map_err(|_| AppError::Unavailable)?,
-        )
-        .map_err(|_| AppError::Unavailable)?,
         version: u32::try_from(
             row.try_get::<i32>("", "profile_version")
                 .map_err(|_| AppError::Unavailable)?,
@@ -185,7 +190,7 @@ impl Backend {
             .try_get("", "role")
             .map_err(|_| AppError::Unavailable)?;
         let row = tx.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-            "INSERT INTO users (email,password_hash,display_name,role) VALUES ($1,$2,$3,$4) ON CONFLICT (email) DO NOTHING RETURNING id,email,password_hash,display_name,role,settings,profile_version",
+            "INSERT INTO users (email,password_hash,display_name,role) VALUES ($1,$2,$3,$4) ON CONFLICT (email) DO NOTHING RETURNING id,email,password_hash,display_name,role,profile_version",
             [email.into(), password_hash.into(), name.into(), role.into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::InvalidInput)?;
         tx.execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -350,7 +355,7 @@ impl AuthnBackend for Backend {
             .db
             .query_one_raw(Statement::from_sql_and_values(
                 DbBackend::Postgres,
-                "SELECT id,email,password_hash,display_name,role,settings,profile_version FROM users WHERE email=$1",
+                "SELECT id,email,password_hash,display_name,role,profile_version FROM users WHERE email=$1",
                 [email.into()],
             ))
             .await
@@ -369,7 +374,7 @@ impl AuthnBackend for Backend {
         self.db
             .query_one_raw(Statement::from_sql_and_values(
                 DbBackend::Postgres,
-                "SELECT id,email,password_hash,display_name,role,settings,profile_version FROM users WHERE id=$1",
+                "SELECT id,email,password_hash,display_name,role,profile_version FROM users WHERE id=$1",
                 [(*id).into()],
             ))
             .await
@@ -387,18 +392,27 @@ pub(crate) fn require_operator(auth: &AuthSession) -> Result<(), AppError> {
     Ok(())
 }
 async fn establish(auth: &mut AuthSession, user: User) -> Result<Json<AuthResult>, AppError> {
+    crate::product_settings::ensure(
+        &auth.backend.db,
+        crate::product::ProductId::Brioche,
+        user.id,
+    )
+    .await?;
+    let csrf_token = establish_session(auth, &user).await?;
+    Ok(Json(AuthResult {
+        user: user.profile(&auth.backend.db).await?,
+        csrf_token,
+    }))
+}
+async fn establish_session(auth: &mut AuthSession, user: &User) -> Result<String, AppError> {
     if auth.user.is_some() {
         auth.session
             .cycle_id()
             .await
             .map_err(|_| AppError::Unavailable)?;
     }
-    auth.login(&user).await.map_err(|_| AppError::Unavailable)?;
-    let csrf_token = csrf::rotate(&auth.session).await?;
-    Ok(Json(AuthResult {
-        user: user.profile(),
-        csrf_token,
-    }))
+    auth.login(user).await.map_err(|_| AppError::Unavailable)?;
+    csrf::rotate(&auth.session).await
 }
 async fn login(
     mut auth: AuthSession,
@@ -443,7 +457,12 @@ async fn logout_after_reset(auth: &mut AuthSession) -> Result<Json<CsrfToken>, A
     }))
 }
 async fn me(auth: AuthSession) -> Result<Json<UserProfile>, AppError> {
-    Ok(Json(auth.user.ok_or(AppError::Unauthorized)?.profile()))
+    Ok(Json(
+        auth.user
+            .ok_or(AppError::Unauthorized)?
+            .profile(&auth.backend.db)
+            .await?,
+    ))
 }
 
 async fn update_profile(
@@ -452,18 +471,57 @@ async fn update_profile(
     Json(request): Json<UpdateProfileRequest>,
 ) -> Result<Json<UserProfile>, AppError> {
     let user = auth.user.ok_or(AppError::Unauthorized)?;
-    if request.version != user.version {
+    let tx = backend
+        .db
+        .begin()
+        .await
+        .map_err(|_| AppError::Unavailable)?;
+    // Serialize legacy combined name/preferences writes without mixing product revisions.
+    tx.query_one_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT id FROM users WHERE id=$1 FOR UPDATE",
+        [user.id.into()],
+    ))
+    .await
+    .map_err(|_| AppError::Unavailable)?
+    .ok_or(AppError::Unauthorized)?;
+    let preferences =
+        crate::product_settings::read(&tx, crate::product::ProductId::Brioche, user.id).await?;
+    if request.version != preferences.version {
         return Err(AppError::Conflict);
     }
-    let (name, settings) = profile_changes(&user, request)?;
-    let row = backend.db.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-        "UPDATE users SET display_name=$2,settings=$3,profile_version=profile_version+1 WHERE id=$1 AND profile_version=$4 AND profile_version < 2147483647 RETURNING id,email,password_hash,display_name,role,settings,profile_version",
-        [user.id.into(), name.into(), serde_json::to_value(settings).map_err(|_| AppError::Unavailable)?.into(), i32::try_from(user.version).map_err(|_| AppError::Unavailable)?.into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::Conflict)?;
-    Ok(Json(row_user(row)?.profile()))
+    let changes_name = request.display_name.is_some();
+    let (name, settings) = profile_changes(&user.display_name, preferences.settings, request)?;
+    let version = crate::product_settings::save(
+        &tx,
+        crate::product::ProductId::Brioche,
+        user.id,
+        preferences.version,
+        &settings,
+    )
+    .await?;
+    let updated = if changes_name {
+        let row = tx.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+            "UPDATE users SET display_name=$2,profile_version=profile_version+1 WHERE id=$1 AND profile_version < 2147483647 RETURNING id,email,password_hash,display_name,role,profile_version",
+            [user.id.into(), name.into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::Conflict)?;
+        row_user(row)?
+    } else {
+        user
+    };
+    tx.commit().await.map_err(|_| AppError::Unavailable)?;
+    Ok(Json(UserProfile {
+        id: updated.id.to_string(),
+        email: updated.email,
+        display_name: updated.display_name,
+        role: updated.role,
+        settings,
+        version,
+    }))
 }
 
 fn profile_changes(
-    user: &User,
+    display_name: &str,
+    mut settings: UserSettings,
     request: UpdateProfileRequest,
 ) -> Result<(String, UserSettings), AppError> {
     if request.display_name.is_none()
@@ -478,13 +536,12 @@ fn profile_changes(
     let name = request
         .display_name
         .as_deref()
-        .unwrap_or(&user.display_name)
+        .unwrap_or(display_name)
         .trim()
         .to_owned();
     if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
         return Err(AppError::InvalidInput);
     }
-    let mut settings = user.settings.clone();
     if let Some(zone) = request.time_zone {
         // Only IANA database identifiers, never a machine-local zone or a UTC offset.
         if zone.len() > 100 || zone != zone.trim() || jiff::tz::db().get(&zone).is_err() {
@@ -566,19 +623,34 @@ pub fn account_router(
 }
 
 async fn account_login(
-    auth: AuthSession,
-    request: Json<LoginRequest>,
+    mut auth: AuthSession,
+    Json(request): Json<LoginRequest>,
 ) -> Result<Json<crate::identity_service::AccountAuthResult>, AppError> {
-    let Json(result) = login(auth, request).await?;
-    Ok(Json(result.into()))
+    let user = auth
+        .authenticate(request)
+        .await
+        .map_err(|error| match error {
+            axum_login::Error::Backend(error) => error,
+            _ => AppError::Unavailable,
+        })?
+        .ok_or(AppError::Unauthorized)?;
+    let csrf_token = establish_session(&mut auth, &user).await?;
+    Ok(Json(crate::identity_service::AccountAuthResult {
+        user: user.account(),
+        csrf_token,
+    }))
 }
 async fn account_accept(
-    auth: AuthSession,
-    backend: State<Backend>,
-    request: Json<AcceptInviteRequest>,
+    mut auth: AuthSession,
+    State(backend): State<Backend>,
+    Json(request): Json<AcceptInviteRequest>,
 ) -> Result<Json<crate::identity_service::AccountAuthResult>, AppError> {
-    let Json(result) = accept(auth, backend, request).await?;
-    Ok(Json(result.into()))
+    let user = backend.accept_invite(request).await?;
+    let csrf_token = establish_session(&mut auth, &user).await?;
+    Ok(Json(crate::identity_service::AccountAuthResult {
+        user: user.account(),
+        csrf_token,
+    }))
 }
 async fn account_me(
     auth: AuthSession,
@@ -588,7 +660,7 @@ async fn account_me(
 pub(crate) fn account_identity(
     auth: AuthSession,
 ) -> Result<crate::identity_service::AccountProfile, AppError> {
-    Ok(auth.user.ok_or(AppError::Unauthorized)?.profile().into())
+    Ok(auth.user.ok_or(AppError::Unauthorized)?.account())
 }
 pub(crate) fn protect_routes(
     routes: Router<Backend>,

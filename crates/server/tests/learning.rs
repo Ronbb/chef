@@ -1842,7 +1842,7 @@ async fn learning_revision_ownership_idempotency_and_completion() {
     );
     // A timezone edit preserves existing UTC due times. Idempotent replay keeps the original zone.
     db.execute_unprepared(
-        "UPDATE users SET settings=jsonb_set(settings,'{timeZone}','\"Europe/Paris\"')",
+        "UPDATE product_user_settings SET settings=jsonb_set(settings,'{timeZone}','\"Europe/Paris\"')",
     )
     .await
     .unwrap();
@@ -2208,9 +2208,9 @@ async fn learning_revision_ownership_idempotency_and_completion() {
             .map(|day| day["reviewAttempts"].as_u64().unwrap())
             .sum::<u64>()
     };
-    db.execute_unprepared("UPDATE users SET settings=jsonb_set(settings,'{timeZone}','\"Pacific/Honolulu\"') WHERE email='one@example.test'").await.unwrap();
+    db.execute_unprepared("UPDATE product_user_settings SET settings=jsonb_set(settings,'{timeZone}','\"Pacific/Honolulu\"') WHERE product_id='brioche' AND user_id=(SELECT id FROM users WHERE email='one@example.test')").await.unwrap();
     let (_, west_before) = a.send("GET", "/api/v1/me/dashboard", None, true).await;
-    db.execute_unprepared("UPDATE users SET settings=jsonb_set(settings,'{timeZone}','\"Pacific/Kiritimati\"') WHERE email='one@example.test'").await.unwrap();
+    db.execute_unprepared("UPDATE product_user_settings SET settings=jsonb_set(settings,'{timeZone}','\"Pacific/Kiritimati\"') WHERE product_id='brioche' AND user_id=(SELECT id FROM users WHERE email='one@example.test')").await.unwrap();
     let (_, east_before) = a.send("GET", "/api/v1/me/dashboard", None, true).await;
     let monday: jiff::civil::Date = east_before["weekStart"].as_str().unwrap().parse().unwrap();
     let boundary_event = monday
@@ -2239,7 +2239,7 @@ async fn learning_revision_ownership_idempotency_and_completion() {
         [boundary_event.into()])).await.unwrap();
     let (_, east_after) = a.send("GET", "/api/v1/me/dashboard", None, true).await;
     assert_eq!(review_total(&east_after), review_total(&east_before) + 1);
-    db.execute_unprepared("UPDATE users SET settings=jsonb_set(settings,'{timeZone}','\"Pacific/Honolulu\"') WHERE email='one@example.test'").await.unwrap();
+    db.execute_unprepared("UPDATE product_user_settings SET settings=jsonb_set(settings,'{timeZone}','\"Pacific/Honolulu\"') WHERE product_id='brioche' AND user_id=(SELECT id FROM users WHERE email='one@example.test')").await.unwrap();
     let (_, west_after) = a.send("GET", "/api/v1/me/dashboard", None, true).await;
     assert_eq!(
         review_total(&west_after),

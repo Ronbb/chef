@@ -159,6 +159,37 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         .await;
     assert_eq!(status, 200);
     assert_eq!(hargow["account"]["id"], account);
+    // Identity does not initialize or depend on the learning preferences relation.
+    let count = db
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS count FROM product_user_settings",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(count.try_get::<i64>("", "count").unwrap(), 0);
+    db.execute_unprepared(
+        "ALTER TABLE product_user_settings RENAME TO unavailable_learning_preferences",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        french.request("GET", "/api/v1/account", None, None).await.0,
+        200
+    );
+    assert_eq!(
+        cantonese
+            .request("GET", "/internal/v1/session", None, Some((KEY, "hargow")))
+            .await
+            .0,
+        200
+    );
+    db.execute_unprepared(
+        "ALTER TABLE unavailable_learning_preferences RENAME TO product_user_settings",
+    )
+    .await
+    .unwrap();
     assert_eq!(hargow["product"], "hargow");
     assert!(hargow["account"].get("settings").is_none());
     assert_eq!(

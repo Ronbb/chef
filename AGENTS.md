@@ -15,3 +15,5 @@ Web 真源补充：通用页面/播放器/管理员界面与完整 Web/SSR/浏�
 运维/TTS/离线对齐与回归真源在scripts；产品仅保留兼容转发入口。当前保留法语样本和legacy序列化标识，不声称粤语能力。对齐私有模型/输出根是调用工作区（可CHEF_WORKSPACE_ROOT显式指定），固定模型/runtime JSON仍来自源码旁。测试Docker演练必须隔离随机资源，不读取生产配置。
 
 独立账号迁移补充：chef-identity与产品会话范围校验已经落地，配置/限制见docs/identity-service.md。学习服务消费者、产品settings/schema/权限分离仍未完成；禁止把新二进制或账号DTO去settings当作完整迁移，不在未验证产品数据隔离前更新生产路由。账号实现继续只属于Chef，产品仅配置和部署装配。
+
+产品学习设置补充：迁移28已移除users.settings，Brioche legacy组合API使用product_user_settings独立版本；账号Backend/独立identity不读取学习设置。新消费者必须区分account version与product preference version，不把全局role当产品管理员；迁移必须匹配新API，旧prod二进制不可先drop列。Hargow设置核心已有隔离回归，其余学习/目录/媒体/后台产品隔离与identity消费者未完成。
