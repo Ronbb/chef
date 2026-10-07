@@ -121,3 +121,22 @@ pub async fn require_combined(db: &DatabaseConnection) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Explicit owner upgrade; the existing combined command remains fail-closed.
+pub async fn migrate_layout(db: &DatabaseConnection, learning: &str) -> anyhow::Result<()> {
+    crate::database_scope::validate(learning)?;
+    let row = db
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            format!(
+                "SELECT identity_schema FROM \"{learning}\".chef_schema_layout WHERE singleton"
+            ),
+        ))
+        .await?;
+    let identity = match row {
+        Some(row) => row.try_get::<String>("", "identity_schema")?,
+        None => anyhow::bail!("Split migration layout required"),
+    };
+    brioche_migration::layout::up(db, learning, &identity).await?;
+    Ok(())
+}

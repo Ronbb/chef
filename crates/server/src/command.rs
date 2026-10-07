@@ -688,6 +688,16 @@ pub async fn run() -> Result<()> {
             );
             return Ok(());
         }
+        "migrate-layout" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            if args.len() != 1 {
+                bail!("usage: migrate-layout <learning-schema>");
+            }
+            crate::schema_split::migrate_layout(db.as_ref().unwrap(),&args[0]).await
+                .map_err(|_|anyhow::anyhow!("Layout migration not confirmed; inspect owner, schema layout and migration history"))?;
+            tracing::info!("layout migrations complete");
+            return Ok(());
+        }
         "import" => {
             let document = import_document.as_ref().unwrap();
             crate::author_import::import(

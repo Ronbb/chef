@@ -369,6 +369,42 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(fingerprints(&owner, &target).await, snapshot);
+    // The separate dispatcher rolls both scoped DDL and its ledger back together.
+    owner
+        .execute_unprepared("CREATE INDEX chef_attempt_owner_time ON exercise_attempts(user_id)")
+        .await
+        .unwrap();
+    let output = invoke(&["migrate-layout", &source]);
+    assert!(!output.status.success());
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NULL AND to_regclass('{source}.chef_layout_migrations') IS NULL AS rolled_back"))).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    owner
+        .execute_unprepared("DROP INDEX chef_attempt_owner_time")
+        .await
+        .unwrap();
+    let output = invoke(&["migrate-layout", &source]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=2 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "correct").unwrap());
+    assert_eq!(fingerprints(&owner, &target).await, snapshot);
+    assert!(
+        brioche_migration::layout::up(&owner, &source, &collision)
+            .await
+            .is_err()
+    );
+    owner
+        .execute_unprepared(
+            "UPDATE chef_layout_migrations SET definition='changed' WHERE scope='identity'",
+        )
+        .await
+        .unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    owner.execute_unprepared("UPDATE chef_layout_migrations SET definition='CREATE INDEX chef_throttle_expiry ON auth_throttle(resets_at)' WHERE scope='identity'").await.unwrap();
     for args in [&["migrate"][..], &["serve"][..]] {
         let output = invoke(args);
         assert!(!output.status.success());
@@ -445,6 +481,13 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let identity = connect(&role_url(&id_role), &target).await;
     let learning = connect(&role_url(&learning_role), &source).await;
     let content = connect(&role_url(&content_role), &source).await;
+    for restricted in [&identity, &learning, &content] {
+        assert!(
+            brioche_migration::layout::up(restricted, &source, &target)
+                .await
+                .is_err()
+        );
+    }
     for sql in [
         format!("SELECT * FROM \"{target}\".users LIMIT 0"),
         format!("SELECT * FROM \"{target}\".product_memberships LIMIT 0"),

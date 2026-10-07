@@ -1,4 +1,5 @@
 use sea_orm_migration::prelude::*;
+pub mod layout;
 mod m20261006_000001_course_revisions;
 mod m20261006_000002_sessions;
 mod m20261006_000003_identity;
