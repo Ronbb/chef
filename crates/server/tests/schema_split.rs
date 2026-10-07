@@ -1452,6 +1452,203 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     .await;
     assert_eq!(status, 200, "{plans}");
     assert_eq!(plans["items"], serde_json::json!([saved_plan]));
+    let clip_route = "/api/v1/operator/speech-clips";
+    let clip_id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    let clip_path = format!("{clip_route}/{clip_id}");
+    let clip_request = serde_json::json!({"id":clip_id,"planId":"cccccccccccccccccccccccccccccccc","generationKey":preview["targets"][0]["generationKey"],"expectedPlanHash":preview["planHash"],"expectedPreviousId":null,"costConfirmed":true,"retryUnknownConfirmed":false,"reason":"Independent synthetic course clip"});
+    for (session, token) in [
+        (next_cookie.as_str(), next_csrf.as_str()),
+        (cookie.as_str(), "bad-csrf"),
+    ] {
+        assert_eq!(
+            content_app
+                .clone()
+                .oneshot(json_write(clip_route, &clip_request, session, token))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            403
+        );
+    }
+    let mut unconfirmed = clip_request.clone();
+    unconfirmed["costConfirmed"] = false.into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            clip_route,
+            Some(unconfirmed),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    let (status, result) = request(
+        &content_app,
+        "POST",
+        clip_route,
+        Some(clip_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{result}");
+    let clip = settled_job(&content_app, &clip_path, &mut cookie, &mut csrf).await;
+    assert_eq!(clip["status"], "ready");
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            clip_route,
+            Some(clip_request.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    let mut changed = clip_request.clone();
+    changed["reason"] = "Changed immutable attempt".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            clip_route,
+            Some(changed),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{clip_path}/file"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .starts_with(b"RIFF")
+    );
+    let clip_review_path = format!("{clip_path}/review");
+    // Only a synthetic decision in an isolated fixture, not production human listening.
+    let clip_review =
+        serde_json::json!({"accepted":true,"heard":true,"reason":"Synthetic clip decision"});
+    for (session, token) in [
+        (next_cookie.as_str(), next_csrf.as_str()),
+        (cookie.as_str(), "bad-csrf"),
+    ] {
+        assert_eq!(
+            content_app
+                .clone()
+                .oneshot(json_write(&clip_review_path, &clip_review, session, token))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            403
+        );
+    }
+    let mut unheard = clip_review.clone();
+    unheard["heard"] = false.into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &clip_review_path,
+            Some(unheard),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    let (status, accepted) = request(
+        &content_app,
+        "POST",
+        &clip_review_path,
+        Some(clip_review.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{accepted}");
+    assert_eq!(accepted["accepted"], true);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &clip_review_path,
+            Some(clip_review.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    let mut changed_review = clip_review.clone();
+    changed_review["accepted"] = false.into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &clip_review_path,
+            Some(changed_review),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let mut reused = clip_request.clone();
+    reused["id"] = "ffffffffffffffffffffffffffffffff".into();
+    reused["expectedPreviousId"] = clip_id.into();
+    reused["costConfirmed"] = false.into();
+    let (status, receipt) = request(
+        &content_app,
+        "POST",
+        clip_route,
+        Some(reused),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(receipt["status"], "ready");
+    assert_eq!(receipt["reusedFrom"], clip_id);
+    assert_eq!(receipt["accepted"], true);
+    let (status, clips) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/speech-plans/cccccccccccccccccccccccccccccccc/clips",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{clips}");
+    assert_eq!(clips["configured"], true);
+    assert_eq!(clips["items"], serde_json::json!([receipt]));
     // Revoke after the first HTTP verification while the write waits on the same
     // database advisory lock used by identity membership mutations.
     imported_source["id"] = "split-revoked-import".into();
@@ -1468,6 +1665,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     revoked_audition["id"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
     let mut revoked_plan = plan_request;
     revoked_plan["id"] = "dddddddddddddddddddddddddddddddd".into();
+    let mut revoked_clip = clip_request;
+    revoked_clip["id"] = "99999999999999999999999999999999".into();
+    revoked_clip["expectedPreviousId"] = "ffffffffffffffffffffffffffffffff".into();
     for pending in [
         course_request,
         asset_upload("split-revoked-upload", &cookie, &csrf),
@@ -1497,6 +1697,8 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         json_write(&audition_review, &review_request, &cookie, &csrf),
         json_write(&preview_route, &preview_request, &cookie, &csrf),
         json_write(plan_route, &revoked_plan, &cookie, &csrf),
+        json_write(clip_route, &revoked_clip, &cookie, &csrf),
+        json_write(&clip_review_path, &clip_review, &cookie, &csrf),
     ] {
         let held = owner.begin().await.unwrap();
         held.execute_unprepared(
@@ -1671,8 +1873,16 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         enrollment
             .syntheses
             .load(std::sync::atomic::Ordering::SeqCst),
-        1
+        2
     );
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM course_speech_clips WHERE id='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' AND actor_id=$1 AND reason='Independent synthetic course clip'",[account.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM course_speech_clip_reviews WHERE clip_id='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' AND actor_id=$1 AND reason='Synthetic clip decision'",[account.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM course_speech_clips) AS clips,(SELECT count(*) FROM course_speech_clip_events) AS events,(SELECT count(*) FROM course_speech_clip_reviews) AS reviews")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "clips").unwrap(), 2);
+    assert_eq!(row.try_get::<i64>("", "events").unwrap(), 3);
+    assert_eq!(row.try_get::<i64>("", "reviews").unwrap(), 1);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_auditions WHERE id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') + (SELECT count(*) FROM voice_audition_events WHERE audition_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') AS n")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     task.abort();

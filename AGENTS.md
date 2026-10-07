@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立课程语音片段补充：speech_clips共享路由采用db-only Store/AdminAuth；HTTP生成/审核传Operator到kernel，事务先lock_content再content_state。CLI只在边界构造本地proof，worker仅内容db。保留先登记submitted再调用、未知不自动重试、固定计划hash/previous CAS、精确重试、音频哈希验证和复用审计；审核仍为显式协议，不自动伪造heard。内容角色新增clips/events/reviews SELECT/INSERT，无身份权限或片段UPDATE/DELETE。真实分离schema模拟WAV验证生成/私有读取/列表/精确重试不重发/改参409/审核精确重试/复用ready与继承决定，十五类请求等待后撤权拒绝且零额外记录/调用。合成heard只是测试fixture；余下导出/对齐/打包/发布/私有预览、完整租户与粤语仍待迁移，保持生产pin。
+
 独立课程配音计划补充：admin_speech_plans采用db-only Store/AdminAuth进入共享content_router；HTTP预览/保存向kernel传可信Operator，事务先lock_content再编译/内容锁。CLI只在边界从本地身份db构造proof，复用kernel。保持固定角色/声音/课源选择、plan hash、actor与reason、精确重试和撤回过滤；编译/保存不调用供应商。内容角色仅增加course_speech_plans INSERT，不授UPDATE/DELETE。真实分离schema验证选项/编译/保存/读取/列表/精确重试/hash冲突及十三类等待后撤权拒绝，原模拟供应商调用数不变。余下片段生成/对齐/打包/发布/私有预览与完整租户仍需迁移，不更新生产或产品pin。
 
 独立试听补充：voice_auditions共享路由db-only Store/AdminAuth，HTTP创建/采纳传可信Operator，事务先lock_content；local CLI仅在入口从身份db取proof，共用内容kernel，不把Backend带入worker。采纳调用character_voices::append_profile_authorized_in同事务复核并追加配置，旧CLI append_profile_in仍保留本地复核。content-grants新增试听/事件/采纳SELECT/INSERT与仅audition UPDATE(id)锁权限，原不可变trigger保留。真实分离schema模拟合成WAV验证生成/私有读取/精确重试不重发/修改重试409/采纳新voice revision/重复采纳409与十一类等待撤权拒绝，无新试听/调用。合成人工字段仅协议测试，不声称生产人工审听；剩余课程语音流水线/私有预览及租户待迁移，不更新生产pin。

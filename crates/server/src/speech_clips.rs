@@ -1,10 +1,11 @@
 //! Durable paid clip attempts from immutable plans. No automatic retries or publication.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{exec, field, one, owner},
+    admin_auth::AdminAuth,
+    identity::Backend,
+    learning::{exec, field, one},
     qwen::{ProviderError, Service, SpeechRequest},
-    voice_references::{hex, lock_operator},
+    voice_references::hex,
 };
 use axum::{
     Extension, Json, Router,
@@ -31,13 +32,20 @@ JOIN LATERAL(SELECT * FROM course_speech_clip_events WHERE clip_id=a.id ORDER BY
 LEFT JOIN course_speech_clip_reviews r ON r.clip_id=a.id
 LEFT JOIN course_speech_clip_reviews original_review ON original_review.clip_id=original.id"#;
 pub(crate) const VISIBLE: &str = "NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(p.lesson_id,p.lesson_revision) OR (w.lesson_id,w.revision)=(original_plan.lesson_id,original_plan.lesson_revision))";
-pub fn router() -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/speech-plans/{id}/clips", get(list))
         .route("/api/v1/operator/speech-clips", post(create))
         .route("/api/v1/operator/speech-clips/{id}", get(read))
         .route("/api/v1/operator/speech-clips/{id}/file", get(file))
         .route("/api/v1/operator/speech-clips/{id}/review", post(review))
+        .with_state(Store { db })
 }
 pub(crate) fn item(row: &QueryResult) -> Result<AdminSpeechClip, AppError> {
     let result: Option<Value> = field(row, "result")?;
@@ -85,20 +93,20 @@ pub(crate) async fn latest(
     one(db,&format!("{SELECT} WHERE a.generation_key=$1 AND {VISIBLE} ORDER BY a.created_at DESC,a.id DESC LIMIT 1"),vec![key.into()]).await
 }
 async fn read(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminSpeechClip>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     Ok(Json(item(&load(&b.db, &id).await?)?))
 }
 async fn list(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
     service: Option<Extension<Service>>,
 ) -> Result<Json<AdminSpeechClips>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let source = plan(&b.db, &id).await?;
     let requests = source["requests"]
         .as_object()
@@ -134,17 +142,17 @@ fn speech(source: &Value, key: &str) -> Result<SpeechRequest, AppError> {
     Ok(speech)
 }
 async fn create(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     service: Option<Extension<Service>>,
     Extension(root): Extension<PathBuf>,
     Extension(read_permits): Extension<Arc<tokio::sync::Semaphore>>,
     Json(request): Json<AdminSpeechClipRequest>,
 ) -> Result<Json<AdminSpeechClip>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     create_for_actor(
         b,
-        owner(&auth)?,
+        &operator,
         service.map(|s| s.0),
         root,
         read_permits,
@@ -163,9 +171,15 @@ pub async fn submit_local(
 ) -> Result<AdminSpeechClip, AppError> {
     request.reason = format!("[local-cli] {}", request.reason);
     let id = request.id.clone();
-    let Json(mut result) = create_for_actor(
-        b.clone(),
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
         actor,
+    )
+    .await?;
+    let Json(mut result) = create_for_actor(
+        Store { db: b.db.clone() },
+        &operator,
         service,
         root,
         Arc::new(tokio::sync::Semaphore::new(2)),
@@ -181,13 +195,14 @@ pub async fn submit_local(
 }
 
 async fn create_for_actor(
-    b: Backend,
-    actor: i64,
+    b: Store,
+    operator: &crate::product_memberships::Operator,
     service: Option<Service>,
     root: PathBuf,
     read_permits: Arc<tokio::sync::Semaphore>,
     request: AdminSpeechClipRequest,
 ) -> Result<Json<AdminSpeechClip>, AppError> {
+    let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !hex(&request.id, 32)
         || !hex(&request.plan_id, 32)
@@ -202,7 +217,7 @@ async fn create_for_actor(
     }
     let payload = serde_json::to_value(&request).map_err(|_| AppError::InvalidInput)?;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     if let Some(row) = one(
         &tx,
         "SELECT actor_id,request FROM course_speech_clips WHERE id=$1",
@@ -315,14 +330,14 @@ async fn create_for_actor(
     Ok(Json(receipt))
 }
 async fn file(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let row = load(&b.db, &id).await?;
     if item(&row)?.status != "ready" {
         return Err(AppError::NotFound);
@@ -338,15 +353,13 @@ async fn file(
     crate::recording::bytes_response("audio/wav".into(), format!("\"{sha}\""), bytes, headers)
 }
 async fn review(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
     Json(request): Json<AdminSpeechClipReview>,
 ) -> Result<Json<AdminSpeechClip>, AppError> {
-    require_operator(&auth).await?;
-    Ok(Json(
-        review_for_actor(&b, owner(&auth)?, id, request).await?,
-    ))
+    let operator = auth.require_operator().await?;
+    Ok(Json(review_for_actor(&b, &operator, id, request).await?))
 }
 
 /// Record an explicit human decision through the same transaction as the HTTP route.
@@ -357,21 +370,28 @@ pub async fn review_local(
     mut request: AdminSpeechClipReview,
 ) -> Result<AdminSpeechClip, AppError> {
     request.reason = format!("[local-cli] {}", request.reason);
-    review_for_actor(b, actor, id, request).await
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
+        actor,
+    )
+    .await?;
+    review_for_actor(&Store { db: b.db.clone() }, &operator, id, request).await
 }
 
 async fn review_for_actor(
-    b: &Backend,
-    actor: i64,
+    b: &Store,
+    operator: &crate::product_memberships::Operator,
     id: String,
     request: AdminSpeechClipReview,
 ) -> Result<AdminSpeechClip, AppError> {
+    let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !hex(&id, 32) || !request.heard {
         return Err(AppError::InvalidInput);
     }
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     exec(
         &tx,
         "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
