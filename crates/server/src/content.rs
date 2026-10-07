@@ -202,14 +202,19 @@ pub(crate) async fn stage_operator(
 }
 pub(crate) async fn activate_operator(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     id: &str,
     expected: i64,
     operator: &crate::product_memberships::Operator,
     reason: &str,
     root: &std::path::Path,
 ) -> Result<i64, AppError> {
+    if product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     activate_impl(
         db,
+        product,
         id,
         expected,
         ContentActor::Operator(operator),
@@ -486,6 +491,7 @@ pub async fn activate(
 ) -> Result<i64, AppError> {
     activate_impl(
         db,
+        None,
         id,
         expected,
         ContentActor::Local(actor),
@@ -506,6 +512,7 @@ pub async fn activate_author(
 ) -> anyhow::Result<i64> {
     activate_impl(
         db,
+        None,
         id,
         expected,
         ContentActor::Local(actor),
@@ -524,6 +531,7 @@ pub async fn activate_author(
 }
 async fn activate_impl(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     id: &str,
     expected: i64,
     caller: ContentActor<'_>,
@@ -555,9 +563,13 @@ async fn activate_impl(
     }
     let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
     caller.lock(&tx).await?;
+    let state_selector = product.map_or_else(
+        || "singleton".to_owned(),
+        |p| format!("product_id='{}'", p.as_str()),
+    );
     let state = one(
         &tx,
-        "SELECT generation FROM content_state WHERE singleton FOR UPDATE",
+        &format!("SELECT generation FROM content_state WHERE {state_selector} FOR UPDATE"),
         vec![],
     )
     .await?
@@ -572,7 +584,10 @@ async fn activate_impl(
     }
     if one(
         &tx,
-        "SELECT id FROM content_releases WHERE id=$1",
+        &format!(
+            "SELECT id FROM content_releases WHERE id=$1{}",
+            product_filter(product, "product_id")
+        ),
         vec![id.into()],
     )
     .await?
@@ -584,11 +599,11 @@ async fn activate_impl(
             "release is not staged",
         ));
     }
-    if let Some(row) = one(&tx,"SELECT e.lesson_id,e.revision FROM release_entries e JOIN content_withdrawals w USING(lesson_id,revision) WHERE e.release_id=$1 ORDER BY e.position LIMIT 1",vec![id.into()]).await? {
+    if let Some(row) = one(&tx,&format!("SELECT e.lesson_id,e.revision FROM release_entries e JOIN content_withdrawals w USING(lesson_id,revision) WHERE e.release_id=$1{}{} ORDER BY e.position LIMIT 1",product_filter(product,"e.product_id"),product_filter(product,"w.product_id")),vec![id.into()]).await? {
         return Err(ReleaseFailure::at(AppError::Gone, "release-id", &format!("release contains a withdrawn lesson revision: {}@{}", field::<String>(&row,"lesson_id")?,field::<i32>(&row,"revision")?)));
     }
     let next = generation.checked_add(1).ok_or(AppError::Unavailable)?;
-    let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT r.public_document,r.server_document FROM release_entries e JOIN lesson_revisions r USING(lesson_id,revision) WHERE e.release_id=$1 ORDER BY e.position",[id.into()])).await.map_err(|_|AppError::Unavailable)?;
+    let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT r.public_document,r.server_document FROM release_entries e JOIN lesson_revisions r USING(lesson_id,revision) WHERE e.release_id=$1{}{} ORDER BY e.position",product_filter(product,"e.product_id"),product_filter(product,"r.product_id")),[id.into()])).await.map_err(|_|AppError::Unavailable)?;
     for row in rows {
         let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
             .map_err(|_| AppError::Unavailable)?;
@@ -617,14 +632,18 @@ async fn activate_impl(
                 pointer: None,
             })?;
     }
-    exec(&tx,"UPDATE lesson_revisions r SET published=true FROM release_entries e WHERE e.release_id=$1 AND (r.lesson_id,r.revision)=(e.lesson_id,e.revision)",vec![id.into()]).await?;
+    exec(&tx,&format!("UPDATE lesson_revisions r SET published=true FROM release_entries e WHERE e.release_id=$1 AND (r.lesson_id,r.revision)=(e.lesson_id,e.revision){}{}",product_filter(product,"e.product_id"),product_filter(product,"r.product_id")),vec![id.into()]).await?;
     exec(
         &tx,
-        "UPDATE content_state SET active_release=$1,generation=$2 WHERE singleton",
+        &format!("UPDATE content_state SET active_release=$1,generation=$2 WHERE {state_selector}"),
         vec![id.into(), next.into()],
     )
     .await?;
-    exec(&tx,"INSERT INTO content_audit(action,actor,reason,release_id,generation) VALUES('activate',$1,$2,$3,$4)",vec![actor.into(),reason.into(),id.into(),next.into()]).await?;
+    if let Some(product) = product {
+        exec(&tx,"INSERT INTO content_audit(action,actor,reason,release_id,generation,product_id) VALUES('activate',$1,$2,$3,$4,$5)",vec![actor.into(),reason.into(),id.into(),next.into(),product.as_str().into()]).await?;
+    } else {
+        exec(&tx,"INSERT INTO content_audit(action,actor,reason,release_id,generation) VALUES('activate',$1,$2,$3,$4)",vec![actor.into(),reason.into(),id.into(),next.into()]).await?;
+    }
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(next)
 }

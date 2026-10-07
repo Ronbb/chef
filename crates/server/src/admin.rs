@@ -603,6 +603,7 @@ async fn activate(
     reason(&request.reason)?;
     let result = crate::content::activate_operator(
         &backend.db,
+        backend.product,
         &request.release_id,
         generation(&request.generation)?,
         &operator,

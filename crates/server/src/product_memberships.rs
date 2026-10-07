@@ -333,6 +333,7 @@ mod tests {
         assert!(matches!(
             crate::content::activate_operator(
                 &db,
+                None,
                 "missing",
                 0,
                 &stale_operator,

@@ -3433,6 +3433,22 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .unwrap()
         .try_get::<String>("", "hash")
         .unwrap();
+    assert_eq!(request(&content_app,"POST","/api/v1/operator/releases/activate",Some(serde_json::json!({"releaseId":"hargow-catalog-release","generation":admin_before["generation"],"reason":"Foreign activation rejected"})),&mut cookie,&mut csrf).await.0,404);
+    let after_activate = owner
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            withdrawal_snapshot,
+            [
+                h_lesson.id.clone().into(),
+                (h_lesson.revision as i32).into(),
+            ],
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "hash")
+        .unwrap();
+    assert_eq!(after_activate, before_withdraw);
     assert_eq!(request(&content_app,"POST",&format!("/api/v1/operator/lessons/{}/revisions/{}/withdraw",h_lesson.id,h_lesson.revision),Some(serde_json::json!({"generation":admin_before["generation"],"reason":"Foreign withdrawal rejected"})),&mut cookie,&mut csrf).await.0,404);
     let after_withdraw = owner
         .query_one_raw(Statement::from_sql_and_values(
