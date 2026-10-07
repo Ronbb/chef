@@ -230,8 +230,7 @@ async fn append(
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    operator.lock_content(&tx).await?;
-    let result = append_profile_body(&tx, operator.actor, request).await?;
+    let result = append_profile_authorized_in(&tx, &operator, request).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
@@ -253,6 +252,14 @@ pub(crate) async fn append_profile_in(
     crate::product_memberships::lock_operator(tx, crate::product::ProductId::Brioche, actor)
         .await?;
     append_profile_body(tx, actor, request).await
+}
+pub(crate) async fn append_profile_authorized_in(
+    tx: &sea_orm::DatabaseTransaction,
+    operator: &crate::product_memberships::Operator,
+    request: AdminCharacterVoiceRequest,
+) -> Result<AdminCharacterVoice, AppError> {
+    operator.lock_content(tx).await?;
+    append_profile_body(tx, operator.actor, request).await
 }
 async fn append_profile_body(
     tx: &impl ConnectionTrait,

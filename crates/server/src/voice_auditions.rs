@@ -1,10 +1,11 @@
 //! Audition attempts are durable before the paid call. Files remain private and reviews append versions.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{exec, field, one, owner},
+    admin_auth::AdminAuth,
+    identity::Backend,
+    learning::{exec, field, one},
     qwen::{ProviderError, Service},
-    voice_references::{hex, lock_operator},
+    voice_references::hex,
 };
 use axum::{
     Extension, Json, Router,
@@ -25,12 +26,19 @@ r.accepted,r.voice_revision AS applied_voice_revision,to_char(a.created_at AT TI
 FROM voice_auditions a LEFT JOIN voice_clone_jobs j ON j.id=a.clone_job_id LEFT JOIN voice_reference_grants g ON g.id=j.grant_id
 JOIN LATERAL (SELECT * FROM voice_audition_events WHERE audition_id=a.id ORDER BY version DESC LIMIT 1) e ON true
 LEFT JOIN voice_audition_reviews r ON r.audition_id=a.id"#;
-pub fn router() -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/voice-auditions", get(list).post(create))
         .route("/api/v1/operator/voice-auditions/{id}", get(read))
         .route("/api/v1/operator/voice-auditions/{id}/file", get(file))
         .route("/api/v1/operator/voice-auditions/{id}/review", post(review))
+        .with_state(Store { db })
 }
 fn item(row: &QueryResult) -> Result<AdminAudition, AppError> {
     let p: Value = field(row, "profile")?;
@@ -84,12 +92,12 @@ struct Cursor {
     character_revision: Option<u32>,
 }
 async fn list(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     service: Option<Extension<Service>>,
     Query(cursor): Query<Cursor>,
 ) -> Result<Json<AdminAuditions>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let after = cursor.after_id.unwrap_or_default();
     let clone = cursor.clone_job_id;
     if (!after.is_empty() && !hex(&after, 32)) || clone.as_ref().is_some_and(|s| !hex(s, 32)) {
@@ -124,11 +132,11 @@ async fn list(
     }))
 }
 async fn read(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminAudition>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     Ok(Json(item(&load(&b.db, &id).await?)?))
 }
 
@@ -143,7 +151,20 @@ pub async fn submit_local(
 ) -> Result<AdminAudition, AppError> {
     request.reason = format!("[local-cli] {}", request.reason);
     let id = request.id.clone();
-    let Json(mut result) = create_for_actor(b.clone(), actor, service, root, request).await?;
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
+        actor,
+    )
+    .await?;
+    let Json(mut result) = create_for_actor(
+        Store { db: b.db.clone() },
+        &operator,
+        service,
+        root,
+        request,
+    )
+    .await?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(245);
     while result.status == "submitted" && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -153,22 +174,23 @@ pub async fn submit_local(
 }
 
 async fn create(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     service: Option<Extension<Service>>,
     Extension(root): Extension<PathBuf>,
     Json(request): Json<AdminAuditionRequest>,
 ) -> Result<Json<AdminAudition>, AppError> {
-    require_operator(&auth).await?;
-    create_for_actor(b, owner(&auth)?, service.map(|s| s.0), root, request).await
+    let operator = auth.require_operator().await?;
+    create_for_actor(b, &operator, service.map(|s| s.0), root, request).await
 }
 async fn create_for_actor(
-    b: Backend,
-    actor: i64,
+    b: Store,
+    operator: &crate::product_memberships::Operator,
     service: Option<Service>,
     root: PathBuf,
     request: AdminAuditionRequest,
 ) -> Result<Json<AdminAudition>, AppError> {
+    let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !request.cost_confirmed || !hex(&request.id, 32) {
         return Err(AppError::InvalidInput);
@@ -200,7 +222,7 @@ async fn create_for_actor(
     let candidate_json =
         serde_json::to_value(&request.candidate).map_err(|_| AppError::InvalidInput)?;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     // Serialize the id before any external call. Exact retries return the original attempt without resending.
     exec(
         &tx,
@@ -317,14 +339,14 @@ async fn finish(
     .map(|_| ())
 }
 async fn file(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let row = load(&b.db, &id).await?;
     if item(&row)?.status != "ready" {
         return Err(AppError::NotFound);
@@ -340,15 +362,13 @@ async fn file(
     crate::recording::bytes_response("audio/wav".into(), format!("\"{sha}\""), bytes, headers)
 }
 async fn review(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
     Json(request): Json<AdminAuditionReview>,
 ) -> Result<Json<AdminAudition>, AppError> {
-    require_operator(&auth).await?;
-    Ok(Json(
-        review_for_actor(&b, owner(&auth)?, id, request).await?,
-    ))
+    let operator = auth.require_operator().await?;
+    Ok(Json(review_for_actor(&b, &operator, id, request).await?))
 }
 
 /// Record an explicit human decision through the same transaction as the HTTP route.
@@ -359,21 +379,28 @@ pub async fn review_local(
     mut request: AdminAuditionReview,
 ) -> Result<AdminAudition, AppError> {
     request.reason = format!("[local-cli] {}", request.reason);
-    review_for_actor(b, actor, id, request).await
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
+        actor,
+    )
+    .await?;
+    review_for_actor(&Store { db: b.db.clone() }, &operator, id, request).await
 }
 
 async fn review_for_actor(
-    b: &Backend,
-    actor: i64,
+    b: &Store,
+    operator: &crate::product_memberships::Operator,
     id: String,
     request: AdminAuditionReview,
 ) -> Result<AdminAudition, AppError> {
+    let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !hex(&id, 32) || !request.heard {
         return Err(AppError::InvalidInput);
     }
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     exec(
         &tx,
         "SELECT id FROM voice_auditions WHERE id=$1 FOR UPDATE",
@@ -392,9 +419,9 @@ async fn review_for_actor(
         let profile =
             serde_json::from_value(field(&row, "profile")?).map_err(|_| AppError::Unavailable)?;
         Some(
-            crate::character_voices::append_profile_in(
+            crate::character_voices::append_profile_authorized_in(
                 &tx,
-                actor,
+                operator,
                 AdminCharacterVoiceRequest {
                     character_id: audition.character_id.clone(),
                     character_revision: audition.character_revision,

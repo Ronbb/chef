@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立试听补充：voice_auditions共享路由db-only Store/AdminAuth，HTTP创建/采纳传可信Operator，事务先lock_content；local CLI仅在入口从身份db取proof，共用内容kernel，不把Backend带入worker。采纳调用character_voices::append_profile_authorized_in同事务复核并追加配置，旧CLI append_profile_in仍保留本地复核。content-grants新增试听/事件/采纳SELECT/INSERT与仅audition UPDATE(id)锁权限，原不可变trigger保留。真实分离schema模拟合成WAV验证生成/私有读取/精确重试不重发/修改重试409/采纳新voice revision/重复采纳409与十一类等待撤权拒绝，无新试听/调用。合成人工字段仅协议测试，不声称生产人工审听；剩余课程语音流水线/私有预览及租户待迁移，不更新生产pin。
+
 独立音色创建任务补充：voice_jobs的列表/读取/创建/状态查询进入共享content_router，db-only Store/AdminAuth；创建和查询先Operator.lock_content。创建不再JOIN身份成员表，远端通过原可信proof内的身份client检查参考授权人的固定产品权限；legacy复用本地产品成员读取。供应商调用仍在提交submitted/checking审计后触发，响应worker只持内容db，保留版本CAS/未知结果不自动重试。content-grants新增jobs/events INSERT与仅jobs UPDATE(id)行锁权限，原不可变trigger保留。真实分离schema模拟供应商回归验证提交→processing→ready、旧版本/重复409、九类等待撤权403无额外事件/调用、不同有效管理员消费已撤权授权人的参考404。其他试听/语音流水线/私有预览与租户仍待迁移，不更新生产或产品pin。
 
 独立参考录音补充：voice_references管理员列表/签发/撤销使用db-only Store/AdminAuth，签发与撤销事务先Operator.lock_content；临时bearer下载单独delivery_router在浏览器gate外，仍用token hash/期限/撤销/32读上限和account-admin锁。远端下载通过凭证保护GET /internal/v1/operators/{stored_actor}检查固定产品成员，204允许/404拒绝/其他503，有界无缓存HTTP；不能要求供应商登录，也不能读取内容连接身份表。身份服务最终响应统一private,no-store含fallback；内部operator接口无浏览器会话或全局role授权。内容角色新增reference三表SELECT/INSERT、reads序列与仅grant UPDATE(id)用于FOR UPDATE，原不可变trigger保留，禁止实际更新/删除或扩大身份权限。角色产品仍仅Brioche；其他配音流水线及课程预览待迁移，不切生产。

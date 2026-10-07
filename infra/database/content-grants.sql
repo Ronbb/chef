@@ -1,4 +1,4 @@
--- Courses, assets, character directions, reference delivery and enrollment jobs.
+-- Courses, assets, character directions, references, enrollment and auditions.
 -- Apply as owner to a fresh non-owner NOINHERIT / NOSUPERUSER login.
 -- psql -v schema=... -v identity_schema=... -v role=... -f infra/database/content-grants.sql
 \set ON_ERROR_STOP on
@@ -25,6 +25,7 @@ GRANT SELECT ON TABLE
     :"schema".voice_reference_revocations, :"schema".voice_clone_jobs,
     :"schema".voice_reference_reads,
     :"schema".voice_clone_events, :"schema".voice_auditions, :"schema".voice_audition_reviews,
+    :"schema".voice_audition_events,
     :"schema".course_speech_plans, :"schema".course_speech_clips,
     :"schema".course_speech_clip_reviews, :"schema".speech_alignments,
     :"schema".speech_alignment_reviews, :"schema".speech_package_imports,
@@ -39,11 +40,14 @@ GRANT INSERT ON TABLE
     :"schema".character_revisions, :"schema".character_voice_profiles,
     :"schema".voice_reference_grants, :"schema".voice_reference_revocations,
     :"schema".voice_reference_reads,
-    :"schema".voice_clone_jobs, :"schema".voice_clone_events TO :"role";
+    :"schema".voice_clone_jobs, :"schema".voice_clone_events,
+    :"schema".voice_auditions, :"schema".voice_audition_events,
+    :"schema".voice_audition_reviews TO :"role";
 -- PostgreSQL FOR UPDATE requires UPDATE privilege; immutable trigger still
 -- rejects actual changes. Only the grant key is granted for locking.
 GRANT UPDATE(id) ON :"schema".voice_reference_grants TO :"role";
 GRANT UPDATE(id) ON :"schema".voice_clone_jobs TO :"role";
+GRANT UPDATE(id) ON :"schema".voice_auditions TO :"role";
 GRANT UPDATE(published) ON :"schema".lesson_revisions TO :"role";
 GRANT UPDATE(active_release,generation) ON :"schema".content_state TO :"role";
 GRANT USAGE ON SEQUENCE :"schema".content_audit_id_seq TO :"role";

@@ -22,6 +22,7 @@ const ORIGIN: &str = "http://brioche.example.test";
 struct EnrollmentFixture {
     creates: std::sync::atomic::AtomicUsize,
     queries: std::sync::atomic::AtomicUsize,
+    syntheses: std::sync::atomic::AtomicUsize,
 }
 #[async_trait::async_trait]
 impl chef_engine::qwen::Transport for EnrollmentFixture {
@@ -47,6 +48,40 @@ impl chef_engine::qwen::Transport for EnrollmentFixture {
             model: chef_engine::qwen::MODEL.into(),
             status: "OK".into(),
             request_id: "fixture-query".into(),
+        })
+    }
+    async fn synthesize(
+        &self,
+        request: &chef_engine::qwen::SpeechRequest,
+    ) -> Result<chef_engine::qwen::Speech, chef_engine::qwen::ProviderError> {
+        self.syntheses
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut wav = vec![0u8; 4844];
+        wav[..4].copy_from_slice(b"RIFF");
+        wav[4..8].copy_from_slice(&4836u32.to_le_bytes());
+        wav[8..16].copy_from_slice(b"WAVEfmt ");
+        wav[16..20].copy_from_slice(&16u32.to_le_bytes());
+        wav[20..24].copy_from_slice(&[1, 0, 1, 0]);
+        wav[24..28].copy_from_slice(&24000u32.to_le_bytes());
+        wav[28..32].copy_from_slice(&48000u32.to_le_bytes());
+        wav[32..36].copy_from_slice(&[2, 0, 16, 0]);
+        wav[36..40].copy_from_slice(b"data");
+        wav[40..44].copy_from_slice(&4800u32.to_le_bytes());
+        let info = chef_engine::audio::inspect(&wav, "audio/wav").unwrap();
+        Ok(chef_engine::qwen::Speech {
+            provider_wav: wav.clone(),
+            wav,
+            info,
+            request_id: "fixture-synthesis".into(),
+            input_tokens: None,
+            output_tokens: None,
+            verification: (request.profile.voice_kind == "cloned").then(|| {
+                chef_engine::qwen::Details {
+                    model: chef_engine::qwen::MODEL.into(),
+                    status: "OK".into(),
+                    request_id: "fixture-verification".into(),
+                }
+            }),
         })
     }
 }
@@ -1126,6 +1161,148 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .0,
         409
     );
+    let audition_route = "/api/v1/operator/voice-auditions";
+    let audition_request = serde_json::json!({"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cloneJobId":submitted["id"],"expectedCloneVersion":4,"text":"Bonjour !","emotion":"Friendly.","costConfirmed":true,"reason":"Independent synthetic audition"});
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            audition_route,
+            Some(audition_request.clone()),
+            &mut next_cookie,
+            &mut next_csrf
+        )
+        .await
+        .0,
+        403
+    );
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            audition_route,
+            Some(audition_request.clone()),
+            &mut cookie,
+            &mut wrong
+        )
+        .await
+        .0,
+        403
+    );
+    let (status, result) = request(
+        &content_app,
+        "POST",
+        audition_route,
+        Some(audition_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{result}");
+    let audition_path = format!("{audition_route}/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let audition = settled_job(&content_app, &audition_path, &mut cookie, &mut csrf).await;
+    assert_eq!(audition["status"], "ready");
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            audition_route,
+            Some(audition_request.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    let mut changed = audition_request.clone();
+    changed["text"] = "Changed.".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            audition_route,
+            Some(changed),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{audition_path}/file"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .starts_with(b"RIFF")
+    );
+    let audition_review = format!("{audition_path}/review");
+    // Synthetic protocol decision only; no human listening assertion about production media.
+    let review_request = serde_json::json!({"accepted":true,"heard":true,"expectedVoiceRevision":2,"reason":"Synthetic adoption protocol"});
+    let mut invalid = review_request.clone();
+    invalid["heard"] = false.into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &audition_review,
+            Some(invalid),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    let (status, result) = request(
+        &content_app,
+        "POST",
+        &audition_review,
+        Some(review_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["appliedVoiceRevision"], 3);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &audition_review,
+            Some(review_request.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let (_, profile) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/characters/split-character/2/voices/3",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(profile["profile"]["voiceKind"], "cloned");
     // Revoke after the first HTTP verification while the write waits on the same
     // database advisory lock used by identity membership mutations.
     imported_source["id"] = "split-revoked-import".into();
@@ -1137,7 +1314,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let mut revoked_character = character;
     revoked_character["characterId"] = "split-revoked-character".into();
     let mut revoked_voice = voice;
-    revoked_voice["expectedVoiceRevision"] = 2.into();
+    revoked_voice["expectedVoiceRevision"] = 3.into();
+    let mut revoked_audition = audition_request;
+    revoked_audition["id"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
     for pending in [
         course_request,
         asset_upload("split-revoked-upload", &cookie, &csrf),
@@ -1163,6 +1342,8 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             &cookie,
             &csrf,
         ),
+        json_write(audition_route, &revoked_audition, &cookie, &csrf),
+        json_write(&audition_review, &review_request, &cookie, &csrf),
     ] {
         let held = owner.begin().await.unwrap();
         held.execute_unprepared(
@@ -1214,7 +1395,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     }
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM audio_assets WHERE asset_id='split-revoked-recording'")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM character_revisions WHERE character_id='split-revoked-character') + (SELECT count(*) FROM character_voice_profiles WHERE character_id='split-character' AND revision=3) AS n")).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM character_revisions WHERE character_id='split-revoked-character') + (SELECT count(*) FROM character_voice_profiles WHERE character_id='split-character' AND revision=4) AS n")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let row = owner
         .query_one_raw(Statement::from_string(
@@ -1322,6 +1503,14 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
         1
     );
+    assert_eq!(
+        enrollment
+            .syntheses
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_auditions WHERE id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') + (SELECT count(*) FROM voice_audition_events WHERE audition_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') AS n")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     task.abort();
     let _ = task.await;
     assert_eq!(
