@@ -59,6 +59,10 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL is required"))?,
     );
     options.sqlx_logging(false);
+    chef_engine::database_scope::apply(
+        &mut options,
+        std::env::var("IDENTITY_DATABASE_SCHEMA").ok().as_deref(),
+    )?;
     let db = Database::connect(options)
         .await
         .map_err(|_| anyhow::anyhow!("Identity database connection unavailable"))?;

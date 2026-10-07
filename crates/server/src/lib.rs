@@ -12,6 +12,7 @@ pub mod command;
 pub mod content;
 pub mod csrf;
 pub mod dashboard;
+pub mod database_scope;
 pub mod entity;
 pub mod grading;
 pub mod identity;

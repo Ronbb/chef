@@ -580,7 +580,66 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     options.set_schema_search_path(&schema).sqlx_logging(false);
     let db = Database::connect(options).await.unwrap();
     brioche_migration::Migrator::up(&db, None).await.unwrap();
-    let backend = Backend::new(db.clone()).await.unwrap();
+    let identity_role = format!("{schema}_identity");
+    db.execute_unprepared(&format!(
+        "CREATE ROLE {identity_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE"
+    ))
+    .await
+    .unwrap();
+    let grants = include_str!("../../../infra/database/identity-grants.sql")
+        .lines()
+        .filter(|line| !line.starts_with('\\'))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(":\"schema\"", &format!("\"{schema}\""))
+        .replace(":\"role\"", &format!("\"{identity_role}\""));
+    db.execute_unprepared(&grants).await.unwrap();
+    let mut identity_url = url::Url::parse(&std::env::var("TEST_DATABASE_URL").unwrap()).unwrap();
+    identity_url.set_username(&identity_role).unwrap();
+    identity_url.set_password(None).unwrap();
+    let mut identity_options = ConnectOptions::new(identity_url.to_string());
+    chef_engine::database_scope::apply(&mut identity_options, Some(&schema)).unwrap();
+    identity_options.sqlx_logging(false);
+    let identity_db = Database::connect(identity_options).await.unwrap();
+    for table in [
+        "product_user_settings",
+        "learning_sessions",
+        "review_cards",
+        "saved_items",
+        "lesson_revisions",
+        "media_assets",
+    ] {
+        for sql in [
+            format!("SELECT * FROM {table} LIMIT 0"),
+            format!("DELETE FROM {table} WHERE false"),
+        ] {
+            assert!(
+                identity_db.execute_unprepared(&sql).await.is_err(),
+                "Identity role crossed learning boundary: {table}"
+            );
+        }
+    }
+    for table in ["account_admin_audit", "product_membership_audit"] {
+        assert!(
+            identity_db
+                .execute_unprepared(&format!("UPDATE {table} SET reason='changed' WHERE false"))
+                .await
+                .is_err()
+        );
+        assert!(
+            identity_db
+                .execute_unprepared(&format!("DELETE FROM {table} WHERE false"))
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        identity_db
+            .execute_unprepared("SELECT chef_lock_release_state()")
+            .await
+            .is_err()
+    );
+    let backend = Backend::new(identity_db.clone()).await.unwrap();
     let app = |product, origin: &str| {
         identity_service::router(
             backend.clone(),
@@ -721,6 +780,52 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         .request("GET", "/internal/v1/session", None, Some((KEY, "brioche")))
         .await;
     assert_eq!(scoped["membership"]["role"], "operator");
+    for path in [
+        "/api/v1/operator/accounts".to_owned(),
+        "/api/v1/operator/accounts/history".to_owned(),
+        "/api/v1/operator/accounts/pending-tokens".to_owned(),
+        format!("/api/v1/operator/accounts/{account}/sessions"),
+    ] {
+        assert_eq!(french.request("GET", &path, None, None).await.0, 200);
+        assert_eq!(cantonese.request("GET", &path, None, None).await.0, 403);
+    }
+    let (status, _) = french.request(
+        "POST", "/api/v1/operator/accounts/token",
+        Some(serde_json::json!({"email":"role-grant@example.test","kind":"invite","operator":false,"reason":"Verify runtime audit permission"})), None
+    ).await;
+    assert_eq!(status, 200);
+    let (_, pending) = french
+        .request(
+            "GET",
+            "/api/v1/operator/accounts/pending-tokens",
+            None,
+            None,
+        )
+        .await;
+    let token_id = pending["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["email"] == "role-grant@example.test")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        french
+            .request(
+                "POST",
+                &format!("/api/v1/operator/accounts/pending-tokens/{token_id}/revoke"),
+                Some(serde_json::json!({"reason":"Verify runtime revocation audit"})),
+                None
+            )
+            .await
+            .0,
+        200
+    );
+    let audit = identity_db.query_one_raw(Statement::from_string(DbBackend::Postgres,
+        "SELECT count(*)::bigint AS count FROM account_admin_audit WHERE target_email='role-grant@example.test'"))
+        .await.unwrap().unwrap();
+    assert_eq!(audit.try_get::<i64>("", "count").unwrap(), 2);
     assert_eq!(cantonese.request("PATCH",&format!("/api/v1/account-admin/members/{account}"),Some(serde_json::json!({"role":"operator","expectedVersion":0,"reason":"Attempt to inherit global role"})),None).await.0,403);
     // Identity does not initialize or depend on the learning preferences relation.
     let count = db
@@ -1198,13 +1303,31 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         .await
         .unwrap();
     learner_db.close().await.unwrap();
-    brioche_migration::Migrator::down(&db, None).await.unwrap();
+    identity_db.close().await.unwrap();
+    // New immutable revocation audit makes production downgrade unsafe. Preserve
+    // the guard and both records; discard only this entire owned test schema.
+    let downgrade = brioche_migration::Migrator::down(&db, None)
+        .await
+        .unwrap_err();
+    assert!(
+        downgrade
+            .to_string()
+            .contains("account_admin_audit_action_check")
+    );
+    let audit = db.query_one_raw(Statement::from_string(DbBackend::Postgres,
+        "SELECT count(*)::bigint AS count FROM account_admin_audit WHERE target_email='role-grant@example.test'"))
+        .await.unwrap().unwrap();
+    assert_eq!(audit.try_get::<i64>("", "count").unwrap(), 2);
     admin
         .execute_unprepared(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
     admin
         .execute_unprepared(&format!("DROP ROLE {learner_role}"))
+        .await
+        .unwrap();
+    admin
+        .execute_unprepared(&format!("DROP ROLE {identity_role}"))
         .await
         .unwrap();
 }

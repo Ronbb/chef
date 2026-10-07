@@ -209,6 +209,10 @@ pub async fn run() -> Result<()> {
             .max_connections(10)
             .connect_timeout(std::time::Duration::from_secs(5))
             .acquire_timeout(std::time::Duration::from_secs(5));
+        crate::database_scope::apply(
+            &mut options,
+            std::env::var("DATABASE_SCHEMA").ok().as_deref(),
+        )?;
         Some(
             Database::connect(options)
                 .await
