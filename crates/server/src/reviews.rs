@@ -2,7 +2,8 @@
 use crate::{
     AppError,
     learning::{
-        exec, field, hash, one, owner, product_filter, random_id, record, replay, validate_key,
+        exec, field, hash, one, owner, product_filter, product_source_filter, random_id, record,
+        replay, validate_key,
     },
     learning_identity::LearningAuth as AuthSession,
     learning_store::LearningStore,
@@ -55,7 +56,7 @@ pub(crate) async fn load(
         field(&reference, "source_revision")?,
     )
     .await?;
-    let row=one(tx,&format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1 AND c.id=$2{} FOR UPDATE OF c",product_filter(product,"c.product_id")),vec![user.into(),id.into()]).await?.ok_or(AppError::NotFound)?;
+    let row=one(tx,&format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1 AND c.id=$2{} FOR UPDATE OF c",product_source_filter(product,"c.product_id")),vec![user.into(),id.into()]).await?.ok_or(AppError::NotFound)?;
     if !field::<bool>(&row, "published")? {
         return Err(AppError::Gone);
     }
@@ -152,8 +153,8 @@ async fn queue(
             .map_err(|_| AppError::InvalidInput)?
             .timestamp()
     };
-    let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND NOT c.suspended AND r.published AND c.due_at < $2::timestamptz ORDER BY c.due_at,c.id LIMIT 10",product_filter(backend.product,"c.product_id")),[user.into(),cutoff.to_string().into()])).await.map_err(|_|AppError::Unavailable)?;
-    let totals=one(&tx,&format!("SELECT count(*) FILTER (WHERE c.due_at < $2::timestamptz)::bigint AS count,to_char(min(c.due_at) FILTER (WHERE c.due_at >= $2::timestamptz) AT TIME ZONE 'UTC','{STAMP}') AS next FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND NOT c.suspended AND r.published",product_filter(backend.product,"c.product_id")),vec![user.into(),cutoff.to_string().into()]).await?.ok_or(AppError::Unavailable)?;
+    let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND NOT c.suspended AND r.published AND c.due_at < $2::timestamptz ORDER BY c.due_at,c.id LIMIT 10",product_source_filter(backend.product,"c.product_id")),[user.into(),cutoff.to_string().into()])).await.map_err(|_|AppError::Unavailable)?;
+    let totals=one(&tx,&format!("SELECT count(*) FILTER (WHERE c.due_at < $2::timestamptz)::bigint AS count,to_char(min(c.due_at) FILTER (WHERE c.due_at >= $2::timestamptz) AT TIME ZONE 'UTC','{STAMP}') AS next FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND NOT c.suspended AND r.published",product_source_filter(backend.product,"c.product_id")),vec![user.into(),cutoff.to_string().into()]).await?.ok_or(AppError::Unavailable)?;
     let result = ReviewQueue {
         items: rows.iter().map(card).collect::<Result<_, _>>()?,
         due_count: u32::try_from(field::<i64>(&totals, "count")?)
@@ -333,7 +334,7 @@ async fn cards(
     let (stamp, id) = crate::library::cursor(page.cursor)?;
     let sql = format!(
         "SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due,to_char(c.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND r.published AND ($2::timestamptz IS NULL OR (c.created_at,c.id)<($2::timestamptz,$3::text)) ORDER BY c.created_at DESC,c.id DESC LIMIT 21",
-        product_filter(backend.product, "c.product_id"),
+        product_source_filter(backend.product, "c.product_id"),
     );
     let rows = backend
         .db

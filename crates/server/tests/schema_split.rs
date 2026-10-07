@@ -3409,6 +3409,41 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let spoofed: serde_json::Value =
         serde_json::from_slice(&spoofed.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(spoofed, serde_json::to_value(&before_b).unwrap());
+    // A real, published foreign source must not create facts in this product.
+    let foreign_knowledge = &h_lesson.knowledge.vocabulary[1];
+    let row = owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        "SELECT (SELECT count(*) FROM saved_items WHERE product_id='brioche' AND user_id=$1 AND knowledge_id=$2)+(SELECT count(*) FROM review_cards WHERE product_id='brioche' AND user_id=$1 AND knowledge_id=$2) AS n",
+        [account.into(),foreign_knowledge.id.clone().into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    for (method, path, body) in [
+        (
+            "PUT",
+            format!("/api/v1/me/saved-items/{}", foreign_knowledge.id),
+            serde_json::json!({"sourceLessonId":h_lesson.id,"sourceRevision":h_lesson.revision,"saved":true,"version":0,"idempotencyKey":"split-foreign-source-save"}),
+        ),
+        (
+            "POST",
+            "/api/v1/me/review-enrollments".into(),
+            serde_json::json!({"knowledgeId":foreign_knowledge.id,"sourceLessonId":h_lesson.id,"sourceRevision":h_lesson.revision,"idempotencyKey":"split-foreign-source-enroll"}),
+        ),
+        (
+            "POST",
+            "/api/v1/learning-sessions".into(),
+            serde_json::json!({"lessonId":h_lesson.id,"schemaVersion":h_lesson.schema_version,"idempotencyKey":"split-foreign-source-start"}),
+        ),
+    ] {
+        assert_eq!(
+            request(&remote, method, &path, Some(body), &mut cookie, &mut csrf)
+                .await
+                .0,
+            404,
+            "{path}"
+        );
+    }
+    let row = owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        "SELECT (SELECT count(*) FROM saved_items WHERE product_id='brioche' AND user_id=$1 AND knowledge_id=$2)+(SELECT count(*) FROM review_cards WHERE product_id='brioche' AND user_id=$1 AND knowledge_id=$2)+(SELECT count(*) FROM learning_sessions WHERE product_id='brioche' AND user_id=$1 AND lesson_id=$3) AS n",
+        [account.into(),foreign_knowledge.id.clone().into(),h_lesson.id.clone().into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let tx = owner.begin().await.unwrap();
     tx.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,

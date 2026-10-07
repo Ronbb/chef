@@ -1,5 +1,11 @@
 # 身份与学习schema分离
 
+## 学习事实读取课源的产品范围
+
+共享学习load/start/history和收藏/复习课源关联按可信LearningStore.product限制事实与lesson_revisions。手动收藏及复习参与的新建课源查询同样固定产品；None仅旧组合Brioche布局。现有课程锁仍是全局编号锁，数据库课源复合外键与局部编号迁移尚未完成，不能因此开放完整Hargow业务。
+
+实际受限split HTTP将已发布H合成课源及其中有效知识点用于B收藏、复习参与、开始学习：返回404，当前产品三类事实均无新增。原B正向学习/收藏/复习及重放仍由同一套数据库回归验证。合成法语数据不证明粤语能力，生产pin保持。
+
 ## 公共课程API的服务器产品上下文
 
 independent_product_router接收可信部署选择的ProductId，不能从浏览器query、header或Host选产品。目录、当前课程及指定版本课程都按该上下文查询；指定版本同时拒绝已撤回记录。legacy router仍兼容原组合布局。Hargow不能回退到内置法语演示课程或演示判分。

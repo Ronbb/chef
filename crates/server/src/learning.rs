@@ -157,6 +157,17 @@ pub(crate) async fn insert_fact(
     );
     exec(tx, &sql, values).await
 }
+/// Scope both the owned fact and its joined course source in split deployments.
+pub(crate) fn product_source_filter(
+    product: Option<crate::product::ProductId>,
+    fact_column: &'static str,
+) -> String {
+    format!(
+        "{}{}",
+        product_filter(product, fact_column),
+        product_filter(product, "r.product_id")
+    )
+}
 pub(crate) fn review_conflict(product: Option<crate::product::ProductId>) -> &'static str {
     if product.is_some() {
         " ON CONFLICT (product_id,user_id,knowledge_id) DO NOTHING"
@@ -196,7 +207,7 @@ async fn load<C: ConnectionTrait>(
         } else {
             ""
         },
-        product_filter(product, "s.product_id"),
+        product_source_filter(product, "s.product_id"),
         if lock { "FOR UPDATE OF s" } else { "" }
     );
     let row = one(db, &sql, vec![user.into(), id.into()])
@@ -422,7 +433,7 @@ async fn start(
         .await?
         .ok_or(AppError::Unavailable)?;
         let release: Option<String> = field(&state, "active_release")?;
-        let row = one(&tx,"SELECT r.revision,r.public_document FROM release_entries e JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision) WHERE e.release_id=$1 AND e.lesson_id=$2 AND r.published",vec![release.into(),request.lesson_id.clone().into()]).await?.ok_or(AppError::NotFound)?;
+        let row = one(&tx,&format!("SELECT r.revision,r.public_document FROM release_entries e JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision) WHERE e.release_id=$1 AND e.lesson_id=$2 AND r.published{}{}",product_filter(backend.product,"e.product_id"),product_filter(backend.product,"r.product_id")),vec![release.into(),request.lesson_id.clone().into()]).await?.ok_or(AppError::NotFound)?;
         crate::learning_store::lock_lesson(&tx, &request.lesson_id, field(&row, "revision")?)
             .await?;
         let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
@@ -864,7 +875,7 @@ async fn overview(
         } else {
             ""
         },
-        product_filter(backend.product, "p.product_id"),
+        product_source_filter(backend.product, "p.product_id"),
     );
     let rows = backend
         .db

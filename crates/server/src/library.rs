@@ -2,8 +2,8 @@
 use crate::{
     AppError,
     learning::{
-        exec, field, hash, insert_fact, one, owner, product_filter, random_id, record, replay,
-        validate_key,
+        exec, field, hash, insert_fact, one, owner, product_filter, product_source_filter,
+        random_id, record, replay, validate_key,
     },
     learning_identity::LearningAuth as AuthSession,
     learning_store::LearningStore,
@@ -40,6 +40,7 @@ pub(crate) fn cursor(value: Option<String>) -> Result<(Option<String>, Option<St
 }
 pub(crate) async fn source(
     tx: &DatabaseTransaction,
+    product: Option<crate::product::ProductId>,
     lesson: &str,
     revision: u32,
     knowledge: &str,
@@ -48,7 +49,7 @@ pub(crate) async fn source(
     crate::learning_store::lock_lesson(tx, lesson, revision).await?;
     let row = one(
         tx,
-        "SELECT published,public_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2",
+        &format!("SELECT published,public_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2{}", product_filter(product, "product_id")),
         vec![lesson.into(), revision.into()],
     )
     .await?
@@ -100,7 +101,7 @@ async fn load(
     }
     let sql = format!(
         "SELECT s.*,r.published,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1 AND s.knowledge_id=$2{} {}",
-        product_filter(product, "s.product_id"),
+        product_source_filter(product, "s.product_id"),
         if lock { "FOR UPDATE OF s" } else { "" }
     );
     one(tx, &sql, vec![user.into(), knowledge.into()])
@@ -196,6 +197,7 @@ async fn write(
     } else {
         let vocabulary = source(
             &tx,
+            backend.product,
             &request.source_lesson_id,
             request.source_revision,
             &knowledge,
@@ -245,7 +247,7 @@ async fn list(
     let (stamp, id) = cursor(page.cursor)?;
     let sql = format!(
         "SELECT s.*,r.published,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1{} AND s.saved AND ($2::timestamptz IS NULL OR (s.created_at,s.id)<($2::timestamptz,$3::text)) ORDER BY s.created_at DESC,s.id DESC LIMIT 21",
-        product_filter(backend.product, "s.product_id"),
+        product_source_filter(backend.product, "s.product_id"),
     );
     let rows = backend
         .db
@@ -285,6 +287,7 @@ async fn enroll(
         .map_err(|_| AppError::Unavailable)?;
     let vocabulary = source(
         &tx,
+        backend.product,
         &request.source_lesson_id,
         request.source_revision,
         &request.knowledge_id,
@@ -360,7 +363,7 @@ async fn history(
         } else {
             ""
         },
-        product_filter(backend.product, "a.product_id"),
+        product_source_filter(backend.product, "a.product_id"),
     );
     let rows = backend
         .db
