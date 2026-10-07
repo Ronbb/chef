@@ -345,6 +345,7 @@ mod tests {
         assert!(matches!(
             crate::content::withdraw_operator(
                 &db,
+                None,
                 "missing",
                 1,
                 0,

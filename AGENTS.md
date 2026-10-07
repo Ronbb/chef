@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立撤回补充：HTTP传可信Store.product，withdraw_operator核对Operator产品；共用kernel锁对应状态、过滤课源更新、撤回/审计显式产品、只增该状态generation。actual split跨产品撤回404且双状态/课源/撤回及审计指纹不变，B硬撤回学习保护回归保持。旧本机CLI/组合入口仍None，固定产品CLI/旧选择器移除、导入目录写入/媒体/私有预览待继续，H后台/生产pin保持，产品无内核副本。
+
 独立编辑审核补充：Store.state_selector共用概览与审核，远端锁产品状态；lesson/withdrawal/latest editorial decision/retry actor均固定产品，新审计显式product_id，None兼容legacy32。actual split已/未发布H课程在B审核入口404且无审计增量，原B正向/CAS/重试/撤权保持；audio accepted、导入/目录写入/撤回/私有预览及媒体仍待产品化，H后台保持拒绝，生产pin不变，产品无审核实现副本。
 
 独立管理员课程读取补充：Store.product取可信Client，legacy传None；概览按固定产品读状态/课程/目录，撤回与编辑审核同产品，条目计数同产品。history仅已具product_id的五类课程记录加范围；媒体/音色/素材等历史仍待迁移。actual split加入H合成课程/目录/发布审计，B概览与history JSON不变、H独特搜索为空；空H私有document不进入B解析。写入/预览/audio accepted及媒体仍待产品化，H后台保持拒绝，生产pin不变，实现只Chef，产品无后台副本。

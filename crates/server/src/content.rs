@@ -2,7 +2,7 @@
 use crate::{
     AppError,
     grading::Grader,
-    learning::{exec, field, hash, one},
+    learning::{exec, field, hash, one, product_filter},
     project_source,
 };
 use brioche_course_contract::{Catalog, LessonSummary, Level, PublicLesson, Unit};
@@ -221,14 +221,19 @@ pub(crate) async fn activate_operator(
 }
 pub(crate) async fn withdraw_operator(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     id: &str,
     revision: u32,
     expected: i64,
     operator: &crate::product_memberships::Operator,
     reason: &str,
 ) -> Result<i64, AppError> {
+    if product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     withdraw_impl(
         db,
+        product,
         id,
         revision,
         expected,
@@ -633,6 +638,7 @@ pub async fn withdraw(
 ) -> Result<i64, AppError> {
     withdraw_impl(
         db,
+        None,
         id,
         revision,
         expected,
@@ -653,6 +659,7 @@ pub async fn withdraw_author(
 ) -> anyhow::Result<i64> {
     withdraw_impl(
         db,
+        None,
         id,
         revision,
         expected,
@@ -671,6 +678,7 @@ pub async fn withdraw_author(
 }
 async fn withdraw_impl(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     id: &str,
     revision: u32,
     expected: i64,
@@ -709,9 +717,13 @@ async fn withdraw_impl(
     }
     let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
     caller.lock(&tx).await?;
+    let state_selector = product.map_or_else(
+        || "singleton".to_owned(),
+        |p| format!("product_id='{}'", p.as_str()),
+    );
     let state = one(
         &tx,
-        "SELECT generation FROM content_state WHERE singleton FOR UPDATE",
+        &format!("SELECT generation FROM content_state WHERE {state_selector} FOR UPDATE"),
         vec![],
     )
     .await?
@@ -726,7 +738,10 @@ async fn withdraw_impl(
     }
     if exec(
         &tx,
-        "UPDATE lesson_revisions SET published=false WHERE lesson_id=$1 AND revision=$2",
+        &format!(
+            "UPDATE lesson_revisions SET published=false WHERE lesson_id=$1 AND revision=$2{}",
+            product_filter(product, "product_id")
+        ),
         vec![id.into(), (revision as i32).into()],
     )
     .await?
@@ -738,14 +753,12 @@ async fn withdraw_impl(
             "lesson revision does not exist",
         ));
     }
-    if exec(
-        &tx,
-        "INSERT INTO content_withdrawals(lesson_id,revision) VALUES($1,$2) ON CONFLICT DO NOTHING",
-        vec![id.into(), (revision as i32).into()],
-    )
-    .await?
-        != 1
-    {
+    let inserted = if let Some(product) = product {
+        exec(&tx,"INSERT INTO content_withdrawals(product_id,lesson_id,revision) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",vec![product.as_str().into(),id.into(),(revision as i32).into()]).await?
+    } else {
+        exec(&tx,"INSERT INTO content_withdrawals(lesson_id,revision) VALUES($1,$2) ON CONFLICT DO NOTHING",vec![id.into(),(revision as i32).into()]).await?
+    };
+    if inserted != 1 {
         return Err(ReleaseFailure::at(
             AppError::Gone,
             "lesson-id/revision",
@@ -755,11 +768,15 @@ async fn withdraw_impl(
     let next = expected.checked_add(1).ok_or(AppError::Unavailable)?;
     exec(
         &tx,
-        "UPDATE content_state SET generation=$1 WHERE singleton",
+        &format!("UPDATE content_state SET generation=$1 WHERE {state_selector}"),
         vec![next.into()],
     )
     .await?;
-    exec(&tx,"INSERT INTO content_audit(action,actor,reason,lesson_id,revision,generation) VALUES('withdraw',$1,$2,$3,$4,$5)",vec![actor.into(),reason.into(),id.into(),(revision as i32).into(),next.into()]).await?;
+    if let Some(product) = product {
+        exec(&tx,"INSERT INTO content_audit(action,actor,reason,lesson_id,revision,generation,product_id) VALUES('withdraw',$1,$2,$3,$4,$5,$6)",vec![actor.into(),reason.into(),id.into(),(revision as i32).into(),next.into(),product.as_str().into()]).await?;
+    } else {
+        exec(&tx,"INSERT INTO content_audit(action,actor,reason,lesson_id,revision,generation) VALUES('withdraw',$1,$2,$3,$4,$5)",vec![actor.into(),reason.into(),id.into(),(revision as i32).into(),next.into()]).await?;
+    }
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(next)
 }

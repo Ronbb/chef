@@ -3418,6 +3418,37 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .unwrap();
     let count=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM editorial_reviews WHERE lesson_id=$1 AND revision=$2",[h_lesson.id.clone().into(),(h_lesson.revision as i32).into()])).await.unwrap().unwrap();
     assert_eq!(count.try_get::<i64>("", "n").unwrap(), 0);
+    let withdrawal_snapshot = "SELECT md5(jsonb_build_object('states',(SELECT jsonb_agg(to_jsonb(s) ORDER BY product_id) FROM content_state s),'lesson',(SELECT to_jsonb(r) FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2),'withdrawals',(SELECT count(*) FROM content_withdrawals),'audit',(SELECT count(*) FROM content_audit))::text) AS hash";
+    let before_withdraw = owner
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            withdrawal_snapshot,
+            [
+                h_lesson.id.clone().into(),
+                (h_lesson.revision as i32).into(),
+            ],
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "hash")
+        .unwrap();
+    assert_eq!(request(&content_app,"POST",&format!("/api/v1/operator/lessons/{}/revisions/{}/withdraw",h_lesson.id,h_lesson.revision),Some(serde_json::json!({"generation":admin_before["generation"],"reason":"Foreign withdrawal rejected"})),&mut cookie,&mut csrf).await.0,404);
+    let after_withdraw = owner
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            withdrawal_snapshot,
+            [
+                h_lesson.id.clone().into(),
+                (h_lesson.revision as i32).into(),
+            ],
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "hash")
+        .unwrap();
+    assert_eq!(after_withdraw, before_withdraw);
     let h_catalog =
         chef_engine::content::catalog_matching_for_product(&learning, Some(ProductId::Hargow), &[])
             .await

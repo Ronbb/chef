@@ -623,6 +623,7 @@ async fn withdraw(
     reason(&request.reason)?;
     let result = crate::content::withdraw_operator(
         &backend.db,
+        backend.product,
         &id,
         rev,
         generation(&request.generation)?,
