@@ -20,9 +20,7 @@ import { productWebUrl, browserCliUrl } from "../test-product.mjs";
 const build = await import(productWebUrl("build/server/index.js"));
 
 const execute = promisify(execFile);
-const cli = fileURLToPath(
-  browserCliUrl(),
-);
+const cli = fileURLToPath(browserCliUrl());
 const client = fileURLToPath(productWebUrl("build/client/"));
 const session = "brioche-ssr-layout-" + randomUUID();
 const uploadDirectory = await mkdtemp(
@@ -78,6 +76,9 @@ const serverErrors = [];
 let origin,
   opened = false;
 let accounts = false;
+let accountOnlyLogin = false;
+const accountLoginWrites = [];
+const accountPreferenceWrites = [];
 let operatorAccount = false;
 let managedRole = "learner";
 let managedSessionRevoked = false;
@@ -92,7 +93,10 @@ const voiceSeed = JSON.parse(
 );
 let characterVoice = { ...voiceSeed.items[0], voiceRevision: 0, profile: null };
 const characterAvatar = await readFile(
-  new URL("../../../test-fixtures/visuals/avatars/camille.svg", import.meta.url),
+  new URL(
+    "../../../test-fixtures/visuals/avatars/camille.svg",
+    import.meta.url,
+  ),
 );
 let finalListening = false;
 let finalLostReply = false;
@@ -136,17 +140,76 @@ const profile = (id) => ({
   email: `${id}@example.test`,
   displayName: id === "shell-a" ? "Alice" : "Bob",
   role: operatorAccount ? "operator" : "learner",
-  version: 1,
+  version: accountOnlyLogin ? 17 : 1,
   settings: {
-    timeZone: "Asia/Shanghai",
+    timeZone: accountOnlyLogin ? "Asia/Hong_Kong" : "Asia/Shanghai",
     weeklyDays: 3,
     dailyMinutes: 10,
-    showTranslation: false,
+    showTranslation: accountOnlyLogin,
     speechRate: 1,
   },
 });
 const api = createServer((request, response) => {
   response.setHeader("Content-Type", "application/json");
+  if (request.url === "/api/v1/auth/login" && accountOnlyLogin) {
+    let body = "";
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      if (request.headers["x-csrf-token"] !== "controlled-admin-csrf") {
+        response.writeHead(403).end("{}");
+        return;
+      }
+      accountLoginWrites.push(JSON.parse(body));
+      const { settings: _settings, ...account } = profile("shell-a");
+      response.setHeader(
+        "Set-Cookie",
+        "brioche.sid=shell-a; Path=/; HttpOnly; SameSite=Lax",
+      );
+      response.end(
+        JSON.stringify({
+          user: { ...account, role: "operator", version: 47 },
+          csrfToken: "account-only-csrf",
+        }),
+      );
+    });
+    return;
+  }
+  if (request.url === "/api/v1/account" && request.method === "GET") {
+    const id = /(?:^|;\s*)brioche\.sid=(shell-[ab])(?:;|$)/.exec(
+      request.headers.cookie ?? "",
+    )?.[1];
+    if (!accounts || !id) {
+      response.writeHead(401).end("{}");
+      return;
+    }
+    const { settings: _settings, ...account } = profile(id);
+    response.end(JSON.stringify({ ...account, version: 47 }));
+    return;
+  }
+  if (request.url === "/api/v1/me/settings" && accountOnlyLogin) {
+    let body = "";
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      const update = JSON.parse(body);
+      accountPreferenceWrites.push(update);
+      const user = profile("shell-a");
+      response.end(
+        JSON.stringify({
+          ...user,
+          version: 18,
+          settings: {
+            ...user.settings,
+            showTranslation: update.showTranslation,
+          },
+        }),
+      );
+    });
+    return;
+  }
   if (request.url.match(/speech-plans\/[a-f0-9]{32}\/alignments/)) {
     response.end(JSON.stringify({ items: [], next: null }));
     return;
@@ -1279,6 +1342,9 @@ const web = createServer(async (request, response) => {
         "Content-Type":
           proxied.headers.get("content-type") ?? "application/json",
         "Cache-Control": "private, no-store",
+        ...(proxied.headers.getSetCookie().length
+          ? { "Set-Cookie": proxied.headers.getSetCookie() }
+          : {}),
       });
       response.end(Buffer.from(await proxied.arrayBuffer()));
       return;
@@ -1531,7 +1597,10 @@ test("operator uploads an actual SVG and supplies provenance in the mobile dialo
       "upload",
       "input[name=file]",
       fileURLToPath(
-        new URL("../../../test-fixtures/visuals/avatars/camille.svg", import.meta.url),
+        new URL(
+          "../../../test-fixtures/visuals/avatars/camille.svg",
+          import.meta.url,
+        ),
       ),
     );
     for (const [name, value] of Object.entries({
@@ -3041,6 +3110,73 @@ after(async () => {
     }
     if (originalBase === undefined) delete process.env.INTERNAL_API_URL;
     else process.env.INTERNAL_API_URL = originalBase;
+  }
+});
+
+test("account-only login reloads the actual SSR product profile without importing the account role or version", async () => {
+  accounts = true;
+  accountOnlyLogin = true;
+  operatorAccount = false;
+  identityReads.length = 0;
+  accountLoginWrites.length = 0;
+  accountPreferenceWrites.length = 0;
+  try {
+    await browser("open", origin + "/login?next=%2Fprofile");
+    opened = true;
+    await browser("cookies", "clear");
+    await browser("open", origin + "/login?next=%2Fprofile");
+    await browser("wait", ".account-page input[type=email]");
+    await browser(
+      "fill",
+      ".account-page input[type=email]",
+      "shared@example.test",
+    );
+    await browser(
+      "fill",
+      ".account-page input[type=password]",
+      "synthetic-only-password",
+    );
+    await browser("focus", ".account-page button.primary");
+    await browser("press", "Enter");
+    await browser(
+      "wait",
+      "--fn",
+      "location.pathname==='/profile' && document.querySelector('.profile-summary h2')?.textContent==='Alice'",
+    );
+    assert.deepEqual(accountLoginWrites, [
+      { email: "shared@example.test", password: "synthetic-only-password" },
+    ]);
+    assert.ok(
+      identityReads.some(
+        (read) => read.id === "shell-a" && read.channel === "ssr",
+      ),
+    );
+    assert.equal(
+      await evaluate("!!document.querySelector('a[href=\"/admin\"]')"),
+      false,
+    );
+    assert.equal(
+      await evaluate(
+        "document.querySelector('.translation-switch').getAttribute('aria-checked')",
+      ),
+      "true",
+    );
+    await browser("focus", ".translation-switch");
+    await browser("press", "Enter");
+    await browser(
+      "wait",
+      "--fn",
+      "document.querySelector('.translation-switch').getAttribute('aria-checked')==='false' && document.querySelector('.profile-note').textContent==='设置已保存到账号。'",
+    );
+    assert.deepEqual(accountPreferenceWrites, [
+      { showTranslation: false, version: 17 },
+    ]);
+    assert.deepEqual((await browser("errors")).errors, []);
+    assert.deepEqual(serverErrors, []);
+  } finally {
+    await browser("cookies", "clear");
+    accounts = false;
+    accountOnlyLogin = false;
   }
 });
 

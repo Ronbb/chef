@@ -1,13 +1,14 @@
 import type { Catalog } from "@brioche/contracts/Catalog";
 import type { PublicLesson } from "@brioche/contracts/PublicLesson";
 import type { UserProfile } from "@brioche/contracts/UserProfile";
+import product from "@chef/product";
+import { productSessionCookie } from "./product-session";
 const base = () => process.env.INTERNAL_API_URL ?? "http://127.0.0.1:3001";
 function sessionCookie(request: Request) {
-  return (request.headers.get("cookie") ?? "")
-    .split(";")
-    .map((value) => value.trim())
-    .filter((value) => /^(?:__Host-brioche\.sid|brioche\.sid)=/.test(value))
-    .join("; ");
+  return productSessionCookie(
+    request.headers,
+    product.sessionNamespace ?? "brioche",
+  );
 }
 export async function getPrivate<T>(
   request: Request,
@@ -75,6 +76,7 @@ export async function getIdentity(
   try {
     response = await fetch(base() + "/api/v1/me", {
       headers: cookie ? { cookie } : {},
+      cache: "no-store",
       signal: AbortSignal.timeout(5000),
     });
   } catch {

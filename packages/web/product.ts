@@ -1,5 +1,7 @@
 export interface Product {
   id: string;
+  /** Trusted build configuration; defaults to Brioche for existing products. */
+  sessionNamespace?: "brioche" | "hargow";
   name: string;
   wordmark: string;
   tagline: string;

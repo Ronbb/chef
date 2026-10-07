@@ -76,6 +76,16 @@ AccountProfile、AccountProfileUpdateRequest、AccountAuthResult已成为共享R
 
 两个资源分别保留版本、错误和恢复状态。账号响应只更新名称/邮箱，不将全局role或账号version放入产品profile；迟到的产品设置响应保留已确认的账号名称。账号写入失败只读回真实版本，保留编辑草稿，要求显式重试；不会自动再次发送写入。账号切换、会话丢失和Provider卸载会取消请求及迟到的CSRF引导，旧响应不能重新恢复旧身份。两个编辑入口共享离页/放弃草稿/焦点保护，但不把两次独立写入包装成一次保存。
 
-此UI和测试仅属于Chef，产品无新增账号逻辑。旧组合账号API也支持/account，框架升级可兼容现有产品入口。新AccountAuthResult登录响应与产品GET /me组合、管理员页面/事务的身份迁移、生产独立路由及最小数据库权限仍待实施；本阶段不更新产品固定框架提交或执行生产迁移。
+此UI和测试仅属于Chef，产品无新增账号逻辑。旧组合账号API也支持/account，框架升级可兼容现有产品入口。管理员页面/事务的身份迁移、生产独立路由及最小数据库权限仍待实施；本阶段不更新产品固定框架提交或执行生产迁移。
 
 验证：严格TS7检查、Web单元测试、29项SSR以及10项独立浏览器个人页回归通过。浏览器包含账号与偏好并行保存、独立版本/角色、迟到响应、旧CSRF取消、会话过期、冲突/失败读回、保留草稿/显式重试和离页/退出保护；模拟账号载荷不包含学习设置，账号版本与产品版本故意不同。运行浏览器回归时不改受测源码，以免Vite热更新重置Provider和测试状态。
+
+## 产品SSR会话与独立登录响应
+
+Product.sessionNamespace允许可信构建选择brioche或hargow；缺省brioche保留现有产品兼容。共享api.server在GET /me与所有getPrivate请求中只转发当前产品的精确sid或__Host-sid Cookie，忽略其他产品及跟踪Cookie；重复Cookie、两个变体同时存在、空/非法/超大值直接401，不发内部请求。产品名来自配置，不由请求Host、URL参数或客户端header决定。身份读回使用no-store。具体安全Cookie是否可用仍由身份服务的secure配置验证，SSR不假定反向代理内部HTTP就是外部访问协议。
+
+核对源码后修正前一阶段的待办判断：Account组件本来就不使用登录返回的UserProfile或AccountProfile；成功后整页跳转，由根SSR读取产品GET /me。因此不添加多余的客户端账号/学习资料合并。真实浏览器回归以账号专属登录响应（无settings、global operator/version47）设置会话，再跳转/profile：页面使用产品learner及设置version17，后续偏好PATCH发送version17。模拟代理正确转发Set-Cookie，原真实SSR跨账号编辑测试的合成API也补上实际/account读取。
+
+Hargow配置的Vite SSR真实模块通过本机隔离HTTP检查身份和私有读取：只转发Hargow Cookie、产品时区/版本原样读取、仅Brioche Cookie得到匿名/401、重复H会话在网络前拒绝。它验证Web边界，不表示Hargow生产API或完整多产品数据库已经可用。产品仓库只需将namespace与相应服务部署配置配对，无新增页面副本。
+
+验证：最终严格TS7、生产Web/SSR构建、30项单元和32项SSR回归通过；2项真实构建浏览器回归覆盖账号专属登录响应及服务器授权替换账号时清除旧草稿/页面。精确Cookie过滤也覆盖无等号、名称后缀、非法/超大/重复值。所有网络服务与浏览器均为专用合成测试，退出后关闭；没有生产数据库、域名、Cookie或API路由变更，也未推进产品固定框架提交。
