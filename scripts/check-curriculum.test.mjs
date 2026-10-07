@@ -1,0 +1,30 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { selectSources } from './check-curriculum.mjs';
+
+test('release selects exact revisions and rejects missing or divergent immutable sources', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'chef-course-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sources = join(root, 'sources');
+  await mkdir(sources);
+  await mkdir(join(sources, 'history'));
+  const manifest = join(root, 'release.json');
+  await writeFile(manifest, JSON.stringify({ levels: [{ id: 'a1', units: [{ id: 'greetings', lessons: [{ lessonId: 'hello', revision: 2 }] }] }] }));
+  const source = { id: 'hello', revision: 1, levelId: 'a1', unitId: 'greetings' };
+  await writeFile(join(sources, 'hello.lesson.json'), JSON.stringify(source));
+  await assert.rejects(selectSources(manifest, [sources]), /Missing exact/);
+  source.revision = 2;
+  await writeFile(join(sources, 'history', 'hello.lesson.json'), JSON.stringify(source));
+  const selected = await selectSources(manifest, [sources]);
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].path, join(sources, 'history', 'hello.lesson.json'));
+  await writeFile(join(sources, 'duplicate.lesson.json'), JSON.stringify(source));
+  assert.equal((await selectSources(manifest, [sources])).length, 1);
+  await writeFile(join(sources, 'duplicate.lesson.json'), JSON.stringify({ ...source, text: 'different' }));
+  await assert.rejects(selectSources(manifest, [sources]), /Ambiguous immutable/);
+  await writeFile(join(sources, 'duplicate.lesson.json'), JSON.stringify({ ...source, unitId: 'wrong' }));
+  await assert.rejects(selectSources(manifest, [sources]), /placement mismatch/);
+});
