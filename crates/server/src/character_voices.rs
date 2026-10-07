@@ -1,8 +1,8 @@
 //! Private, immutable voice directions bound to registered character snapshots.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{exec, field, one, owner},
+    admin_auth::AdminAuth,
+    learning::{exec, field, one},
 };
 use axum::{
     Json, Router,
@@ -14,7 +14,13 @@ use brioche_course_contract::{
 };
 use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait};
 
-pub fn router() -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route(
             "/api/v1/operator/characters/revisions",
@@ -33,24 +39,25 @@ pub fn router() -> Router<Backend> {
             "/api/v1/operator/characters/{id}/{character_revision}/voices/{voice_revision}",
             get(version),
         )
+        .with_state(Store { db })
 }
 async fn character_version(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path((id, revision)): Path<(String, u32)>,
 ) -> Result<Json<AdminCharacterVoice>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     id_revision(&id, revision)?;
     let row=one(&backend.db,"SELECT c.snapshot,c.avatar_revision,COALESCE(v.revision,0) AS voice_revision,v.profile FROM character_revisions c LEFT JOIN LATERAL (SELECT revision,profile FROM character_voice_profiles WHERE character_id=c.character_id AND character_revision=c.revision ORDER BY revision DESC LIMIT 1) v ON true WHERE c.character_id=$1 AND c.revision=$2",vec![id.into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     Ok(Json(item(&row)?))
 }
 async fn append_character(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     Json(request): Json<brioche_course_contract::AdminCharacterRequest>,
 ) -> Result<Json<AdminCharacterVoice>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     crate::admin::reason(&request.reason)?;
     let revision = request
         .expected_revision
@@ -72,13 +79,14 @@ async fn append_character(
             avatar_revision: request.avatar_revision,
         },
         &root,
-        owner(&auth)?,
+        &operator,
         request.expected_revision,
         &request.reason,
     )
     .await
     .map_err(|e| match e.downcast_ref::<AppError>() {
         Some(AppError::Forbidden) => AppError::Forbidden,
+        Some(AppError::Unauthorized) => AppError::Unauthorized,
         Some(AppError::Conflict) => AppError::Conflict,
         Some(_) => AppError::Unavailable,
         None => AppError::InvalidInput,
@@ -91,13 +99,13 @@ async fn append_character(
     }))
 }
 async fn avatar(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path((id, revision)): Path<(String, u32)>,
     axum::Extension(root): axum::Extension<std::path::PathBuf>,
     axum::Extension(permits): axum::Extension<std::sync::Arc<tokio::sync::Semaphore>>,
 ) -> Result<axum::response::Response, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     id_revision(&id, revision)?;
     let row=one(&backend.db,"SELECT m.descriptor FROM character_revisions c JOIN media_assets m ON m.asset_id=c.avatar_id AND m.revision=c.avatar_revision WHERE c.character_id=$1 AND c.revision=$2",vec![id.into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     let descriptor =
@@ -172,11 +180,11 @@ fn item(row: &sea_orm::QueryResult) -> Result<AdminCharacterVoice, AppError> {
     })
 }
 async fn list(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Query(cursor): Query<Cursor>,
 ) -> Result<Json<AdminCharacterVoices>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let after = cursor.after_id.unwrap_or_default();
     if !after.is_empty() && !brioche_course_contract::valid_content_id(&after) {
         return Err(AppError::InvalidInput);
@@ -201,25 +209,31 @@ async fn list(
     Ok(Json(AdminCharacterVoices { items, next_id }))
 }
 async fn version(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path((id, character_revision, voice_revision)): Path<(String, u32, u32)>,
 ) -> Result<Json<AdminCharacterVoice>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     id_revision(&id, character_revision)?;
     id_revision(&id, voice_revision)?;
     let row=one(&backend.db,"SELECT c.snapshot,c.avatar_revision,v.revision AS voice_revision,v.profile FROM character_revisions c JOIN character_voice_profiles v ON v.character_id=c.character_id AND v.character_revision=c.revision WHERE c.character_id=$1 AND c.revision=$2 AND v.revision=$3",vec![id.into(),(character_revision as i32).into(),(voice_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     Ok(Json(item(&row)?))
 }
 async fn append(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Json(request): Json<AdminCharacterVoiceRequest>,
 ) -> Result<Json<AdminCharacterVoice>, AppError> {
-    require_operator(&auth).await?;
-    Ok(Json(
-        append_profile(&backend.db, owner(&auth)?, request).await?,
-    ))
+    let operator = auth.require_operator().await?;
+    let tx = backend
+        .db
+        .begin()
+        .await
+        .map_err(|_| AppError::Unavailable)?;
+    operator.lock_content(&tx).await?;
+    let result = append_profile_body(&tx, operator.actor, request).await?;
+    tx.commit().await.map_err(|_| AppError::Unavailable)?;
+    Ok(Json(result))
 }
 pub async fn append_profile(
     db: &sea_orm::DatabaseConnection,
@@ -236,6 +250,15 @@ pub(crate) async fn append_profile_in(
     actor: i64,
     request: AdminCharacterVoiceRequest,
 ) -> Result<AdminCharacterVoice, AppError> {
+    crate::product_memberships::lock_operator(tx, crate::product::ProductId::Brioche, actor)
+        .await?;
+    append_profile_body(tx, actor, request).await
+}
+async fn append_profile_body(
+    tx: &impl ConnectionTrait,
+    actor: i64,
+    request: AdminCharacterVoiceRequest,
+) -> Result<AdminCharacterVoice, AppError> {
     crate::admin::reason(&request.reason)?;
     id_revision(&request.character_id, request.character_revision)?;
     validate(&request.profile)?;
@@ -244,8 +267,6 @@ pub(crate) async fn append_profile_in(
         .checked_add(1)
         .ok_or(AppError::InvalidInput)?;
     id_revision(&request.character_id, next)?;
-    crate::product_memberships::lock_operator(tx, crate::product::ProductId::Brioche, actor)
-        .await?;
     let row=one(tx,"SELECT snapshot,avatar_revision FROM character_revisions WHERE character_id=$1 AND revision=$2",vec![request.character_id.clone().into(),(request.character_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     let latest=one(tx,"SELECT COALESCE(max(revision),0) AS revision FROM character_voice_profiles WHERE character_id=$1 AND character_revision=$2",vec![request.character_id.clone().into(),(request.character_revision as i32).into()]).await?.ok_or(AppError::Unavailable)?;
     if field::<i32>(&latest, "revision")? as u32 != request.expected_voice_revision {

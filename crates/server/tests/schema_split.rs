@@ -18,6 +18,17 @@ mod assets;
 mod support;
 const KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const ORIGIN: &str = "http://brioche.example.test";
+fn json_write(path: &str, document: &serde_json::Value, cookie: &str, csrf: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("origin", ORIGIN)
+        .header("cookie", cookie)
+        .header("x-csrf-token", csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(document.to_string()))
+        .unwrap()
+}
 fn asset_upload(id: &str, cookie: &str, csrf: &str) -> Request<Body> {
     let document = serde_json::json!({"assetId":id,"revision":1,"mimeType":"image/svg+xml","altZh":"测试图片","creditZh":"隔离测试","source":"test:svg","license":"LicenseRef-TestOnly","creator":"test fixture","rightsConfirmed":true,"reason":"Independent asset upload"});
     let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 96 96\"><rect width=\"96\" height=\"96\" fill=\"red\"/></svg>";
@@ -398,6 +409,131 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let content_app =
         chef_engine::admin::independent_router(content.clone(), client.clone(), root.clone())
             .unwrap();
+    let character = serde_json::json!({"characterId":"split-character","expectedRevision":0,"displayName":"Test character","avatarId":"avatar-camille-v1","avatarRevision":1,"reason":"Independent character registration"});
+    for (session, token, expected) in [
+        (next_cookie.as_str(), next_csrf.as_str(), 403),
+        (cookie.as_str(), "bad-csrf", 403),
+        (cookie.as_str(), csrf.as_str(), 200),
+    ] {
+        let response = content_app
+            .clone()
+            .oneshot(json_write(
+                "/api/v1/operator/characters/revisions",
+                &character,
+                session,
+                token,
+            ))
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(status, expected, "{}", String::from_utf8_lossy(&body));
+    }
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/characters/revisions",
+            Some(character.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let mut new_character = character.clone();
+    new_character["expectedRevision"] = 1.into();
+    new_character["displayName"] = "Updated character".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/characters/revisions",
+            Some(new_character),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    let (status, old) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/characters/split-character/1",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(old["character"]["displayName"], "Test character");
+    let voice = serde_json::json!({"characterId":"split-character","characterRevision":2,"expectedVoiceRevision":0,"profile":{"personality":"Warm and patient.","speakingStyle":"Natural conversation.","defaultEmotion":"Friendly.","provider":"qwen","model":"qwen-audio-3.1-tts-flash","voiceId":"test-voice","voiceKind":"system","locale":"fr-FR","rate":1.0,"referenceAudio":null},"reason":"Independent voice direction"});
+    for (session, token, expected) in [
+        (next_cookie.as_str(), next_csrf.as_str(), 403),
+        (cookie.as_str(), "bad-csrf", 403),
+        (cookie.as_str(), csrf.as_str(), 200),
+    ] {
+        let response = content_app
+            .clone()
+            .oneshot(json_write(
+                "/api/v1/operator/characters",
+                &voice,
+                session,
+                token,
+            ))
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(status, expected, "{}", String::from_utf8_lossy(&body));
+    }
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/characters",
+            Some(voice.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let (status, stored) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/characters/split-character/2/voices/1",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(stored["profile"], voice["profile"]);
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/operator/characters/split-character/2/avatar")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .starts_with(b"<svg")
+    );
     for (session, token, expected) in [
         (next_cookie.as_str(), next_csrf.as_str(), 403),
         (cookie.as_str(), "bad-csrf", 403),
@@ -560,6 +696,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         "/api/v1/operator/history",
         "/api/v1/operator/assets",
         "/api/v1/operator/recordings",
+        "/api/v1/operator/characters",
     ] {
         assert_eq!(
             request(&content_app, "GET", path, None, &mut cookie, &mut csrf)
@@ -665,10 +802,26 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .header("content-type", "application/json")
         .body(Body::from(serde_json::json!({"document":imported_source.to_string(),"reason":"Must not retain revoked authorization"}).to_string())).unwrap();
     // Test each write separately: concurrent parsing is intentionally capped at two.
+    let mut revoked_character = character;
+    revoked_character["characterId"] = "split-revoked-character".into();
+    let mut revoked_voice = voice;
+    revoked_voice["expectedVoiceRevision"] = 1.into();
     for pending in [
         course_request,
         asset_upload("split-revoked-upload", &cookie, &csrf),
         recording_upload("split-revoked-recording", &cookie, &csrf),
+        json_write(
+            "/api/v1/operator/characters/revisions",
+            &revoked_character,
+            &cookie,
+            &csrf,
+        ),
+        json_write(
+            "/api/v1/operator/characters",
+            &revoked_voice,
+            &cookie,
+            &csrf,
+        ),
     ] {
         let held = owner.begin().await.unwrap();
         held.execute_unprepared(
@@ -705,6 +858,16 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     }
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM audio_assets WHERE asset_id='split-revoked-recording'")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM character_revisions WHERE character_id='split-revoked-character') + (SELECT count(*) FROM character_voice_profiles WHERE character_id='split-character' AND revision=2) AS n")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM character_voice_profiles WHERE character_id='split-character' AND actor_id=$1 AND reason='Independent voice direction'",[account.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
+    assert!(
+        content
+            .execute_unprepared("UPDATE character_voice_profiles SET profile='{}' WHERE false")
+            .await
+            .is_err()
+    );
     let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT (SELECT count(*) FROM asset_import_audit WHERE actor_id=$1 AND target='split-upload v1') + (SELECT count(*) FROM audio_import_audit WHERE actor_id=$1 AND target='split-recording v1') AS n",[account.into()])).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 2);
     assert!(
@@ -745,7 +908,11 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .0,
         503
     );
-    for path in ["/api/v1/operator/assets", "/api/v1/operator/recordings"] {
+    for path in [
+        "/api/v1/operator/assets",
+        "/api/v1/operator/recordings",
+        "/api/v1/operator/characters",
+    ] {
         assert_eq!(
             request(&content_app, "GET", path, None, &mut cookie, &mut csrf)
                 .await

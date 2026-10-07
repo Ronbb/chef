@@ -521,14 +521,11 @@ pub(crate) async fn import_operator_character(
     db: &DatabaseConnection,
     character: CharacterSpec,
     root: &Path,
-    actor: i64,
+    operator: &crate::product_memberships::Operator,
     expected_revision: u32,
     reason: &str,
 ) -> Result<()> {
     crate::admin::reason(reason)?;
-    let operator =
-        crate::product_memberships::require_operator(db, crate::product::ProductId::Brioche, actor)
-            .await?;
     let id = character.snapshot.character_id.clone();
     let bundle = AssetBundle {
         schema_version: "1.0".into(),
@@ -540,9 +537,9 @@ pub(crate) async fn import_operator_character(
         bundle,
         root,
         root,
-        &format!("user:{actor}"),
+        &operator.audit_actor(),
         Some(OperatorImport {
-            operator: &operator,
+            operator,
             reason,
             expected_character: Some((&id, expected_revision)),
         }),

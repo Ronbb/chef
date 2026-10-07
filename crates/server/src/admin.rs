@@ -19,7 +19,6 @@ use serde_json::Value;
 
 pub fn router(root: std::path::PathBuf, db: sea_orm::DatabaseConnection) -> Router<Backend> {
     Router::new()
-        .merge(crate::character_voices::router())
         .merge(crate::voice_references::router())
         .merge(crate::voice_jobs::router())
         .merge(crate::voice_auditions::router())
@@ -65,6 +64,7 @@ pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
     Router::new()
         .merge(crate::admin_assets::router(db.clone()))
         .merge(crate::admin_recordings::router(db.clone()))
+        .merge(crate::character_voices::router(db.clone()))
         .route("/api/v1/operator/overview", get(overview))
         .route("/api/v1/operator/history", get(history))
         .route(
