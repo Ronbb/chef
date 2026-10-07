@@ -1,0 +1,19 @@
+{
+  "paths": [
+    "scripts/backup.mjs",
+    "scripts/backup-seal.mjs",
+    "scripts/health-check.mjs",
+    "scripts/qwen-api.mjs",
+    "scripts/qwen-tts.mjs",
+    "scripts/qwen-voices.mjs",
+    "scripts/tests",
+    "scripts/alignment"
+  ],
+  "repository": "https://github.com/Ronbb/brioche",
+  "notes": [
+    "Legacy serialized identifiers and French compatibility samples retained.",
+    "Test executable paths resolve against shared source. Alignment private workspace root explicitly separated from framework source.",
+    "No private caches, recordings, environment or untested retention draft extracted."
+  ],
+  "commit": "cd75228"
+}

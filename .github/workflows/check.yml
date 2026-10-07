@@ -26,6 +26,14 @@ jobs:
       - run: cargo test -p chef-engine --locked -- --ignored
         env:
           TEST_DATABASE_URL: postgres://postgres@localhost:5432/chef_test
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.20.0
+          package-manager-cache: false
+      - run: node --test scripts/tests/*.test.mjs
+        env:
+          BRIOCHE_BACKUP_DOCKER_TEST: "1"
+      - run: python3 -m unittest discover -s scripts/alignment -p test_align.py -v
       - run: cargo run --locked -p brioche-course-contract --example export
       - run: git diff --exit-code -- packages/contracts/src/generated
   web:

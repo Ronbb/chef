@@ -10,3 +10,4 @@ build/
 test-fixtures/web-product/packages/
 apps/web/packages/
 .react-router/
+__pycache__/
