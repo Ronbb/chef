@@ -1,5 +1,13 @@
 # 身份与学习schema分离
 
+## 学习事实产品归属准备
+
+布局步骤learning_000002_product_facts为learning_sessions、lesson_progress、step_progress、exercise_hints、exercise_attempts、learning_operations、review_cards、review_attempts、saved_items添加必填product_id，旧行默认brioche。原字段、ID、完成时间、幂等键和快照不改写；只接受brioche/hargow，更新不能把既有事实转移到其他产品。会话/用户/课程及复习卡关系新增带产品的复合外键，跨产品父记录不能作为学习事实的来源。
+
+这是存储准备，旧全局唯一键与旧读取暂时保留；未完成按产品SQL/RLS、内容及媒体范围前，不能持久化Hargow业务或开放入口。不能将字段与外键验收解释为完整租户隔离，也不能提前切生产。步骤仍属于Chef所有者命令，整批失败回滚；文件SQL登记时只规范CRLF为LF，避免Windows/Linux构建产生伪定义漂移，其他定义变化仍拒绝。
+
+隔离验证使用九张非空合成事实，逐表比较排除新增product_id后的完整行指纹；产品变更、跨产品会话/复习卡/进度引用拒绝，同产品九表写入在测试事务可行并回滚。临时函数冲突使步骤后半段失败，新增列、前两个索引和迁移账本一起回滚；恢复后正常执行及重跑通过。原Brioche学习回归继续保持。所有数据均fixture，不读取生产连接。
+
 ## 分离后的升级入口
 
 分离布局使用Chef所有者维护命令 `chef-server migrate-layout <learning-schema>`。连接仍选择学习schema，身份schema只从已登记布局读取；要求旧迁移历史精确到32、两域相关表归当前所有者。旧combined serve/migrate的拒绝保护继续保留，产品不复制迁移实现。

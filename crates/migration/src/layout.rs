@@ -19,6 +19,11 @@ const STEPS: &[Step] = &[
         identity: false,
         sql: "CREATE INDEX chef_attempt_owner_time ON exercise_attempts(user_id,created_at)",
     },
+    Step {
+        version: "learning_000002_product_facts",
+        identity: false,
+        sql: include_str!("learning_product_facts.sql"),
+    },
 ];
 fn error(message: &str) -> DbErr {
     DbErr::Custom(message.into())
@@ -120,7 +125,7 @@ pub async fn up(
             }
             || row.try_get::<String>("", "schema_name")?
                 != if step.identity { identity } else { learning }
-            || row.try_get::<String>("", "definition")? != step.sql
+            || row.try_get::<String>("", "definition")? != step.sql.replace("\r\n", "\n")
         {
             return Err(error("Layout migration definition mismatch"));
         }
@@ -131,12 +136,14 @@ pub async fn up(
             continue;
         }
         let schema = if step.identity { identity } else { learning };
+        // A Windows checkout must record the same definition as a Linux build.
+        let definition = step.sql.replace("\r\n", "\n");
         tx.execute_unprepared(&format!(
             "SET LOCAL search_path TO \"{schema}\"; {}",
-            step.sql
+            definition
         ))
         .await?;
-        tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("INSERT INTO \"{learning}\".chef_layout_migrations(version,scope,schema_name,definition) VALUES($1,$2,$3,$4)"),[step.version.into(),if step.identity {"identity"} else {"learning"}.into(),schema.into(),step.sql.into()])).await?;
+        tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("INSERT INTO \"{learning}\".chef_layout_migrations(version,scope,schema_name,definition) VALUES($1,$2,$3,$4)"),[step.version.into(),if step.identity {"identity"} else {"learning"}.into(),schema.into(),definition.into()])).await?;
     }
     tx.commit().await?;
     Ok(())

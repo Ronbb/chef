@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 #[path = "support/assets.rs"]
 mod assets;
+#[path = "support/product_facts.rs"]
+mod product_facts;
 mod support;
 const KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const ORIGIN: &str = "http://brioche.example.test";
@@ -327,6 +329,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let lesson = chef_engine::project_source(source_document.clone()).unwrap();
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_revisions(lesson_id,revision,published,public_document,server_document) VALUES($1,$2,true,$3,$4)",[lesson.id.clone().into(),(lesson.revision as i32).into(),serde_json::to_value(&lesson).unwrap().into(),source_document.into()])).await.unwrap();
     support::fixture_release(&owner).await;
+    product_facts::seed(&owner, &lesson.id, lesson.revision as i32).await;
+    let fact_snapshot = product_facts::snapshot(&owner).await;
+    assert!(fact_snapshot.iter().all(|(n, _)| *n > 0));
     owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
         "INSERT INTO product_user_settings(product_id,user_id,settings,version) VALUES('brioche',$1,$2,2)",
         [account.into(),serde_json::to_value(brioche_course_contract::UserSettings::default()).unwrap().into()])).await.unwrap();
@@ -382,6 +387,16 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .execute_unprepared("DROP INDEX chef_attempt_owner_time")
         .await
         .unwrap();
+    // A late failure inside the product step must roll back its earlier columns and indexes too.
+    owner.execute_unprepared("CREATE FUNCTION chef_protect_learning_product() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='learning_sessions' AND column_name='product_id') AND to_regclass($2) IS NULL AND to_regclass($3) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into(),format!("{target}.chef_throttle_expiry").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
+    owner
+        .execute_unprepared("DROP FUNCTION chef_protect_learning_product()")
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -389,8 +404,11 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=2 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=3 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
+    assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
+    product_facts::verify(&owner).await;
+    assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     assert_eq!(fingerprints(&owner, &target).await, snapshot);
     assert!(
         brioche_migration::layout::up(&owner, &source, &collision)

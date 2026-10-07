@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+学习事实产品准备补充：layout learning_000002_product_facts为九张事实表添加默认brioche的product_id、同产品会话/卡片复合外键和禁止改归属trigger，保留全部原字段/全局唯一键。SQL文件定义仅CRLF→LF规范。非空九表指纹、同产品九表正例事务回滚、跨产品父引用/改归属拒绝及步骤中途失败整批回滚验证属于Chef。此阶段未完成查询/RLS/内容/媒体租户，Hargow路由仍关闭，禁止生产迁移或把准备当完整隔离；产品无迁移副本。
+
 共享Web直接发布补充：LessonAudioReview默认direct-publication授权，人工heard仅可选试听动作写audio-review；固定Rust DTO，evidence仅admin-web来源及humanListeningAsserted=false。attempt锁定kind/body，未知结果保留、重试同一路径/载荷、离开拦截；明确校验拒绝才释放，已授权版本阻止再次表单授权。授权不会自动激活目录。受控浏览器验证直接请求/503精确重试/离开保留/成功恢复与独立人工试听/409释放；typecheck/unit/SSR/build通过。实现与回归只在Chef，产品pin与生产不变。
 
 自动打包补充：speech_automatic的HTTP与本机CLI共用仅内容db/Operator kernel，本机入口才读取成员身份。新增automatic POST及export-direct GET，AdminAutomaticSpeechPackageRequest由Rust生成TS；报告JSON拒绝重复字段，4MiB报告/5MiB请求、两媒体槽与原128MiB归档限制保留。计算前/交付前lock_content复核请求，交付前快照比对，不写人工heard或激活目录。受限split-schema验证私有自动tar/固定报告/learner与CSRF403及二十五类等待后撤权，模拟协议不表示真实模型准确度。完整租户/语言中立/粤语、共享Web入口及生产装配仍待完成，生产pin不变。
