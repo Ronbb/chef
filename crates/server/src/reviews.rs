@@ -1,7 +1,9 @@
 //! Owned review queue and atomic fixed-interval scheduling.
 use crate::{
     AppError,
-    learning::{exec, field, hash, one, owner, random_id, record, replay, validate_key},
+    learning::{
+        exec, field, hash, one, owner, product_filter, random_id, record, replay, validate_key,
+    },
     learning_identity::LearningAuth as AuthSession,
     learning_store::LearningStore,
 };
@@ -36,12 +38,13 @@ fn card(row: &QueryResult) -> Result<ReviewCard, AppError> {
 }
 pub(crate) async fn load(
     tx: &DatabaseTransaction,
+    product: Option<crate::product::ProductId>,
     user: i64,
     id: &str,
 ) -> Result<ReviewCard, AppError> {
     let reference = one(
         tx,
-        "SELECT source_lesson_id,source_revision FROM review_cards WHERE user_id=$1 AND id=$2",
+        &format!("SELECT source_lesson_id,source_revision FROM review_cards WHERE user_id=$1 AND id=$2{}",product_filter(product,"product_id")),
         vec![user.into(), id.into()],
     )
     .await?
@@ -52,7 +55,7 @@ pub(crate) async fn load(
         field(&reference, "source_revision")?,
     )
     .await?;
-    let row=one(tx,&format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1 AND c.id=$2 FOR UPDATE OF c"),vec![user.into(),id.into()]).await?.ok_or(AppError::NotFound)?;
+    let row=one(tx,&format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1 AND c.id=$2{} FOR UPDATE OF c",product_filter(product,"c.product_id")),vec![user.into(),id.into()]).await?.ok_or(AppError::NotFound)?;
     if !field::<bool>(&row, "published")? {
         return Err(AppError::Gone);
     }
@@ -87,13 +90,19 @@ pub fn schedule(
         .timestamp();
     Ok((next, due))
 }
-async fn zone(tx: &DatabaseTransaction, user: i64) -> Result<String, AppError> {
-    Ok(
-        crate::product_settings::read_locked(tx, crate::product::ProductId::Brioche, user)
-            .await?
-            .settings
-            .time_zone,
+async fn zone(
+    tx: &DatabaseTransaction,
+    product: Option<crate::product::ProductId>,
+    user: i64,
+) -> Result<String, AppError> {
+    Ok(crate::product_settings::read_locked(
+        tx,
+        product.unwrap_or(crate::product::ProductId::Brioche),
+        user,
     )
+    .await?
+    .settings
+    .time_zone)
 }
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -120,7 +129,7 @@ async fn queue(
         .await
         .map_err(|_| AppError::Unavailable)?;
     let now = Timestamp::now();
-    let time_zone = zone(&tx, user).await?;
+    let time_zone = zone(&tx, backend.product, user).await?;
     let today = now
         .in_tz(&time_zone)
         .map_err(|_| AppError::Unavailable)?
@@ -143,8 +152,8 @@ async fn queue(
             .map_err(|_| AppError::InvalidInput)?
             .timestamp()
     };
-    let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1 AND NOT c.suspended AND r.published AND c.due_at < $2::timestamptz ORDER BY c.due_at,c.id LIMIT 10"),[user.into(),cutoff.to_string().into()])).await.map_err(|_|AppError::Unavailable)?;
-    let totals=one(&tx,&format!("SELECT count(*) FILTER (WHERE c.due_at < $2::timestamptz)::bigint AS count,to_char(min(c.due_at) FILTER (WHERE c.due_at >= $2::timestamptz) AT TIME ZONE 'UTC','{STAMP}') AS next FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1 AND NOT c.suspended AND r.published"),vec![user.into(),cutoff.to_string().into()]).await?.ok_or(AppError::Unavailable)?;
+    let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND NOT c.suspended AND r.published AND c.due_at < $2::timestamptz ORDER BY c.due_at,c.id LIMIT 10",product_filter(backend.product,"c.product_id")),[user.into(),cutoff.to_string().into()])).await.map_err(|_|AppError::Unavailable)?;
+    let totals=one(&tx,&format!("SELECT count(*) FILTER (WHERE c.due_at < $2::timestamptz)::bigint AS count,to_char(min(c.due_at) FILTER (WHERE c.due_at >= $2::timestamptz) AT TIME ZONE 'UTC','{STAMP}') AS next FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND NOT c.suspended AND r.published",product_filter(backend.product,"c.product_id")),vec![user.into(),cutoff.to_string().into()]).await?.ok_or(AppError::Unavailable)?;
     let result = ReviewQueue {
         items: rows.iter().map(card).collect::<Result<_, _>>()?,
         due_count: u32::try_from(field::<i64>(&totals, "count")?)
@@ -166,7 +175,7 @@ async fn detail(
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    let result = load(&tx, owner(&auth)?, &id).await?;
+    let result = load(&tx, backend.product, owner(&auth)?, &id).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
@@ -184,8 +193,8 @@ async fn attempt(
         .await
         .map_err(|_| AppError::Unavailable)?;
     // Settings first: a concurrent timezone edit and this schedule have a defined order.
-    let time_zone = zone(&tx, user).await?;
-    let old = load(&tx, user, &id).await?;
+    let time_zone = zone(&tx, backend.product, user).await?;
+    let old = load(&tx, backend.product, user, &id).await?;
     let scope = format!("review:{id}:attempt");
     let fingerprint = hash(&request)?;
     if let Some(cached) = replay(
@@ -221,10 +230,32 @@ async fn attempt(
         ReviewRating::Remembered => "remembered",
         ReviewRating::Familiar => "familiar",
     };
-    exec(&tx,"INSERT INTO review_attempts (id,card_id,user_id,rating,old_stage,new_stage,old_version,new_version,due_at,reviewed_at,time_zone) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::timestamptz,$10::timestamptz,$11)",vec![random_id()?.into(),id.clone().into(),user.into(),rating.into(),old.stage.into(),stage.into(),(old.version as i32).into(),(old.version as i32+1).into(),due.to_string().into(),now.to_string().into(),time_zone.clone().into()]).await?;
-    exec(&tx,"UPDATE review_cards SET stage=$3,due_at=$4::timestamptz,version=version+1 WHERE id=$1 AND user_id=$2",vec![id.clone().into(),user.into(),stage.into(),due.to_string().into()]).await?;
+    // Timestamp values retain explicit PostgreSQL casts; insert_fact uses plain placeholders.
+    let (columns, extra) = if backend.product.is_some() {
+        (",product_id", ",$12")
+    } else {
+        ("", "")
+    };
+    let mut values = vec![
+        random_id()?.into(),
+        id.clone().into(),
+        user.into(),
+        rating.into(),
+        old.stage.into(),
+        stage.into(),
+        (old.version as i32).into(),
+        (old.version as i32 + 1).into(),
+        due.to_string().into(),
+        now.to_string().into(),
+        time_zone.clone().into(),
+    ];
+    if let Some(product) = backend.product {
+        values.push(product.as_str().into());
+    }
+    exec(&tx,&format!("INSERT INTO review_attempts (id,card_id,user_id,rating,old_stage,new_stage,old_version,new_version,due_at,reviewed_at,time_zone{columns}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::timestamptz,$10::timestamptz,$11{extra})"),values).await?;
+    exec(&tx,&format!("UPDATE review_cards SET stage=$3,due_at=$4::timestamptz,version=version+1 WHERE id=$1 AND user_id=$2{}",product_filter(backend.product,"product_id")),vec![id.clone().into(),user.into(),stage.into(),due.to_string().into()]).await?;
     let result = ReviewAttemptResult {
-        card: load(&tx, user, &id).await?,
+        card: load(&tx, backend.product, user, &id).await?,
         reviewed_at: now.to_string(),
         time_zone,
     };
@@ -254,7 +285,7 @@ async fn preferences(
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    let old = load(&tx, user, &id).await?;
+    let old = load(&tx, backend.product, user, &id).await?;
     let scope = format!("review:{id}:preferences");
     let fingerprint = hash(&request)?;
     if let Some(cached) = replay(
@@ -275,12 +306,12 @@ async fn preferences(
     if old.suspended != request.suspended {
         exec(
             &tx,
-            "UPDATE review_cards SET suspended=$3,version=version+1 WHERE user_id=$1 AND id=$2",
+            &format!("UPDATE review_cards SET suspended=$3,version=version+1 WHERE user_id=$1 AND id=$2{}",product_filter(backend.product,"product_id")),
             vec![user.into(), id.clone().into(), request.suspended.into()],
         )
         .await?;
     }
-    let result = load(&tx, user, &id).await?;
+    let result = load(&tx, backend.product, user, &id).await?;
     record(
         &tx,
         backend.product,
@@ -301,7 +332,8 @@ async fn cards(
 ) -> Result<Json<ReviewCardsPage>, AppError> {
     let (stamp, id) = crate::library::cursor(page.cursor)?;
     let sql = format!(
-        "SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due,to_char(c.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1 AND r.published AND ($2::timestamptz IS NULL OR (c.created_at,c.id)<($2::timestamptz,$3::text)) ORDER BY c.created_at DESC,c.id DESC LIMIT 21"
+        "SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due,to_char(c.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND r.published AND ($2::timestamptz IS NULL OR (c.created_at,c.id)<($2::timestamptz,$3::text)) ORDER BY c.created_at DESC,c.id DESC LIMIT 21",
+        product_filter(backend.product, "c.product_id"),
     );
     let rows = backend
         .db

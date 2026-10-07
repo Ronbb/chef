@@ -1,5 +1,11 @@
 # 身份与学习schema分离
 
+## 复习的产品范围
+
+learning_000006_product_reviews替换卡片去重为(product_id,user_id,knowledge_id)，增加产品到期队列、卡片及评分近期索引；原卡片ID、知识快照、版本和评分时间保留。读写产品来源是LearningStore固定配置，评分排期从同产品设置读取时区；legacy无产品上下文仅兼容旧Brioche布局。加入复习与课程完成共享review_conflict。
+
+受限split HTTP覆盖预存Hargow卡片/评分历史时Brioche详情/评分/暂停404且数据保持，队列及历史过滤；同知识B新卡独立、加入和评分精确重放、卡片列表和队列计数、评分时间区和暂停版本。维护命令及九表旧字段指纹继续验证。dashboard、内容/媒体隔离与Hargow真实双产品行为尚待完成，不据此开放Hargow或迁移生产。
+
 ## 收藏的产品范围
 
 learning_000005_product_saved用(product_id,user_id,knowledge_id)替换原收藏唯一键，增加产品内已收藏近期索引。详情、列表、行锁前引用、新建、取消和请求锁使用可信学习产品；legacy保留原布局SQL。source课源仍全局，尚不代表内容隔离。

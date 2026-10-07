@@ -893,6 +893,11 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     .unwrap();
     let learner_role = format!("{schema}_learner");
     db.execute_unprepared(include_str!(
+        "../../migration/src/learning_product_reviews.sql"
+    ))
+    .await
+    .unwrap();
+    db.execute_unprepared(include_str!(
         "../../migration/src/learning_product_saved.sql"
     ))
     .await

@@ -404,7 +404,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=6 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=7 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -1062,6 +1062,154 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .unwrap();
     assert!(untouched.try_get::<bool>("", "saved").unwrap());
     assert_eq!(untouched.try_get::<i32>("", "version").unwrap(), 1);
+    let other_card = "cccccccccccccccccccccccccccccccc";
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO review_cards(product_id,id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) VALUES('hargow',$1,$2,$3,$4,$5,$6)",[other_card.into(),account.into(),knowledge.id.clone().into(),lesson.id.clone().into(),(lesson.revision as i32).into(),serde_json::to_value(knowledge).unwrap().into()])).await.unwrap();
+    let other_path = format!("/api/v1/me/reviews/{other_card}");
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO review_attempts(product_id,id,card_id,user_id,rating,old_stage,new_stage,old_version,new_version,due_at,reviewed_at,time_zone) VALUES('hargow','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',$1,$2,'again',-1,0,1,2,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'Asia/Hong_Kong')",[other_card.into(),account.into()])).await.unwrap();
+    let (status, history) = request(
+        &remote,
+        "GET",
+        "/api/v1/me/review-history",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(history["items"].as_array().unwrap().is_empty());
+    for (method, path, body) in [
+        ("GET", other_path.clone(), None),
+        (
+            "POST",
+            format!("{other_path}/attempts"),
+            Some(
+                serde_json::json!({"cardVersion":1,"idempotencyKey":"other-review-attempt-01","rating":"remembered"}),
+            ),
+        ),
+        (
+            "PUT",
+            format!("{other_path}/preferences"),
+            Some(
+                serde_json::json!({"cardVersion":1,"idempotencyKey":"other-review-suspend-01","suspended":true}),
+            ),
+        ),
+    ] {
+        assert_eq!(
+            request(&remote, method, &path, body, &mut cookie, &mut csrf)
+                .await
+                .0,
+            404,
+            "{method} {path}"
+        );
+    }
+    let (status, queue) = request(
+        &remote,
+        "GET",
+        "/api/v1/me/reviews",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(queue["dueCount"], 0);
+    assert!(queue["items"].as_array().unwrap().is_empty());
+    let review_enrollment = serde_json::json!({"knowledgeId":knowledge.id,"sourceLessonId":lesson.id,"sourceRevision":lesson.revision,"idempotencyKey":"split-review-enroll-01"});
+    let (status, card) = request(
+        &remote,
+        "POST",
+        "/api/v1/me/review-enrollments",
+        Some(review_enrollment.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{card}");
+    assert_ne!(card["id"], other_card);
+    assert_eq!(
+        request(
+            &remote,
+            "POST",
+            "/api/v1/me/review-enrollments",
+            Some(review_enrollment),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .1,
+        card
+    );
+    let card_id = card["id"].as_str().unwrap();
+    let (status, cards) = request(
+        &remote,
+        "GET",
+        "/api/v1/me/review-cards",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(cards["items"].as_array().unwrap().len(), 1);
+    assert_eq!(cards["items"][0]["id"], card["id"]);
+    let (status, queue) = request(
+        &remote,
+        "GET",
+        "/api/v1/me/reviews",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(queue["dueCount"], 1);
+    let review_body = serde_json::json!({"cardVersion":1,"idempotencyKey":"split-review-attempt-01","rating":"remembered"});
+    let review_path = format!("/api/v1/me/reviews/{card_id}/attempts");
+    let (status, rated) = request(
+        &remote,
+        "POST",
+        &review_path,
+        Some(review_body.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{rated}");
+    assert_eq!(rated["card"]["version"], 2);
+    assert_eq!(rated["timeZone"], queue["timeZone"]);
+    assert_eq!(
+        request(
+            &remote,
+            "POST",
+            &review_path,
+            Some(review_body),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .1,
+        rated
+    );
+    let (status, history) = request(
+        &remote,
+        "GET",
+        "/api/v1/me/review-history",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(history["items"].as_array().unwrap().len(), 1);
+    assert_eq!(history["items"][0]["cardId"], card["id"]);
+    let (status,paused)=request(&remote,"PUT",&format!("/api/v1/me/reviews/{card_id}/preferences"),Some(serde_json::json!({"cardVersion":2,"idempotencyKey":"split-review-suspend-01","suspended":true})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 200, "{paused}");
+    assert_eq!(paused["version"], 3);
+    let untouched=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT version,suspended,stage,(SELECT count(*) FROM review_attempts WHERE card_id=$1)::bigint AS attempts FROM review_cards WHERE id=$1",[other_card.into()])).await.unwrap().unwrap();
+    assert_eq!(untouched.try_get::<i32>("", "version").unwrap(), 1);
+    assert!(!untouched.try_get::<bool>("", "suspended").unwrap());
+    assert_eq!(untouched.try_get::<i16>("", "stage").unwrap(), -1);
+    assert_eq!(untouched.try_get::<i64>("", "attempts").unwrap(), 1);
     let invalid = learning.execute_unprepared("INSERT INTO product_user_settings(product_id,user_id,settings) VALUES('brioche',999999,'{}')")
         .await.unwrap_err();
     assert!(invalid.to_string().contains("foreign key constraint"));

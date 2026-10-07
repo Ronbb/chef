@@ -157,6 +157,13 @@ pub(crate) async fn insert_fact(
     );
     exec(tx, &sql, values).await
 }
+pub(crate) fn review_conflict(product: Option<crate::product::ProductId>) -> &'static str {
+    if product.is_some() {
+        " ON CONFLICT (product_id,user_id,knowledge_id) DO NOTHING"
+    } else {
+        " ON CONFLICT (user_id,knowledge_id) DO NOTHING"
+    }
+}
 async fn load<C: ConnectionTrait>(
     db: &C,
     product: Option<crate::product::ProductId>,
@@ -800,7 +807,7 @@ async fn complete(
                         .map_err(|_| AppError::Unavailable)?
                         .into(),
                 ],
-                " ON CONFLICT (user_id,knowledge_id) DO NOTHING",
+                review_conflict(backend.product),
             )
             .await?;
         }

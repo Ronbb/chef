@@ -292,16 +292,36 @@ async fn enroll(
     .await?;
     let scope = format!("enroll:{}", request.knowledge_id);
     let fingerprint = hash(&request)?;
-    exec(&tx,"INSERT INTO review_cards (id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (user_id,knowledge_id) DO NOTHING",vec![random_id()?.into(),user.into(),request.knowledge_id.clone().into(),request.source_lesson_id.into(),(request.source_revision as i32).into(),serde_json::to_value(vocabulary).map_err(|_|AppError::Unavailable)?.into()]).await?;
+    insert_fact(
+        &tx,
+        backend.product,
+        "review_cards",
+        "id,user_id,knowledge_id,source_lesson_id,source_revision,snapshot",
+        vec![
+            random_id()?.into(),
+            user.into(),
+            request.knowledge_id.clone().into(),
+            request.source_lesson_id.into(),
+            (request.source_revision as i32).into(),
+            serde_json::to_value(vocabulary)
+                .map_err(|_| AppError::Unavailable)?
+                .into(),
+        ],
+        crate::learning::review_conflict(backend.product),
+    )
+    .await?;
     let row = one(
         &tx,
-        "SELECT id FROM review_cards WHERE user_id=$1 AND knowledge_id=$2 FOR UPDATE",
+        &format!(
+            "SELECT id FROM review_cards WHERE user_id=$1 AND knowledge_id=$2{} FOR UPDATE",
+            product_filter(backend.product, "product_id")
+        ),
         vec![user.into(), request.knowledge_id.into()],
     )
     .await?
     .ok_or(AppError::Unavailable)?;
     let id: String = field(&row, "id")?;
-    let current = crate::reviews::load(&tx, user, &id).await?;
+    let current = crate::reviews::load(&tx, backend.product, user, &id).await?;
     if let Some(cached) = replay(
         &tx,
         backend.product,
@@ -334,7 +354,13 @@ async fn history(
 ) -> Result<Json<ReviewHistoryPage>, AppError> {
     let (stamp, id) = cursor(page.cursor)?;
     let sql = format!(
-        "SELECT a.*,c.snapshot,r.published,to_char(a.reviewed_at AT TIME ZONE 'UTC','{STAMP}') AS reviewed,to_char(a.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_attempts a JOIN review_cards c ON (c.id,c.user_id)=(a.card_id,a.user_id) JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE a.user_id=$1 AND ($2::timestamptz IS NULL OR (a.reviewed_at,a.id)<($2::timestamptz,$3::text)) ORDER BY a.reviewed_at DESC,a.id DESC LIMIT 21"
+        "SELECT a.*,c.snapshot,r.published,to_char(a.reviewed_at AT TIME ZONE 'UTC','{STAMP}') AS reviewed,to_char(a.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_attempts a JOIN review_cards c ON (c.id,c.user_id)=(a.card_id,a.user_id){} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE a.user_id=$1{} AND ($2::timestamptz IS NULL OR (a.reviewed_at,a.id)<($2::timestamptz,$3::text)) ORDER BY a.reviewed_at DESC,a.id DESC LIMIT 21",
+        if backend.product.is_some() {
+            " AND c.product_id=a.product_id"
+        } else {
+            ""
+        },
+        product_filter(backend.product, "a.product_id"),
     );
     let rows = backend
         .db
