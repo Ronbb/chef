@@ -11,7 +11,7 @@ export default {
   targetLanguage: "fr-FR",
   explanationLanguage: "zh-CN",
   themeColor: "#fffaef",
-  brandIcon: "/fixture-mark.svg",
+  brandIcon: "/icons/fixture-mark.svg",
   avatar: "/assets/avatars/learner.svg",
   theme: {
     "--paper": "#faf7ef",
