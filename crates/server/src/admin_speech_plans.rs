@@ -1,9 +1,10 @@
 //! Immutable private course plans. Saving a plan never initiates a paid provider call.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{exec, field, one, owner},
-    voice_references::{hex, lock_operator},
+    admin_auth::AdminAuth,
+    identity::Backend,
+    learning::{exec, field, one},
+    voice_references::hex,
 };
 use axum::{
     Json, Router,
@@ -19,7 +20,13 @@ use sea_orm::{
 };
 use serde_json::Value;
 
-pub fn router() -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/speech-plans", get(list).post(save))
         .route("/api/v1/operator/speech-plans/preview", post(preview))
@@ -28,6 +35,7 @@ pub fn router() -> Router<Backend> {
             "/api/v1/operator/lessons/{id}/revisions/{revision}/speech-options",
             get(options),
         )
+        .with_state(Store { db })
 }
 fn lesson_key(id: &str, revision: u32) -> Result<(), AppError> {
     if !brioche_course_contract::valid_content_id(id)
@@ -55,11 +63,11 @@ fn voice(row: &QueryResult) -> Result<AdminCharacterVoice, AppError> {
     })
 }
 async fn options(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path((id, revision)): Path<(String, u32)>,
 ) -> Result<Json<AdminSpeechOptions>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let tx =
         b.db.begin_with_config(Some(IsolationLevel::RepeatableRead), None)
             .await
@@ -130,12 +138,12 @@ async fn compile(
     Ok((plan, view))
 }
 async fn preview(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Json(request): Json<AdminSpeechPreviewRequest>,
 ) -> Result<Json<AdminSpeechPlan>, AppError> {
-    require_operator(&auth).await?;
-    Ok(Json(preview_for_actor(&b, owner(&auth)?, &request).await?))
+    let operator = auth.require_operator().await?;
+    Ok(Json(preview_authorized(&b, &operator, &request).await?))
 }
 
 /// Compile a private plan from registered, fixed versions without generating audio.
@@ -144,11 +152,24 @@ pub async fn preview_for_actor(
     actor: i64,
     request: &AdminSpeechPreviewRequest,
 ) -> Result<AdminSpeechPlan, AppError> {
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
+        actor,
+    )
+    .await?;
+    preview_authorized(&Store { db: b.db.clone() }, &operator, request).await
+}
+async fn preview_authorized(
+    b: &Store,
+    operator: &crate::product_memberships::Operator,
+    request: &AdminSpeechPreviewRequest,
+) -> Result<AdminSpeechPlan, AppError> {
     let tx =
         b.db.begin_with_config(Some(IsolationLevel::RepeatableRead), None)
             .await
             .map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     let (_, view) = compile(&tx, request).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(view)
@@ -171,11 +192,11 @@ async fn load(db: &impl ConnectionTrait, id: &str) -> Result<AdminSpeechPlan, Ap
     item(&row)
 }
 async fn read(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Path(id): Path<String>,
 ) -> Result<Json<AdminSpeechPlan>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     Ok(Json(load(&b.db, &id).await?))
 }
 #[derive(serde::Deserialize)]
@@ -186,11 +207,11 @@ struct Cursor {
     after_id: Option<String>,
 }
 async fn list(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Query(cursor): Query<Cursor>,
 ) -> Result<Json<AdminSpeechPlans>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     lesson_key(&cursor.lesson_id, cursor.lesson_revision)?;
     let after = cursor.after_id.unwrap_or_default();
     if !after.is_empty() && !hex(&after, 32) {
@@ -210,12 +231,12 @@ async fn list(
     Ok(Json(AdminSpeechPlans { items, next }))
 }
 async fn save(
-    auth: AuthSession,
-    State(b): State<Backend>,
+    auth: AdminAuth,
+    State(b): State<Store>,
     Json(request): Json<AdminSpeechPlanRequest>,
 ) -> Result<Json<AdminSpeechPlan>, AppError> {
-    require_operator(&auth).await?;
-    Ok(Json(save_for_actor(&b, owner(&auth)?, request).await?))
+    let operator = auth.require_operator().await?;
+    Ok(Json(save_for_actor(&b, &operator, request).await?))
 }
 
 /// Trusted local entry point; records its origin and shares the HTTP transaction.
@@ -225,20 +246,27 @@ pub async fn save_local(
     mut request: AdminSpeechPlanRequest,
 ) -> Result<AdminSpeechPlan, AppError> {
     request.reason = format!("[local-cli] {}", request.reason);
-    save_for_actor(b, actor, request).await
+    let operator = crate::product_memberships::require_operator(
+        &b.db,
+        crate::product::ProductId::Brioche,
+        actor,
+    )
+    .await?;
+    save_for_actor(&Store { db: b.db.clone() }, &operator, request).await
 }
 
 async fn save_for_actor(
-    b: &Backend,
-    actor: i64,
+    b: &Store,
+    operator: &crate::product_memberships::Operator,
     request: AdminSpeechPlanRequest,
 ) -> Result<AdminSpeechPlan, AppError> {
+    let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !hex(&request.id, 32) || !hex(&request.expected_plan_hash, 64) {
         return Err(AppError::InvalidInput);
     }
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     let request_json = serde_json::to_value(&request).map_err(|_| AppError::InvalidInput)?;
     if let Some(existing) = one(
         &tx,

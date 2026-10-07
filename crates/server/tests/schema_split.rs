@@ -1303,6 +1303,155 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     )
     .await;
     assert_eq!(profile["profile"]["voiceKind"], "cloned");
+    // Course plans use fixed content voices and never call the provider.
+    let mut plan_voices = Vec::new();
+    let plan_seed: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/characters/voices.json")).unwrap();
+    for cast in &lesson.cast {
+        let direction = serde_json::json!({"characterId":cast.character_id,"characterRevision":cast.revision,"expectedVoiceRevision":0,"profile":plan_seed["items"][0]["profile"],"reason":"Synthetic course compiler direction"});
+        let (status, value) = request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/characters",
+            Some(direction),
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, 200, "{value}");
+        plan_voices.push(serde_json::json!({"characterId":cast.character_id,"characterRevision":cast.revision,"voiceRevision":1}));
+    }
+    let options_path = format!(
+        "/api/v1/operator/lessons/{}/revisions/{}/speech-options",
+        lesson.id, lesson.revision
+    );
+    let (status, options) = request(
+        &content_app,
+        "GET",
+        &options_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{options}");
+    assert_eq!(
+        options["voices"].as_array().unwrap().len(),
+        plan_voices.len()
+    );
+    let plan_route = "/api/v1/operator/speech-plans";
+    let preview_route = format!("{plan_route}/preview");
+    let preview_request = serde_json::json!({"lessonId":lesson.id,"lessonRevision":lesson.revision,"selection":{"voices":plan_voices,"knowledgeNarrator":plan_voices[0],"emotions":{}}});
+    let (status, preview) = request(
+        &content_app,
+        "POST",
+        &preview_route,
+        Some(preview_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{preview}");
+    assert!(!preview["targets"].as_array().unwrap().is_empty());
+    let plan_request = serde_json::json!({"id":"cccccccccccccccccccccccccccccccc","preview":preview_request,"expectedPlanHash":preview["planHash"],"reason":"Independent immutable course plan"});
+    for path in [plan_route, preview_route.as_str()] {
+        let document = if path == plan_route {
+            &plan_request
+        } else {
+            &preview_request
+        };
+        for (session, token) in [
+            (next_cookie.as_str(), next_csrf.as_str()),
+            (cookie.as_str(), "bad-csrf"),
+        ] {
+            assert_eq!(
+                content_app
+                    .clone()
+                    .oneshot(json_write(path, document, session, token))
+                    .await
+                    .unwrap()
+                    .status()
+                    .as_u16(),
+                403
+            );
+        }
+    }
+    let mut wrong_plan = plan_request.clone();
+    wrong_plan["expectedPlanHash"] = "0".repeat(64).into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            plan_route,
+            Some(wrong_plan),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let (status, saved_plan) = request(
+        &content_app,
+        "POST",
+        plan_route,
+        Some(plan_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{saved_plan}");
+    let (status, retry) = request(
+        &content_app,
+        "POST",
+        plan_route,
+        Some(plan_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(retry, saved_plan);
+    let mut changed_plan = plan_request.clone();
+    changed_plan["reason"] = "Changed immutable request".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            plan_route,
+            Some(changed_plan),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let (status, fixed_plan) = request(
+        &content_app,
+        "GET",
+        &format!("{plan_route}/cccccccccccccccccccccccccccccccc"),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(fixed_plan, saved_plan);
+    let (status, plans) = request(
+        &content_app,
+        "GET",
+        &format!(
+            "{plan_route}?lessonId={}&lessonRevision={}",
+            lesson.id, lesson.revision
+        ),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{plans}");
+    assert_eq!(plans["items"], serde_json::json!([saved_plan]));
     // Revoke after the first HTTP verification while the write waits on the same
     // database advisory lock used by identity membership mutations.
     imported_source["id"] = "split-revoked-import".into();
@@ -1317,6 +1466,8 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     revoked_voice["expectedVoiceRevision"] = 3.into();
     let mut revoked_audition = audition_request;
     revoked_audition["id"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
+    let mut revoked_plan = plan_request;
+    revoked_plan["id"] = "dddddddddddddddddddddddddddddddd".into();
     for pending in [
         course_request,
         asset_upload("split-revoked-upload", &cookie, &csrf),
@@ -1344,6 +1495,8 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         ),
         json_write(audition_route, &revoked_audition, &cookie, &csrf),
         json_write(&audition_review, &review_request, &cookie, &csrf),
+        json_write(&preview_route, &preview_request, &cookie, &csrf),
+        json_write(plan_route, &revoked_plan, &cookie, &csrf),
     ] {
         let held = owner.begin().await.unwrap();
         held.execute_unprepared(
@@ -1395,6 +1548,17 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     }
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM audio_assets WHERE asset_id='split-revoked-recording'")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM course_speech_plans WHERE id='cccccccccccccccccccccccccccccccc' AND actor_id=$1 AND reason='Independent immutable course plan'",[account.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
+    let row = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM course_speech_plans",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM character_revisions WHERE character_id='split-revoked-character') + (SELECT count(*) FROM character_voice_profiles WHERE character_id='split-character' AND revision=4) AS n")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let row = owner
