@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立参考录音补充：voice_references管理员列表/签发/撤销使用db-only Store/AdminAuth，签发与撤销事务先Operator.lock_content；临时bearer下载单独delivery_router在浏览器gate外，仍用token hash/期限/撤销/32读上限和account-admin锁。远端下载通过凭证保护GET /internal/v1/operators/{stored_actor}检查固定产品成员，204允许/404拒绝/其他503，有界无缓存HTTP；不能要求供应商登录，也不能读取内容连接身份表。身份服务最终响应统一private,no-store含fallback；内部operator接口无浏览器会话或全局role授权。内容角色新增reference三表SELECT/INSERT、reads序列与仅grant UPDATE(id)用于FOR UPDATE，原不可变trigger保留，禁止实际更新/删除或扩大身份权限。角色产品仍仅Brioche；其他配音流水线及课程预览待迁移，不切生产。
+
 独立角色库补充：character_voices共享路由采用db-only Store/AdminAuth；角色追加必须传Operator到media导入，声音HTTP写事务必须先lock_content再调用私有append_profile_body。公共CLI append_profile/试听采纳append_profile_in保留本地成员事务复核，共用私有写实现；不得直接暴露body或接受客户端actor。content-grants增加character_revisions/character_voice_profiles INSERT，不授UPDATE/DELETE。实际分离schema验证新角色、第二revision、旧revision/头像/声音读取、声音CAS冲突/actor审计、learner/CSRF拒绝、五类写入各自等待后撤权403零登记，身份停止503。语音任务/参考授权/试听/课程预览仍依赖legacy；不推进生产或Hargow开放。
 
 独立素材/录音后台补充：admin_assets和admin_recordings使用仅db的Store与AdminAuth，legacy和远端共用content_router，不初始化身份Backend。上传必须传内部Operator证明至共享导入事务，先account-admin锁再原请求身份复核再content_state锁；保留CLI可信导入与不可变审计。content-grants新增media_assets/audio_assets及对应导入审计INSERT、审计序列USAGE，无身份或学习权限、无素材UPDATE/DELETE。实际分离schema回归覆盖两个上传、私有读取、真实actor审计、重复冲突、learner/CSRF拒绝、逐项撤权等待与身份不可用503。角色/音色流水线及课程预览仍需迁移，不能据此切生产或开放Hargow内容。

@@ -75,6 +75,14 @@ async fn service_only(
         .insert("cache-control", "private, no-store".parse().unwrap());
     response
 }
+async fn private_response(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, no-store"),
+    );
+    response
+}
 async fn introspect(
     State((config, policy)): State<(ServiceConfig, CsrfPolicy)>,
     auth: AuthSession,
@@ -106,7 +114,33 @@ async fn introspect(
         membership,
     }))
 }
+// Bearer media delivery has no browser session. Trusted services check the
+// grant's stored actor under their shared database authorization lock.
+async fn operator_status(
+    State((config, backend)): State<(ServiceConfig, Backend)>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<axum::http::StatusCode, AppError> {
+    let actor = id.parse::<i64>().map_err(|_| AppError::NotFound)?;
+    if actor <= 0 || id != actor.to_string() {
+        return Err(AppError::NotFound);
+    }
+    if crate::product_memberships::read(&backend.db, config.product, actor)
+        .await?
+        .role
+        != "operator"
+    {
+        return Err(AppError::NotFound);
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
 pub fn router(backend: Backend, policy: CsrfPolicy, secure: bool, config: ServiceConfig) -> Router {
+    let operators = Router::new()
+        .route("/internal/v1/operators/{id}", get(operator_status))
+        .with_state((config.clone(), backend.clone()))
+        .route_layer(axum::middleware::from_fn_with_state(
+            config.clone(),
+            service_only,
+        ));
     let internal = Router::new()
         .route("/internal/v1/session", get(introspect))
         .with_state((config.clone(), policy.clone()));
@@ -122,7 +156,10 @@ pub fn router(backend: Backend, policy: CsrfPolicy, secure: bool, config: Servic
         config.clone(),
         service_only,
     ));
-    identity::account_router(backend, policy, secure, config.product).merge(internal)
+    identity::account_router(backend, policy, secure, config.product)
+        .merge(internal)
+        .merge(operators)
+        .layer(axum::middleware::from_fn(private_response))
 }
 
 #[cfg(test)]
@@ -143,25 +180,42 @@ mod tests {
         for (credential, product, status) in
             [("bad", "brioche", 401), (key.as_str(), "hargow", 403)]
         {
+            for path in ["/internal/v1/session", "/internal/v1/operators/1"] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .header(
+                                "cookie",
+                                format!("brioche.sid={}", tower_sessions::session::Id::default()),
+                            )
+                            .header("authorization", format!("Bearer {credential}"))
+                            .header("x-chef-product", product)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), status);
+                assert_eq!(response.headers()["cache-control"], "private, no-store");
+                assert!(response.headers().get("set-cookie").is_none());
+            }
+        }
+        for id in ["0", "-1", "01", "not-an-id"] {
             let response = app
                 .clone()
                 .oneshot(
                     Request::builder()
-                        .uri("/internal/v1/session")
-                        .header(
-                            "cookie",
-                            format!("brioche.sid={}", tower_sessions::session::Id::default()),
-                        )
-                        .header("authorization", format!("Bearer {credential}"))
-                        .header("x-chef-product", product)
+                        .uri(format!("/internal/v1/operators/{id}"))
+                        .header("authorization", format!("Bearer {key}"))
+                        .header("x-chef-product", "brioche")
                         .body(Body::empty())
                         .unwrap(),
                 )
                 .await
                 .unwrap();
-            assert_eq!(response.status().as_u16(), status);
-            assert_eq!(response.headers()["cache-control"], "private, no-store");
-            assert!(response.headers().get("set-cookie").is_none());
+            assert_eq!(response.status().as_u16(), 404);
         }
     }
     #[test]

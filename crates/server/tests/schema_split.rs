@@ -55,6 +55,35 @@ fn recording_upload(id: &str, cookie: &str, csrf: &str) -> Request<Body> {
         .body(Body::from(body))
         .unwrap()
 }
+fn reference_upload(cookie: &str, csrf: &str) -> Request<Body> {
+    let document = serde_json::json!({"assetId":"split-reference","revision":1,"mimeType":"audio/wav","creditZh":"合成测试","source":"test:synthetic","license":"LicenseRef-TestOnly","creator":"test fixture","rightsConfirmed":true,"reason":"Independent reference file"});
+    let mut wav = vec![0u8; 160044];
+    wav[..4].copy_from_slice(b"RIFF");
+    wav[4..8].copy_from_slice(&160036u32.to_le_bytes());
+    wav[8..16].copy_from_slice(b"WAVEfmt ");
+    wav[16..20].copy_from_slice(&16u32.to_le_bytes());
+    wav[20..24].copy_from_slice(&[1, 0, 1, 0]);
+    wav[24..28].copy_from_slice(&16000u32.to_le_bytes());
+    wav[28..32].copy_from_slice(&32000u32.to_le_bytes());
+    wav[32..36].copy_from_slice(&[2, 0, 16, 0]);
+    wav[36..40].copy_from_slice(b"data");
+    wav[40..44].copy_from_slice(&160000u32.to_le_bytes());
+    let mut body=format!("--chef-reference\r\nContent-Disposition: form-data; name=\"document\"\r\n\r\n{document}\r\n--chef-reference\r\nContent-Disposition: form-data; name=\"file\"; filename=\"reference.wav\"\r\nContent-Type: audio/wav\r\n\r\n").into_bytes();
+    body.extend_from_slice(&wav);
+    body.extend_from_slice(b"\r\n--chef-reference--\r\n");
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/operator/recordings")
+        .header("origin", ORIGIN)
+        .header("cookie", cookie)
+        .header("x-csrf-token", csrf)
+        .header(
+            "content-type",
+            "multipart/form-data; boundary=chef-reference",
+        )
+        .body(Body::from(body))
+        .unwrap()
+}
 const TABLES: [&str; 7] = [
     "users",
     "browser_sessions",
@@ -794,6 +823,152 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     )
     .await;
     assert_eq!(status, 200, "{result}");
+    assert_eq!(
+        content_app
+            .clone()
+            .oneshot(reference_upload(&cookie, &csrf))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200
+    );
+    let mut reference_voice = voice.clone();
+    reference_voice["expectedVoiceRevision"] = 1.into();
+    reference_voice["profile"]["referenceAudio"] = serde_json::json!({"assetId":"split-reference","revision":1,"transcript":"Synthetic five second fixture","cloningPermission":"No real speaker; isolated test only"});
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/characters",
+            Some(reference_voice),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    let grant_request = serde_json::json!({"characterId":"split-character","characterRevision":2,"voiceRevision":2,"singleSpeakerConfirmed":true,"reason":"Independent reference authorization"});
+    let grant_route = "/api/v1/operator/voice-references";
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            grant_route,
+            Some(grant_request.clone()),
+            &mut next_cookie,
+            &mut next_csrf
+        )
+        .await
+        .0,
+        403
+    );
+    let mut wrong = "wrong-csrf".to_owned();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            grant_route,
+            Some(grant_request.clone()),
+            &mut cookie,
+            &mut wrong
+        )
+        .await
+        .0,
+        403
+    );
+    let (status, issued) = request(
+        &content_app,
+        "POST",
+        grant_route,
+        Some(grant_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{issued}");
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            grant_route,
+            Some(grant_request.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let bearer = issued["path"].as_str().unwrap();
+    let response = content_app
+        .clone()
+        .oneshot(Request::builder().uri(bearer).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .starts_with(b"RIFF")
+    );
+    let (_, listed) = request(
+        &content_app,
+        "GET",
+        grant_route,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(listed["items"][0]["readCount"], 1);
+    let revoke_route = format!(
+        "{grant_route}/{}/revoke",
+        issued["grant"]["id"].as_str().unwrap()
+    );
+    let revoke_request = serde_json::json!({"reason":"Independent reference revocation"});
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &revoke_route,
+            Some(revoke_request.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        content_app
+            .clone()
+            .oneshot(Request::builder().uri(bearer).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        404
+    );
+    let (_, live) = request(
+        &content_app,
+        "POST",
+        grant_route,
+        Some(grant_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    let live_revoke = format!(
+        "{grant_route}/{}/revoke",
+        live["grant"]["id"].as_str().unwrap()
+    );
     // Revoke after the first HTTP verification while the write waits on the same
     // database advisory lock used by identity membership mutations.
     imported_source["id"] = "split-revoked-import".into();
@@ -805,7 +980,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let mut revoked_character = character;
     revoked_character["characterId"] = "split-revoked-character".into();
     let mut revoked_voice = voice;
-    revoked_voice["expectedVoiceRevision"] = 1.into();
+    revoked_voice["expectedVoiceRevision"] = 2.into();
     for pending in [
         course_request,
         asset_upload("split-revoked-upload", &cookie, &csrf),
@@ -822,6 +997,8 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             &cookie,
             &csrf,
         ),
+        json_write(grant_route, &grant_request, &cookie, &csrf),
+        json_write(&live_revoke, &revoke_request, &cookie, &csrf),
     ] {
         let held = owner.begin().await.unwrap();
         held.execute_unprepared(
@@ -848,6 +1025,21 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         format!("UPDATE \"{target}\".product_memberships SET role='learner',version=version+1 WHERE product_id='brioche' AND user_id=$1"),[account.into()])).await.unwrap();
         held.commit().await.unwrap();
         assert_eq!(blocked.await.unwrap().status().as_u16(), 403);
+        assert_eq!(
+            content_app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(live["path"].as_str().unwrap())
+                        .body(Body::empty())
+                        .unwrap()
+                )
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            404
+        );
         let restore = owner.begin().await.unwrap();
         restore
             .execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
@@ -858,9 +1050,27 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     }
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM audio_assets WHERE asset_id='split-revoked-recording'")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM character_revisions WHERE character_id='split-revoked-character') + (SELECT count(*) FROM character_voice_profiles WHERE character_id='split-character' AND revision=2) AS n")).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM character_revisions WHERE character_id='split-revoked-character') + (SELECT count(*) FROM character_voice_profiles WHERE character_id='split-character' AND revision=3) AS n")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
-    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM character_voice_profiles WHERE character_id='split-character' AND actor_id=$1 AND reason='Independent voice direction'",[account.into()])).await.unwrap().unwrap();
+    let row = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM voice_reference_grants",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 2);
+    let row = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM voice_reference_revocations",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM character_voice_profiles WHERE character_id='split-character' AND revision=1 AND actor_id=$1 AND reason='Independent voice direction'",[account.into()])).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
     assert!(
         content
@@ -895,6 +1105,21 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     task.abort();
     let _ = task.await;
+    assert_eq!(
+        content_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(live["path"].as_str().unwrap())
+                    .body(Body::empty())
+                    .unwrap()
+            )
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        503
+    );
     assert_eq!(
         request(
             &content_app,

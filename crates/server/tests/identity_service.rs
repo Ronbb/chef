@@ -540,7 +540,10 @@ impl Browser {
             .unwrap();
         let status = response.status().as_u16();
         assert_eq!(
-            response.headers().get("cache-control").unwrap(),
+            response
+                .headers()
+                .get("cache-control")
+                .unwrap_or_else(|| panic!("Missing no-store at {method} {path}, status {status}")),
             "private, no-store"
         );
         if let Some(cookie) = response.headers().get("set-cookie") {
@@ -1209,6 +1212,22 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
             .await
             .1["account"]["role"],
         "learner"
+    );
+    // This sessionless probe uses product membership, never the global role.
+    let operator_path = format!("/internal/v1/operators/{account}");
+    assert_eq!(
+        french
+            .request("GET", &operator_path, None, Some((KEY, "brioche")))
+            .await
+            .0,
+        204
+    );
+    assert_eq!(
+        cantonese
+            .request("GET", &operator_path, None, Some((KEY, "hargow")))
+            .await
+            .0,
+        404
     );
     assert_eq!(
         cantonese

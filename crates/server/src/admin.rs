@@ -19,7 +19,7 @@ use serde_json::Value;
 
 pub fn router(root: std::path::PathBuf, db: sea_orm::DatabaseConnection) -> Router<Backend> {
     Router::new()
-        .merge(crate::voice_references::router())
+        .merge(crate::voice_references::delivery_router(db.clone(), None))
         .merge(crate::voice_jobs::router())
         .merge(crate::voice_auditions::router())
         .merge(crate::admin_speech_plans::router())
@@ -51,10 +51,12 @@ pub fn independent_router(
         client.product() == crate::product::ProductId::Brioche,
         "Content tenant migration incomplete"
     );
-    Ok(crate::learning_identity::protect(
-        content_router(db, root, false),
-        client,
-    ))
+    let delivery = crate::voice_references::delivery_router(db.clone(), Some(client.clone()))
+        .layer(axum::Extension(root.clone()))
+        .layer(axum::Extension(std::sync::Arc::new(
+            tokio::sync::Semaphore::new(2),
+        )));
+    Ok(crate::learning_identity::protect(content_router(db, root, false), client).merge(delivery))
 }
 pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
@@ -65,6 +67,7 @@ pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
         .merge(crate::admin_assets::router(db.clone()))
         .merge(crate::admin_recordings::router(db.clone()))
         .merge(crate::character_voices::router(db.clone()))
+        .merge(crate::voice_references::router(db.clone()))
         .route("/api/v1/operator/overview", get(overview))
         .route("/api/v1/operator/history", get(history))
         .route(

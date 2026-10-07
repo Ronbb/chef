@@ -22,6 +22,31 @@ pub struct Client {
     permits: std::sync::Arc<tokio::sync::Semaphore>,
 }
 impl Client {
+    pub(crate) async fn is_operator(&self, actor: i64) -> Result<bool, AppError> {
+        if actor <= 0 {
+            return Err(AppError::Unavailable);
+        }
+        let _permit = self
+            .permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AppError::Unavailable)?;
+        let mut endpoint = self.endpoint.clone();
+        endpoint.set_path(&format!("/internal/v1/operators/{actor}"));
+        let response = self
+            .http
+            .get(endpoint)
+            .header("authorization", self.credential.clone())
+            .header("x-chef-product", self.product.as_str())
+            .send()
+            .await
+            .map_err(|_| AppError::Unavailable)?;
+        match response.status().as_u16() {
+            204 => Ok(true),
+            404 => Ok(false),
+            _ => Err(AppError::Unavailable),
+        }
+    }
     pub(crate) fn product(&self) -> ProductId {
         self.product
     }

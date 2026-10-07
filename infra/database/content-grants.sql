@@ -1,4 +1,4 @@
--- Courses, assets, recordings and character directions; voice jobs remain disabled.
+-- Courses, assets, character directions and reference delivery; voice jobs remain disabled.
 -- Apply as owner to a fresh non-owner NOINHERIT / NOSUPERUSER login.
 -- psql -v schema=... -v identity_schema=... -v role=... -f infra/database/content-grants.sql
 \set ON_ERROR_STOP on
@@ -23,6 +23,7 @@ GRANT SELECT ON TABLE
     :"schema".asset_import_audit, :"schema".audio_assets, :"schema".audio_import_audit,
     :"schema".character_voice_profiles, :"schema".voice_reference_grants,
     :"schema".voice_reference_revocations, :"schema".voice_clone_jobs,
+    :"schema".voice_reference_reads,
     :"schema".voice_clone_events, :"schema".voice_auditions, :"schema".voice_audition_reviews,
     :"schema".course_speech_plans, :"schema".course_speech_clips,
     :"schema".course_speech_clip_reviews, :"schema".speech_alignments,
@@ -35,10 +36,16 @@ GRANT INSERT ON TABLE
     :"schema".editorial_reviews,
     :"schema".media_assets, :"schema".asset_import_audit,
     :"schema".audio_assets, :"schema".audio_import_audit,
-    :"schema".character_revisions, :"schema".character_voice_profiles TO :"role";
+    :"schema".character_revisions, :"schema".character_voice_profiles,
+    :"schema".voice_reference_grants, :"schema".voice_reference_revocations,
+    :"schema".voice_reference_reads TO :"role";
+-- PostgreSQL FOR UPDATE requires UPDATE privilege; immutable trigger still
+-- rejects actual changes. Only the grant key is granted for locking.
+GRANT UPDATE(id) ON :"schema".voice_reference_grants TO :"role";
 GRANT UPDATE(published) ON :"schema".lesson_revisions TO :"role";
 GRANT UPDATE(active_release,generation) ON :"schema".content_state TO :"role";
 GRANT USAGE ON SEQUENCE :"schema".content_audit_id_seq TO :"role";
 GRANT USAGE ON SEQUENCE :"schema".asset_import_audit_id_seq TO :"role";
 GRANT USAGE ON SEQUENCE :"schema".audio_import_audit_id_seq TO :"role";
+GRANT USAGE ON SEQUENCE :"schema".voice_reference_reads_id_seq TO :"role";
 COMMIT;

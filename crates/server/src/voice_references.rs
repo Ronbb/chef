@@ -1,8 +1,8 @@
 //! Limited bearer delivery for an explicitly authorized fixed reference; never a public registry.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend, require_operator},
-    learning::{exec, field, one, owner},
+    admin_auth::AdminAuth,
+    learning::{exec, field, one},
 };
 use axum::{
     Json, Router,
@@ -18,14 +18,29 @@ use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, TransactionTra
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Semaphore;
 
-pub fn router() -> Router<Backend> {
+#[derive(Clone)]
+struct Store {
+    db: sea_orm::DatabaseConnection,
+    identity: Option<crate::learning_identity::Client>,
+}
+pub(crate) fn router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/voice-references", get(list).post(issue))
         .route(
             "/api/v1/operator/voice-references/{id}/revoke",
             axum::routing::post(revoke),
         )
+        .with_state(Store { db, identity: None })
+}
+pub(crate) fn delivery_router<S: Clone + Send + Sync + 'static>(
+    db: sea_orm::DatabaseConnection,
+    identity: Option<crate::learning_identity::Client>,
+) -> Router<S> {
+    Router::new()
         .route("/api/v1/voice-references/{id}/{token}", get(download))
+        .with_state(Store { db, identity })
 }
 pub(crate) fn hex(value: &str, length: usize) -> bool {
     value.len() == length
@@ -55,11 +70,11 @@ struct Cursor {
     after_id: Option<String>,
 }
 async fn list(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Query(cursor): Query<Cursor>,
 ) -> Result<Json<AdminReferenceGrants>, AppError> {
-    require_operator(&auth).await?;
+    auth.require_operator().await?;
     let after = cursor.after_id.unwrap_or_default();
     if !after.is_empty() && !hex(&after, 32) {
         return Err(AppError::InvalidInput);
@@ -148,13 +163,13 @@ pub(crate) async fn inspect(
 }
 
 async fn issue(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     axum::Extension(root): axum::Extension<PathBuf>,
     axum::Extension(permits): axum::Extension<Arc<Semaphore>>,
     Json(request): Json<AdminReferenceGrantRequest>,
 ) -> Result<Json<AdminReferenceGrantResult>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     crate::admin::reason(&request.reason)?;
     if !request.single_speaker_confirmed
         || !brioche_course_contract::valid_content_id(&request.character_id)
@@ -163,13 +178,13 @@ async fn issue(
     {
         return Err(AppError::InvalidInput);
     }
-    let actor = owner(&auth)?;
+    let actor = operator.actor;
     let tx = backend
         .db
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     let row=one(&tx,"SELECT profile FROM character_voice_profiles WHERE character_id=$1 AND character_revision=$2 AND revision=$3",
         vec![request.character_id.clone().into(),(request.character_revision as i32).into(),(request.voice_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     let profile: CharacterVoiceProfile =
@@ -233,23 +248,23 @@ async fn issue(
 }
 
 async fn revoke(
-    auth: AuthSession,
-    State(backend): State<Backend>,
+    auth: AdminAuth,
+    State(backend): State<Store>,
     Path(id): Path<String>,
     Json(request): Json<brioche_course_contract::AdminRevokeTokenRequest>,
 ) -> Result<Json<AdminReferenceGrant>, AppError> {
-    require_operator(&auth).await?;
+    let operator = auth.require_operator().await?;
     if !hex(&id, 32) {
         return Err(AppError::InvalidInput);
     }
     crate::admin::reason(&request.reason)?;
-    let actor = owner(&auth)?;
+    let actor = operator.actor;
     let tx = backend
         .db
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
-    lock_operator(&tx, actor).await?;
+    operator.lock_content(&tx).await?;
     one(
         &tx,
         "SELECT id FROM voice_reference_grants WHERE id=$1 FOR UPDATE",
@@ -282,7 +297,7 @@ async fn revoke(
 }
 
 async fn download(
-    State(backend): State<Backend>,
+    State(backend): State<Store>,
     Path((id, token)): Path<(String, String)>,
     axum::Extension(root): axum::Extension<PathBuf>,
     axum::Extension(permits): axum::Extension<Arc<Semaphore>>,
@@ -310,11 +325,15 @@ async fn download(
     let row=one(&tx,"SELECT descriptor,actor_id FROM voice_reference_grants g WHERE id=$1 AND token_hash=$2 AND expires_at>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id) AND (SELECT count(*) FROM voice_reference_reads a WHERE a.grant_id=g.id)<32 FOR UPDATE",
         vec![id.clone().into(),token_hash.into()]).await?.ok_or(AppError::NotFound)?;
     let actor: i64 = field(&row, "actor_id")?;
-    if crate::product_memberships::read(&tx, crate::product::ProductId::Brioche, actor)
-        .await?
-        .role
-        != "operator"
-    {
+    let authorized = if let Some(identity) = &backend.identity {
+        identity.is_operator(actor).await?
+    } else {
+        crate::product_memberships::read(&tx, crate::product::ProductId::Brioche, actor)
+            .await?
+            .role
+            == "operator"
+    };
+    if !authorized {
         return Err(AppError::NotFound);
     }
     let descriptor: AudioAsset =
