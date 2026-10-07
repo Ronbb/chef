@@ -286,14 +286,24 @@ test("missing sentence and word recordings show a toast without invoking browser
 
 test("a partially recorded reading sequence does not begin a misleading incomplete playback", async () => {
   await open("reading&partial-recording=1");
+  await evaluate(`
+    qa.observedToast = null;
+    const toast = document.querySelector('.toast');
+    qa.toastObserver = new MutationObserver(() => {
+      if (!toast.hidden) qa.observedToast = toast.querySelector('[role=status]').textContent;
+    });
+    qa.toastObserver.observe(toast, {
+      attributes: true, attributeFilter: ['hidden'],
+      childList: true, subtree: true, characterData: true
+    });
+  `);
   await browser("focus", ".playback-line");
   await press("Enter");
   assert.equal(
-    await evaluate(
-      "document.querySelector('.toast [role=status]').textContent",
-    ),
+    await evaluate("qa.observedToast"),
     "这段录音还在准备中。",
   );
+  await evaluate("qa.toastObserver.disconnect()");
   assert.deepEqual(
     await evaluate(
       "({status:qa.playback,media:qa.media.length,spoken:qa.spoken})",
