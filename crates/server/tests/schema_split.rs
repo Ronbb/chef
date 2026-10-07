@@ -1210,6 +1210,69 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert!(!untouched.try_get::<bool>("", "suspended").unwrap());
     assert_eq!(untouched.try_get::<i16>("", "stage").unwrap(), -1);
     assert_eq!(untouched.try_get::<i64>("", "attempts").unwrap(), 1);
+    owner
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "INSERT INTO step_progress(product_id,session_id,step_id) VALUES('hargow',$1,$2);",
+            [other_session.into(), first_step.clone().into()],
+        ))
+        .await
+        .unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO exercise_attempts(product_id,id,session_id,user_id,exercise_id,attempt_index,answer,result,hint_used) VALUES('hargow','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',$1,$2,'other-product-exercise',1,'{}','{}',false)",[other_session.into(),account.into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"UPDATE lesson_progress SET first_completed_at=CURRENT_TIMESTAMP WHERE product_id='hargow' AND user_id=$1 AND lesson_id=$2",[account.into(),lesson.id.clone().into()])).await.unwrap();
+    let (status, dashboard) = request(
+        &remote,
+        "GET",
+        "/api/v1/me/dashboard",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{dashboard}");
+    assert_eq!(dashboard["completedLessons"], 0);
+    assert_eq!(dashboard["dueReviews"], 0);
+    assert!(dashboard["nextReviewAt"].is_null());
+    assert_eq!(dashboard["courseStates"].as_array().unwrap().len(), 1);
+    assert_eq!(dashboard["resume"]["sessionId"], started["progress"]["id"]);
+    assert!(dashboard["resume"]["firstCompletedAt"].is_null());
+    assert_eq!(dashboard["allAvailableCompleted"], false);
+    assert_eq!(dashboard["recommendedLesson"]["id"], lesson.id);
+    assert_eq!(dashboard["timeZone"], queue["timeZone"]);
+    let days = dashboard["days"].as_array().unwrap();
+    assert_eq!(days.len(), 7);
+    for (field, expected) in [
+        ("confirmedSteps", 1),
+        ("exerciseAttempts", 0),
+        ("reviewAttempts", 1),
+        ("completedLessons", 0),
+    ] {
+        assert_eq!(
+            days.iter().map(|d| d[field].as_u64().unwrap()).sum::<u64>(),
+            expected,
+            "{field}"
+        );
+    }
+    assert_eq!(dashboard["activeDays"], 1);
+    owner
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE review_cards SET due_at=CURRENT_TIMESTAMP+interval '7 days' WHERE id=$1",
+            [other_card.into()],
+        ))
+        .await
+        .unwrap();
+    let (status, dashboard) = request(
+        &remote,
+        "GET",
+        "/api/v1/me/dashboard",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(dashboard["nextReviewAt"].is_null());
     let invalid = learning.execute_unprepared("INSERT INTO product_user_settings(product_id,user_id,settings) VALUES('brioche',999999,'{}')")
         .await.unwrap_err();
     assert!(invalid.to_string().contains("foreign key constraint"));

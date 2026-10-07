@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+首页学习统计产品范围补充：dashboard按固定LearningStore.product读取设置、日历步骤/答题/评分/首次完成事件、课程状态/resume、完成数、复习到期/下次时间及推荐课learned标记。关联步骤/进度要求同产品，legacy保留旧32 SQL。actual split受限HTTP放入同账号异产品全部事件/同课进度/到期和未来复习，B仅自身步骤与评分，0异产品答题完成、单独resume、待复习与next时间不串、推荐未完成。目录仍全局，H路由继续关闭；完整内容媒体/粤语/双产品生产待完成，生产pin不变，产品无实现副本。
+
 复习产品范围补充：learning_000006_product_reviews将卡片知识去重和队列/历史索引加入product_id；队列计数/详情/评分/暂停/卡片列表/历史按可信LearningStore产品，历史同产品关联，评分显式登记产品并读取当前产品设置时区。手动enroll与课程完成共用review_conflict兼容legacy32。actual split受限HTTP异产品详情/评分/暂停404、异产品历史不返回、同知识双卡独立/登记重放、B队列和评分重放/暂停不改H版本stage与attempt数。完整Hargow路由仍关闭；dashboard/目录媒体范围、双产品生产仍待实施，生产pin不变；SQL与业务仅Chef。
 
 收藏产品范围补充：learning_000005_product_saved将saved_items去重改为(product_id,user_id,knowledge_id)并增加产品近期索引；详情/列表/锁内读取/新建/取消及请求锁按固定LearningStore.product，旧组合布局保留原查询。actual split受限HTTP预放同账号同表达H收藏，B详情404、新建独立ID、精确重放、列表仅B、取消B版本递增而H仍saved/version1。旧九表指纹保留；复习参与/卡片/历史/完成去重、dashboard及内容媒体仍待隔离，H入口/生产pin保持；所有SQL和回归仅Chef。
