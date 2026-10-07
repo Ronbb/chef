@@ -35,7 +35,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
     [],
   );
   return (
-    <html lang={product.explanationLanguage} className="overlay-scroll" style={product.theme}>
+    <html
+      lang={product.explanationLanguage}
+      className="overlay-scroll"
+      style={product.theme}
+    >
       <head>
         <meta charSet="utf-8" />
         <meta
@@ -80,7 +84,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
           />
           <div className="app">
             <header className="topbar">
-              <Link className="brand" to="/" aria-label={`${product.name} 首页`}>
+              <Link
+                className="brand"
+                to="/"
+                aria-label={`${product.name} 首页`}
+              >
                 <span className="brand-mark" aria-hidden="true">
                   <img src={product.brandIcon} alt="" width="27" height="27" />
                 </span>
@@ -91,12 +99,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 to="/profile"
                 aria-label="个人信息与设置"
               >
-                <img
-                  src={product.avatar}
-                  alt=""
-                  width="44"
-                  height="44"
-                />
+                <img src={product.avatar} alt="" width="44" height="44" />
               </Link>
             </header>
             <main id="page-content" tabIndex={-1}>

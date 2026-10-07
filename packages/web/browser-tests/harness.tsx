@@ -1,3 +1,4 @@
+import product from "@chef/product";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -1415,3 +1416,6 @@ createRoot(document.getElementById("root")!).render(
   <RouterProvider router={router} />,
 );
 qa.ready = true;
+
+for (const [name, value] of Object.entries(product.theme))
+  document.documentElement.style.setProperty(name, value);

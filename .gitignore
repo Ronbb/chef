@@ -7,3 +7,6 @@ target/
 build/
 *.key
 *.pem
+test-fixtures/web-product/packages/
+apps/web/packages/
+.react-router/

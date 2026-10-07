@@ -1506,25 +1506,7 @@ small,
   }
 }
 
-/* Brioche: warm orange, butter gold, cream and fresh pistachio. */
-:root {
-  --paper: #faf7ef;
-  --surface: #fffdf7;
-  --ink: #38291f;
-  --muted: #695842;
-  --primary: #ffa62f;
-  --accent: #9c4e27;
-  --soft: #fff0da;
-  --leaf: #acd793;
-  --green: #3b572b;
-  --line: #e9d9bb;
-  --butter: #ffc96f;
-  --pistachio: #3b572b;
-  --sans:
-    -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI",
-    "PingFang SC", "Microsoft YaHei", sans-serif;
-  --serif: ui-serif, "New York", Georgia, "Times New Roman", serif;
-}
+/* Brand colors and typography come from the product configuration. */
 body {
   -webkit-font-smoothing: antialiased;
 }
