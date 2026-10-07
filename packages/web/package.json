@@ -1,0 +1,27 @@
+{
+  "name": "@chef/web",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@brioche/contracts": "workspace:*",
+    "@react-router/node": "8.4.0",
+    "@react-router/serve": "8.4.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-router": "8.4.0",
+    "isbot": "5.1.40"
+  },
+  "devDependencies": {
+    "@react-router/dev": "8.4.0",
+    "@tailwindcss/vite": "4.3.3",
+    "tailwindcss": "4.3.3",
+    "@types/node": "24.10.13",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.2"
+  },
+  "exports": {
+    "./product": "./product.ts"
+  }
+}

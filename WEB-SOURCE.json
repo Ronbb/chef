@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/Ronbb/brioche",
+  "commit": "111f3abae143a18a3830ea560a0c0a87b7168191",
+  "paths": [
+    "apps/web/app"
+  ],
+  "note": "Shared runtime extracted; legacy French contract retained until versioned adapter"
+}
