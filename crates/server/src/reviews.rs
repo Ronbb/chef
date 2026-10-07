@@ -188,7 +188,16 @@ async fn attempt(
     let old = load(&tx, user, &id).await?;
     let scope = format!("review:{id}:attempt");
     let fingerprint = hash(&request)?;
-    if let Some(cached) = replay(&tx, user, &scope, &request.idempotency_key, &fingerprint).await? {
+    if let Some(cached) = replay(
+        &tx,
+        backend.product,
+        user,
+        &scope,
+        &request.idempotency_key,
+        &fingerprint,
+    )
+    .await?
+    {
         return Ok(Json(cached));
     }
     if old.suspended {
@@ -221,6 +230,7 @@ async fn attempt(
     };
     record(
         &tx,
+        backend.product,
         user,
         &scope,
         &request.idempotency_key,
@@ -247,7 +257,16 @@ async fn preferences(
     let old = load(&tx, user, &id).await?;
     let scope = format!("review:{id}:preferences");
     let fingerprint = hash(&request)?;
-    if let Some(cached) = replay(&tx, user, &scope, &request.idempotency_key, &fingerprint).await? {
+    if let Some(cached) = replay(
+        &tx,
+        backend.product,
+        user,
+        &scope,
+        &request.idempotency_key,
+        &fingerprint,
+    )
+    .await?
+    {
         return Ok(Json(cached));
     }
     if old.version != request.card_version || old.version >= i32::MAX as u32 {
@@ -264,6 +283,7 @@ async fn preferences(
     let result = load(&tx, user, &id).await?;
     record(
         &tx,
+        backend.product,
         user,
         &scope,
         &request.idempotency_key,

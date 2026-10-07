@@ -352,7 +352,7 @@ pub fn router(db: sea_orm::DatabaseConnection, client: Client) -> anyhow::Result
         .route("/api/v1/me/settings", axum::routing::patch(settings))
         .merge(crate::learning_store::routes())
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
-        .with_state(LearningStore::new(db))
+        .with_state(LearningStore::for_product(db, client.product))
         .route_layer(axum::middleware::from_fn_with_state(client, gate)))
 }
 pub(crate) fn protect(router: Router, client: Client) -> Router {

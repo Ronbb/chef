@@ -78,13 +78,22 @@ pub(crate) fn field<T: sea_orm::TryGetable>(row: &QueryResult, name: &str) -> Re
 }
 pub(crate) async fn replay<T: DeserializeOwned>(
     tx: &DatabaseTransaction,
+    product: Option<crate::product::ProductId>,
     user: i64,
     scope: &str,
     key: &str,
     fingerprint: &str,
 ) -> Result<Option<T>, AppError> {
     validate_key(key)?;
-    let Some(row) = one(tx,"SELECT request_hash,result FROM learning_operations WHERE user_id=$1 AND scope=$2 AND idempotency_key=$3",vec![user.into(),scope.into(),key.into()]).await? else { return Ok(None); };
+    let row = if let Some(product) = product {
+        one(tx,"SELECT request_hash,result FROM learning_operations WHERE user_id=$1 AND scope=$2 AND idempotency_key=$3 AND product_id=$4",vec![user.into(),scope.into(),key.into(),product.as_str().into()]).await?
+    } else {
+        // Only the legacy combined Brioche service, which cannot start on a split layout.
+        one(tx,"SELECT request_hash,result FROM learning_operations WHERE user_id=$1 AND scope=$2 AND idempotency_key=$3",vec![user.into(),scope.into(),key.into()]).await?
+    };
+    let Some(row) = row else {
+        return Ok(None);
+    };
     if field::<String>(&row, "request_hash")? != fingerprint {
         return Err(AppError::Conflict);
     }
@@ -94,13 +103,19 @@ pub(crate) async fn replay<T: DeserializeOwned>(
 }
 pub(crate) async fn record<T: Serialize>(
     tx: &DatabaseTransaction,
+    product: Option<crate::product::ProductId>,
     user: i64,
     scope: &str,
     key: &str,
     fingerprint: &str,
     result: &T,
 ) -> Result<(), AppError> {
-    exec(tx,"INSERT INTO learning_operations (user_id,scope,idempotency_key,request_hash,result) VALUES ($1,$2,$3,$4,$5)",vec![user.into(),scope.into(),key.into(),fingerprint.into(),serde_json::to_value(result).map_err(|_| AppError::Unavailable)?.into()]).await?;
+    let result = serde_json::to_value(result).map_err(|_| AppError::Unavailable)?;
+    if let Some(product) = product {
+        exec(tx,"INSERT INTO learning_operations (user_id,scope,idempotency_key,request_hash,result,product_id) VALUES ($1,$2,$3,$4,$5,$6)",vec![user.into(),scope.into(),key.into(),fingerprint.into(),result.into(),product.as_str().into()]).await?;
+    } else {
+        exec(tx,"INSERT INTO learning_operations (user_id,scope,idempotency_key,request_hash,result) VALUES ($1,$2,$3,$4,$5)",vec![user.into(),scope.into(),key.into(),fingerprint.into(),result.into()]).await?;
+    }
     Ok(())
 }
 struct SessionRow {
@@ -301,9 +316,15 @@ async fn start(
         vec![format!("learning-start-key:{user}:{}", request.idempotency_key).into()],
     )
     .await?;
-    if let Some(cached) =
-        replay::<LearningSession>(&tx, user, "start", &request.idempotency_key, &fingerprint)
-            .await?
+    if let Some(cached) = replay::<LearningSession>(
+        &tx,
+        backend.product,
+        user,
+        "start",
+        &request.idempotency_key,
+        &fingerprint,
+    )
+    .await?
     {
         load(&tx, user, &cached.progress.id, false).await?; // Withdrawn snapshots never escape through a replay.
         return Ok(Json(cached));
@@ -350,6 +371,7 @@ async fn start(
     };
     record(
         &tx,
+        backend.product,
         user,
         "start",
         &request.idempotency_key,
@@ -390,7 +412,16 @@ async fn confirm_step(
     let scope = format!("{id}:step:{step}");
     let fingerprint = hash(&request)?;
     let (tx, session) = begin(&backend, user, &id, &request.idempotency_key).await?;
-    if let Some(cached) = replay(&tx, user, &scope, &request.idempotency_key, &fingerprint).await? {
+    if let Some(cached) = replay(
+        &tx,
+        backend.product,
+        user,
+        &scope,
+        &request.idempotency_key,
+        &fingerprint,
+    )
+    .await?
+    {
         return Ok(Json(cached));
     }
     check_version(&session, request.version)?;
@@ -437,6 +468,7 @@ async fn confirm_step(
     let state = progress(&tx, &load(&tx, user, &id, false).await?).await?;
     record(
         &tx,
+        backend.product,
         user,
         &scope,
         &request.idempotency_key,
@@ -457,7 +489,16 @@ async fn submit(
     let scope = format!("{id}:attempt");
     let fingerprint = hash(&request)?;
     let (tx, session) = begin(&backend, user, &id, &request.idempotency_key).await?;
-    if let Some(cached) = replay(&tx, user, &scope, &request.idempotency_key, &fingerprint).await? {
+    if let Some(cached) = replay(
+        &tx,
+        backend.product,
+        user,
+        &scope,
+        &request.idempotency_key,
+        &fingerprint,
+    )
+    .await?
+    {
         return Ok(Json(cached));
     }
     check_version(&session, request.version)?;
@@ -497,6 +538,7 @@ async fn submit(
     };
     record(
         &tx,
+        backend.product,
         user,
         &scope,
         &request.idempotency_key,
@@ -517,7 +559,16 @@ async fn hint(
     let scope = format!("{id}:hint:{exercise}");
     let fingerprint = hash(&request)?;
     let (tx, session) = begin(&backend, user, &id, &request.idempotency_key).await?;
-    if let Some(cached) = replay(&tx, user, &scope, &request.idempotency_key, &fingerprint).await? {
+    if let Some(cached) = replay(
+        &tx,
+        backend.product,
+        user,
+        &scope,
+        &request.idempotency_key,
+        &fingerprint,
+    )
+    .await?
+    {
         return Ok(Json(cached));
     }
     check_version(&session, request.version)?;
@@ -559,6 +610,7 @@ async fn hint(
     };
     record(
         &tx,
+        backend.product,
         user,
         &scope,
         &request.idempotency_key,
@@ -579,7 +631,16 @@ async fn complete(
     let scope = format!("{id}:complete");
     let fingerprint = hash(&request)?;
     let (tx, session) = begin(&backend, user, &id, &request.idempotency_key).await?;
-    if let Some(cached) = replay(&tx, user, &scope, &request.idempotency_key, &fingerprint).await? {
+    if let Some(cached) = replay(
+        &tx,
+        backend.product,
+        user,
+        &scope,
+        &request.idempotency_key,
+        &fingerprint,
+    )
+    .await?
+    {
         return Ok(Json(cached));
     }
     check_version(&session, request.version)?;
@@ -622,6 +683,7 @@ async fn complete(
     let state = progress(&tx, &load(&tx, user, &id, false).await?).await?;
     record(
         &tx,
+        backend.product,
         user,
         &scope,
         &request.idempotency_key,

@@ -1,5 +1,11 @@
 # 身份与学习schema分离
 
+## 幂等请求的产品范围
+
+布局步骤learning_000003_product_operations将learning_operations主键改为(product_id,user_id,scope,idempotency_key)，保留原scope、请求键、hash和结果。独立学习路由以可信Client.product构造LearningStore；学习步骤、答题/提示/完成、收藏和复习的共用replay/record按该产品读写，不接受浏览器选择产品。legacy组合Brioche保留旧查询兼容，仍不能在分离布局启动；独立服务必须先应用布局升级。
+
+实际split-schema/受限连接测试预放同一账号/同scope/同key的Hargow操作：Brioche HTTP启动忽略异产品hash/result、保存自己的结果，精确重跑相同，改请求返回409；两产品记录同时保留。九表原字段指纹仍保持。身份服务受限学习测试安装同一固定SQL步骤，生产维护命令与失败回滚由schema_split覆盖。其余事实查询、活动/收藏/复习唯一键、内容及媒体产品范围尚未完成，Hargow入口仍关闭，不能将幂等隔离当作完整租户隔离。
+
 ## 学习事实产品归属准备
 
 布局步骤learning_000002_product_facts为learning_sessions、lesson_progress、step_progress、exercise_hints、exercise_attempts、learning_operations、review_cards、review_attempts、saved_items添加必填product_id，旧行默认brioche。原字段、ID、完成时间、幂等键和快照不改写；只接受brioche/hargow，更新不能把既有事实转移到其他产品。会话/用户/课程及复习卡关系新增带产品的复合外键，跨产品父记录不能作为学习事实的来源。

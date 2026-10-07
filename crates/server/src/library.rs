@@ -154,8 +154,15 @@ async fn write(
     if request.saved && old.as_ref().is_some_and(|old| old.withdrawn) {
         return Err(AppError::Gone);
     }
-    if let Some(mut cached) =
-        replay::<SavedItem>(&tx, user, &scope, &request.idempotency_key, &fingerprint).await?
+    if let Some(mut cached) = replay::<SavedItem>(
+        &tx,
+        backend.product,
+        user,
+        &scope,
+        &request.idempotency_key,
+        &fingerprint,
+    )
+    .await?
     {
         if old.as_ref().is_some_and(|old| old.withdrawn) {
             cached.vocabulary = None;
@@ -188,6 +195,7 @@ async fn write(
         .ok_or(AppError::Unavailable)?;
     record(
         &tx,
+        backend.product,
         user,
         &scope,
         &request.idempotency_key,
@@ -262,11 +270,21 @@ async fn enroll(
     .ok_or(AppError::Unavailable)?;
     let id: String = field(&row, "id")?;
     let current = crate::reviews::load(&tx, user, &id).await?;
-    if let Some(cached) = replay(&tx, user, &scope, &request.idempotency_key, &fingerprint).await? {
+    if let Some(cached) = replay(
+        &tx,
+        backend.product,
+        user,
+        &scope,
+        &request.idempotency_key,
+        &fingerprint,
+    )
+    .await?
+    {
         return Ok(Json(cached));
     }
     record(
         &tx,
+        backend.product,
         user,
         &scope,
         &request.idempotency_key,

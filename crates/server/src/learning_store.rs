@@ -4,10 +4,17 @@ use sea_orm::DatabaseConnection;
 #[derive(Clone)]
 pub struct LearningStore {
     pub(crate) db: DatabaseConnection,
+    pub(crate) product: Option<crate::product::ProductId>,
 }
 impl LearningStore {
     pub fn new(db: DatabaseConnection) -> Self {
-        Self { db }
+        Self { db, product: None }
+    }
+    pub(crate) fn for_product(db: DatabaseConnection, product: crate::product::ProductId) -> Self {
+        Self {
+            db,
+            product: Some(product),
+        }
     }
 }
 pub(crate) async fn lock_lesson<C: sea_orm::ConnectionTrait>(

@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+幂等产品范围补充：独立学习LearningStore由可信Client.product构造Some(product)，共用replay/record及全部学习/收藏/复习调用显式传入；legacy new只兼容未分离Brioche，不能在split布局启动。layout learning_000003_product_operations主键增加product_id，原scope/key/hash/result不变。实际受限split HTTP预放同账号同key异产品记录，B忽略异产品结果/hash、独立登记、精确重放及改参409通过。identity_service合成fixture明确安装同一SQL步骤，真实命令/rollback在split套件。其余事实和内容媒体仍未隔离，Hargow关闭，生产pin不变。
+
 学习事实产品准备补充：layout learning_000002_product_facts为九张事实表添加默认brioche的product_id、同产品会话/卡片复合外键和禁止改归属trigger，保留全部原字段/全局唯一键。SQL文件定义仅CRLF→LF规范。非空九表指纹、同产品九表正例事务回滚、跨产品父引用/改归属拒绝及步骤中途失败整批回滚验证属于Chef。此阶段未完成查询/RLS/内容/媒体租户，Hargow路由仍关闭，禁止生产迁移或把准备当完整隔离；产品无迁移副本。
 
 共享Web直接发布补充：LessonAudioReview默认direct-publication授权，人工heard仅可选试听动作写audio-review；固定Rust DTO，evidence仅admin-web来源及humanListeningAsserted=false。attempt锁定kind/body，未知结果保留、重试同一路径/载荷、离开拦截；明确校验拒绝才释放，已授权版本阻止再次表单授权。授权不会自动激活目录。受控浏览器验证直接请求/503精确重试/离开保留/成功恢复与独立人工试听/409释放；typecheck/unit/SSR/build通过。实现与回归只在Chef，产品pin与生产不变。

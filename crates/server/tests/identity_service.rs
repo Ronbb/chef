@@ -874,6 +874,18 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         chef_engine::learning_identity::Client::new(&service_url, KEY, ProductId::Brioche, false)
             .unwrap();
     // Real learning pool has no permission to query credentials, sessions, tokens or grants.
+    // This combined synthetic fixture explicitly installs the new learning layout steps.
+    // The schema_split suite exercises their real maintenance command and rollback boundary.
+    db.execute_unprepared(include_str!(
+        "../../migration/src/learning_product_facts.sql"
+    ))
+    .await
+    .unwrap();
+    db.execute_unprepared(include_str!(
+        "../../migration/src/learning_product_operations.sql"
+    ))
+    .await
+    .unwrap();
     let learner_role = format!("{schema}_learner");
     db.execute_unprepared(&format!(
         "CREATE ROLE {learner_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE"

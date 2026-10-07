@@ -404,7 +404,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=3 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=4 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -867,6 +867,8 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .0,
         200
     );
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO learning_operations(product_id,user_id,scope,idempotency_key,request_hash,result) VALUES('hargow',$1,'start','split-start-learning-01',$2,$3)",[account.into(),"b".repeat(64).into(),serde_json::json!({"marker":"other product only"}).into()])).await.unwrap();
+    let start_body = serde_json::json!({"lessonId":lesson.id,"schemaVersion":"1.0","idempotencyKey":"split-start-learning-01"});
     let start = Request::builder()
         .method("POST")
         .uri("/api/v1/learning-sessions")
@@ -882,7 +884,39 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             .unwrap(),
         ))
         .unwrap();
-    assert_eq!(remote.oneshot(start).await.unwrap().status().as_u16(), 200);
+    let response = remote.clone().oneshot(start).await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let started: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let (status, replayed) = request(
+        &remote,
+        "POST",
+        "/api/v1/learning-sessions",
+        Some(start_body.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(started, replayed);
+    let mut changed = start_body.clone();
+    changed["lessonId"] = "changed-source".into();
+    assert_eq!(
+        request(
+            &remote,
+            "POST",
+            "/api/v1/learning-sessions",
+            Some(changed),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n,count(DISTINCT request_hash)::bigint AS hashes FROM learning_operations WHERE user_id=$1 AND scope='start' AND idempotency_key='split-start-learning-01'",[account.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 2);
+    assert_eq!(row.try_get::<i64>("", "hashes").unwrap(), 2);
     let invalid = learning.execute_unprepared("INSERT INTO product_user_settings(product_id,user_id,settings) VALUES('brioche',999999,'{}')")
         .await.unwrap_err();
     assert!(invalid.to_string().contains("foreign key constraint"));
