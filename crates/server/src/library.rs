@@ -1,9 +1,9 @@
 //! Bookmarks preserve their first source snapshot and are independent of review participation.
 use crate::{
     AppError,
-    identity::Backend,
     learning::{exec, field, hash, one, owner, random_id, record, replay, validate_key},
     learning_identity::LearningAuth as AuthSession,
+    learning_store::LearningStore,
 };
 use axum::{
     Json, Router,
@@ -42,7 +42,14 @@ pub(crate) async fn source(
     knowledge: &str,
 ) -> Result<Vocabulary, AppError> {
     let revision = i32::try_from(revision).map_err(|_| AppError::InvalidInput)?;
-    let row=one(tx,"SELECT published,public_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2 FOR SHARE",vec![lesson.into(),revision.into()]).await?.ok_or(AppError::NotFound)?;
+    crate::learning_store::lock_lesson(tx, lesson, revision).await?;
+    let row = one(
+        tx,
+        "SELECT published,public_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2",
+        vec![lesson.into(), revision.into()],
+    )
+    .await?
+    .ok_or(AppError::NotFound)?;
     if !field::<bool>(&row, "published")? {
         return Err(AppError::Gone);
     }
@@ -84,20 +91,19 @@ async fn load(
     knowledge: &str,
     lock: bool,
 ) -> Result<Option<SavedItem>, AppError> {
+    if lock && let Some(reference)=one(tx,"SELECT source_lesson_id,source_revision FROM saved_items WHERE user_id=$1 AND knowledge_id=$2",vec![user.into(),knowledge.into()]).await? {
+        crate::learning_store::lock_lesson(tx,&field::<String>(&reference,"source_lesson_id")?,field(&reference,"source_revision")?).await?;
+    }
     let sql = format!(
         "SELECT s.*,r.published,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1 AND s.knowledge_id=$2 {}",
-        if lock {
-            "FOR UPDATE OF s FOR SHARE OF r"
-        } else {
-            ""
-        }
+        if lock { "FOR UPDATE OF s" } else { "" }
     );
     one(tx, &sql, vec![user.into(), knowledge.into()])
         .await?
         .map(|row| saved(&row))
         .transpose()
 }
-pub fn router() -> Router<Backend> {
+pub fn router() -> Router<LearningStore> {
     Router::new()
         .route("/api/v1/me/saved-items", get(list))
         .route("/api/v1/me/saved-items/{knowledge}", get(detail).put(write))
@@ -106,7 +112,7 @@ pub fn router() -> Router<Backend> {
 }
 async fn detail(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Path(knowledge): Path<String>,
 ) -> Result<Json<SavedItem>, AppError> {
     let tx = backend
@@ -122,7 +128,7 @@ async fn detail(
 }
 async fn write(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Path(knowledge): Path<String>,
     Json(request): Json<SavedWriteRequest>,
 ) -> Result<Json<SavedItem>, AppError> {
@@ -194,7 +200,7 @@ async fn write(
 }
 async fn list(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Query(page): Query<Page>,
 ) -> Result<Json<SavedPage>, AppError> {
     let (stamp, id) = cursor(page.cursor)?;
@@ -227,7 +233,7 @@ async fn list(
 }
 async fn enroll(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Json(request): Json<ReviewEnrollmentRequest>,
 ) -> Result<Json<ReviewCard>, AppError> {
     let user = owner(&auth)?;
@@ -273,7 +279,7 @@ async fn enroll(
 }
 async fn history(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Query(page): Query<Page>,
 ) -> Result<Json<ReviewHistoryPage>, AppError> {
     let (stamp, id) = cursor(page.cursor)?;

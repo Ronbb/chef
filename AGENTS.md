@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+学习持久化边界补充：远端学习进程只初始化LearningStore，不持有身份Backend、密码服务或会话存储。设置读取只查product_user_settings；账号有效性由身份内省负责，未知账号写入仍由外键拒绝。独立学习ready不读取身份表。迁移31提供固定schema、固定search_path、撤销PUBLIC EXECUTE的内容行锁函数，学习数据库角色无内容UPDATE权限；授权模板和实际受限角色回归属于Chef。此阶段仍未分离物理schema或完成Hargow事实隔离、远端内容后台及生产装配；禁止推进生产迁移或产品pin。
+
 通用学习框架与独立身份服务真源。产品品牌与正式课程属于各自仓库，不把 Brioche 的法语绑定作为未来语言中立契约。
 
 当前先抽取共享契约，暂保留 `brioche-course-contract` / `@brioche/contracts` 包名与 v1 法语字段以兼容既有不可变课程。这是明确的迁移阶段，不代表粤语支持已经完成。改变公共契约须通过版本化适配与 Rust 生成的 Schema/TS，不手改生成物。

@@ -8,13 +8,14 @@ use chef_engine::{
     session_store::PgSessionStore,
 };
 use http_body_util::BodyExt;
-use sea_orm::{ConnectOptions, ConnectionTrait, Database, DbBackend, Statement};
+use sea_orm::{ConnectOptions, ConnectionTrait, Database, DbBackend, Statement, TransactionTrait};
 use sea_orm_migration::MigratorTrait;
 use tower::ServiceExt;
 use tower_sessions::{
     SessionStore,
     session::{Id, Record},
 };
+mod support;
 
 const KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 
@@ -763,7 +764,127 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     let client =
         chef_engine::learning_identity::Client::new(&service_url, KEY, ProductId::Brioche, false)
             .unwrap();
-    let remote = chef_engine::learning_identity::router(backend.clone(), client).unwrap();
+    // Real learning pool has no permission to query credentials, sessions, tokens or grants.
+    let learner_role = format!("{schema}_learner");
+    db.execute_unprepared(&format!(
+        "CREATE ROLE {learner_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE"
+    ))
+    .await
+    .unwrap();
+    // Exercise the deployment grant artifact itself, resolving only fixed synthetic identifiers.
+    let grants = include_str!("../../../infra/database/learning-grants.sql")
+        .lines()
+        .filter(|line| !line.starts_with('\\'))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(":\"schema\"", &format!("\"{schema}\""))
+        .replace(":\"role\"", &format!("\"{learner_role}\""));
+    db.execute_unprepared(&grants).await.unwrap();
+    let mut learner_url = url::Url::parse(&std::env::var("TEST_DATABASE_URL").unwrap()).unwrap();
+    learner_url.set_username(&learner_role).unwrap();
+    learner_url.set_password(None).unwrap();
+    let mut learner_options = ConnectOptions::new(learner_url.to_string());
+    learner_options
+        .set_schema_search_path(&schema)
+        .sqlx_logging(false);
+    let learner_db = Database::connect(learner_options).await.unwrap();
+    for table in [
+        "users",
+        "browser_sessions",
+        "identity_tokens",
+        "auth_throttle",
+        "product_memberships",
+        "account_admin_audit",
+    ] {
+        assert!(
+            learner_db
+                .execute_unprepared(&format!("SELECT * FROM {table} LIMIT 0"))
+                .await
+                .is_err()
+        );
+        assert!(
+            learner_db
+                .execute_unprepared(&format!("DELETE FROM {table} WHERE false"))
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        learner_db
+            .execute_unprepared("UPDATE lesson_revisions SET published=false WHERE false")
+            .await
+            .is_err()
+    );
+    assert!(
+        learner_db
+            .execute_unprepared("UPDATE content_state SET active_release=NULL WHERE false")
+            .await
+            .is_err()
+    );
+    let source = chef_engine::development_source().unwrap();
+    let lesson = chef_engine::project_source(source.clone()).unwrap();
+    db.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_revisions(lesson_id,revision,published,public_document,server_document) VALUES($1,$2,true,$3,$4)",[lesson.id.clone().into(),(lesson.revision as i32).into(),serde_json::to_value(&lesson).unwrap().into(),source.into()])).await.unwrap();
+    support::fixture_release(&db).await;
+    // Narrow SECURITY DEFINER functions retain actual row locks without granting content UPDATE.
+    let held = learner_db.begin().await.unwrap();
+    held.query_one_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT chef_lock_lesson($1,$2)",
+        [lesson.id.clone().into(), (lesson.revision as i32).into()],
+    ))
+    .await
+    .unwrap();
+    held.query_one_raw(Statement::from_string(
+        DbBackend::Postgres,
+        "SELECT chef_lock_release_state()",
+    ))
+    .await
+    .unwrap();
+    for sql in [
+        "UPDATE lesson_revisions SET published=false WHERE lesson_id=$1 AND revision=$2",
+        "UPDATE content_state SET active_release=NULL WHERE singleton AND $1::text<>'' AND $2::integer>0",
+    ] {
+        let writer = db.begin().await.unwrap();
+        writer
+            .execute_unprepared("SET LOCAL lock_timeout='100ms'")
+            .await
+            .unwrap();
+        let error = writer
+            .execute_raw(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                [lesson.id.clone().into(), (lesson.revision as i32).into()],
+            ))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("lock timeout"), "{error}");
+        writer.rollback().await.unwrap();
+    }
+    held.commit().await.unwrap();
+    let public=db.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(p.proacl) a WHERE n.nspname=current_schema() AND p.proname IN ('chef_lock_lesson','chef_lock_release_state') AND a.grantee=0 AND a.privilege_type='EXECUTE'")).await.unwrap().unwrap();
+    assert_eq!(public.try_get::<i64>("", "n").unwrap(), 0);
+    let remote = chef_engine::learning_identity::router(learner_db.clone(), client)
+        .unwrap()
+        .merge(chef_engine::independent_learning_router(
+            chef_engine::AppState {
+                db: Some(learner_db.clone()),
+                fixture: None,
+            },
+        ));
+    assert_eq!(
+        remote
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/ready")
+                    .body(Body::empty())
+                    .unwrap()
+            )
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
     let request = |method: &str, path: &str, body: serde_json::Value, csrf: &str, cookie: &str| {
         Request::builder()
             .method(method)
@@ -869,6 +990,32 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
             .as_u16(),
         401
     );
+    // Full learner writes work with read-only content and no account-table privileges.
+    let mut learning_browser = Browser {
+        app: remote.clone(),
+        origin: french.origin,
+        cookie: french.cookie.clone(),
+        csrf: french.csrf.clone(),
+    };
+    let (status,started)=learning_browser.request("POST","/api/v1/learning-sessions",Some(serde_json::json!({"lessonId":lesson.id,"schemaVersion":"1.0","idempotencyKey":"acl-start-lesson-01"})),None).await;
+    assert_eq!(status, 200);
+    let session = started["progress"]["id"].as_str().unwrap();
+    assert_eq!(learning_browser.request("PUT",&format!("/api/v1/learning-sessions/{session}/steps/{}",lesson.steps[0].id),Some(serde_json::json!({"version":started["progress"]["version"],"idempotencyKey":"acl-step-learning-01"})),None).await.0,200);
+    let knowledge = &lesson.knowledge.vocabulary[0].id;
+    assert_eq!(learning_browser.request("PUT",&format!("/api/v1/me/saved-items/{knowledge}"),Some(serde_json::json!({"sourceLessonId":lesson.id,"sourceRevision":lesson.revision,"saved":true,"version":0,"idempotencyKey":"acl-save-vocabulary-01"})),None).await.0,200);
+    let (status,card)=learning_browser.request("POST","/api/v1/me/review-enrollments",Some(serde_json::json!({"sourceLessonId":lesson.id,"sourceRevision":lesson.revision,"knowledgeId":knowledge,"idempotencyKey":"acl-enroll-review-01"})),None).await;
+    assert_eq!(status, 200);
+    assert_eq!(learning_browser.request("POST",&format!("/api/v1/me/reviews/{}/attempts",card["id"].as_str().unwrap()),Some(serde_json::json!({"cardVersion":card["version"],"rating":"remembered","idempotencyKey":"acl-submit-review-01"})),None).await.0,200);
+    for path in [
+        "/api/v1/me/reviews",
+        "/api/v1/me/review-history",
+        "/api/v1/me/dashboard",
+    ] {
+        assert_eq!(
+            learning_browser.request("GET", path, None, None).await.0,
+            200
+        );
+    }
     service_task.abort();
     let _ = service_task.await;
     assert_eq!(
@@ -1050,9 +1197,14 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     db.execute_unprepared("UPDATE users SET role='operator' WHERE email='shared@example.test'")
         .await
         .unwrap();
+    learner_db.close().await.unwrap();
     brioche_migration::Migrator::down(&db, None).await.unwrap();
     admin
         .execute_unprepared(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+    admin
+        .execute_unprepared(&format!("DROP ROLE {learner_role}"))
         .await
         .unwrap();
 }

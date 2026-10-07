@@ -627,10 +627,9 @@ pub fn router_with_media_root(
         .route("/api/v1/me", get(me))
         .route("/api/v1/account", get(account_me).patch(account_update))
         .route("/api/v1/me/settings", axum::routing::patch(update_profile))
-        .merge(crate::learning::router())
-        .merge(crate::reviews::router())
-        .merge(crate::library::router())
-        .merge(crate::dashboard::router())
+        .merge(crate::learning_store::routes().with_state(
+            crate::learning_store::LearningStore::new(backend.db.clone()),
+        ))
         .merge(crate::admin::router(root.clone()))
         .merge(crate::preview::router(root))
         .layer(axum::Extension(crate::product::ProductId::Brioche));

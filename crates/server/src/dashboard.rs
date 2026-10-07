@@ -1,9 +1,9 @@
 //! Read-only study facts. Goal minutes are a preference, never fabricated measured duration.
 use crate::{
     AppError,
-    identity::Backend,
     learning::{field, one, owner},
     learning_identity::LearningAuth as AuthSession,
+    learning_store::LearningStore,
     library::STAMP,
 };
 use axum::{Json, Router, extract::State, routing::get};
@@ -13,7 +13,7 @@ use sea_orm::{
     ConnectionTrait, DatabaseTransaction, DbBackend, IsolationLevel, Statement, TransactionTrait,
     Value,
 };
-pub fn router() -> Router<Backend> {
+pub fn router() -> Router<LearningStore> {
     Router::new().route("/api/v1/me/dashboard", get(dashboard))
 }
 fn week_dates(now: Timestamp, zone: &str) -> Result<(Date, Vec<Date>), AppError> {
@@ -104,7 +104,7 @@ async fn days(
 }
 async fn dashboard(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
 ) -> Result<Json<StudyDashboard>, AppError> {
     let user = owner(&auth)?;
     let tx = backend

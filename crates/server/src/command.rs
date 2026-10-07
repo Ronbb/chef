@@ -745,7 +745,6 @@ pub async fn run() -> Result<()> {
         }
         let policy = crate::csrf::CsrfPolicy::new(origins)?;
         let secure = url::Url::parse(&public_url)?.scheme() == "https";
-        let backend = crate::identity::Backend::new(db.clone()).await?;
         Some(if let Some(origin) = remote_origin {
             let key = std::env::var("IDENTITY_INTERNAL_KEY")
                 .map_err(|_| anyhow::anyhow!("Identity service credential required"))?;
@@ -755,8 +754,9 @@ pub async fn run() -> Result<()> {
                 crate::product::ProductId::Brioche,
                 secure,
             )?;
-            crate::learning_identity::router(backend, client)?
+            crate::learning_identity::router(db.clone(), client)?
         } else {
+            let backend = crate::identity::Backend::new(db.clone()).await?;
             crate::identity::router(backend, policy, secure)
         })
     } else {
@@ -774,14 +774,19 @@ pub async fn run() -> Result<()> {
     .await?;
     tracing::info!(address=%listener.local_addr()?,"API listening");
     let media_db = db.clone();
-    let mut app = router(AppState {
+    let state = AppState {
         db,
         fixture: if fixture {
             Some(development_fixture()?)
         } else {
             None
         },
-    });
+    };
+    let mut app = if remote_identity {
+        crate::independent_learning_router(state)
+    } else {
+        router(state)
+    };
     if let Some(auth) = auth_router {
         app = app.merge(auth);
     }

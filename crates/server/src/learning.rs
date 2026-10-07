@@ -2,8 +2,8 @@
 use crate::{
     AppError,
     grading::{GradeError, Grader},
-    identity::Backend,
     learning_identity::LearningAuth as AuthSession,
+    learning_store::LearningStore,
 };
 use axum::{
     Json, Router,
@@ -119,13 +119,24 @@ async fn load<C: ConnectionTrait>(
     id: &str,
     lock: bool,
 ) -> Result<SessionRow, AppError> {
+    if lock {
+        let reference = one(
+            db,
+            "SELECT lesson_id,revision FROM learning_sessions WHERE user_id=$1 AND id=$2",
+            vec![user.into(), id.into()],
+        )
+        .await?
+        .ok_or(AppError::NotFound)?;
+        crate::learning_store::lock_lesson(
+            db,
+            &field::<String>(&reference, "lesson_id")?,
+            field(&reference, "revision")?,
+        )
+        .await?;
+    }
     let sql = format!(
         "SELECT s.id,s.lesson_id,s.revision,s.schema_version,s.version,s.last_step_id,r.public_document,r.server_document,r.published,to_char(s.completed_at AT TIME ZONE 'UTC','{STAMP}') AS completed,to_char(p.first_completed_at AT TIME ZONE 'UTC','{STAMP}') AS first_completed FROM learning_sessions s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.lesson_id,s.revision) LEFT JOIN lesson_progress p ON (p.user_id,p.lesson_id)=(s.user_id,s.lesson_id) WHERE s.user_id=$1 AND s.id=$2 {}",
-        if lock {
-            "FOR UPDATE OF s FOR SHARE OF r"
-        } else {
-            ""
-        }
+        if lock { "FOR UPDATE OF s" } else { "" }
     );
     let row = one(db, &sql, vec![user.into(), id.into()])
         .await?
@@ -250,7 +261,7 @@ async fn bump(
     Ok(())
 }
 async fn begin(
-    backend: &Backend,
+    backend: &LearningStore,
     user: i64,
     id: &str,
     key: &str,
@@ -266,7 +277,7 @@ async fn begin(
 }
 async fn start(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Json(request): Json<StartLearningRequest>,
 ) -> Result<Json<LearningSession>, AppError> {
     let user = owner(&auth)?;
@@ -309,13 +320,15 @@ async fn start(
     } else {
         let state = one(
             &tx,
-            "SELECT active_release FROM content_state WHERE singleton FOR SHARE",
+            "SELECT chef_lock_release_state() AS active_release",
             vec![],
         )
         .await?
         .ok_or(AppError::Unavailable)?;
         let release: Option<String> = field(&state, "active_release")?;
-        let row = one(&tx,"SELECT r.revision,r.public_document FROM release_entries e JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision) WHERE e.release_id=$1 AND e.lesson_id=$2 AND r.published FOR SHARE OF r",vec![release.into(),request.lesson_id.clone().into()]).await?.ok_or(AppError::NotFound)?;
+        let row = one(&tx,"SELECT r.revision,r.public_document FROM release_entries e JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision) WHERE e.release_id=$1 AND e.lesson_id=$2 AND r.published",vec![release.into(),request.lesson_id.clone().into()]).await?.ok_or(AppError::NotFound)?;
+        crate::learning_store::lock_lesson(&tx, &request.lesson_id, field(&row, "revision")?)
+            .await?;
         let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
             .map_err(|_| AppError::Unavailable)?;
         lesson.validate().map_err(|_| AppError::Unavailable)?;
@@ -349,7 +362,7 @@ async fn start(
 }
 async fn get_session(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Path(id): Path<String>,
 ) -> Result<Json<LearningSession>, AppError> {
     let user = owner(&auth)?;
@@ -369,7 +382,7 @@ async fn get_session(
 }
 async fn confirm_step(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Path((id, step)): Path<(String, String)>,
     Json(request): Json<LearningWriteRequest>,
 ) -> Result<Json<LearningState>, AppError> {
@@ -436,7 +449,7 @@ async fn confirm_step(
 }
 async fn submit(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Path(id): Path<String>,
     Json(request): Json<SubmitAttemptRequest>,
 ) -> Result<Json<AttemptResult>, AppError> {
@@ -496,7 +509,7 @@ async fn submit(
 }
 async fn hint(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Path((id, exercise)): Path<(String, String)>,
     Json(request): Json<LearningWriteRequest>,
 ) -> Result<Json<HintResult>, AppError> {
@@ -558,7 +571,7 @@ async fn hint(
 }
 async fn complete(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Path(id): Path<String>,
     Json(request): Json<LearningWriteRequest>,
 ) -> Result<Json<LearningState>, AppError> {
@@ -626,7 +639,7 @@ struct Page {
 }
 async fn overview(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Query(page): Query<Page>,
 ) -> Result<Json<LearningOverview>, AppError> {
     let user = owner(&auth)?;
@@ -689,7 +702,7 @@ async fn overview(
             .map_err(|_| AppError::Unavailable)?,
     }))
 }
-pub fn router() -> Router<Backend> {
+pub fn router() -> Router<LearningStore> {
     Router::new()
         .route("/api/v1/learning-sessions", post(start))
         .route("/api/v1/learning-sessions/{id}", get(get_session))

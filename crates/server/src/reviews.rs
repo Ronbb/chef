@@ -1,9 +1,9 @@
 //! Owned review queue and atomic fixed-interval scheduling.
 use crate::{
     AppError,
-    identity::Backend,
     learning::{exec, field, hash, one, owner, random_id, record, replay, validate_key},
     learning_identity::LearningAuth as AuthSession,
+    learning_store::LearningStore,
 };
 use axum::{
     Json, Router,
@@ -39,7 +39,20 @@ pub(crate) async fn load(
     user: i64,
     id: &str,
 ) -> Result<ReviewCard, AppError> {
-    let row=one(tx,&format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1 AND c.id=$2 FOR UPDATE OF c FOR SHARE OF r"),vec![user.into(),id.into()]).await?.ok_or(AppError::NotFound)?;
+    let reference = one(
+        tx,
+        "SELECT source_lesson_id,source_revision FROM review_cards WHERE user_id=$1 AND id=$2",
+        vec![user.into(), id.into()],
+    )
+    .await?
+    .ok_or(AppError::NotFound)?;
+    crate::learning_store::lock_lesson(
+        tx,
+        &field::<String>(&reference, "source_lesson_id")?,
+        field(&reference, "source_revision")?,
+    )
+    .await?;
+    let row=one(tx,&format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1 AND c.id=$2 FOR UPDATE OF c"),vec![user.into(),id.into()]).await?.ok_or(AppError::NotFound)?;
     if !field::<bool>(&row, "published")? {
         return Err(AppError::Gone);
     }
@@ -75,15 +88,8 @@ pub fn schedule(
     Ok((next, due))
 }
 async fn zone(tx: &DatabaseTransaction, user: i64) -> Result<String, AppError> {
-    one(
-        tx,
-        "SELECT id FROM users WHERE id=$1 FOR SHARE",
-        vec![user.into()],
-    )
-    .await?
-    .ok_or(AppError::Unauthorized)?;
     Ok(
-        crate::product_settings::read(tx, crate::product::ProductId::Brioche, user)
+        crate::product_settings::read_locked(tx, crate::product::ProductId::Brioche, user)
             .await?
             .settings
             .time_zone,
@@ -94,7 +100,7 @@ async fn zone(tx: &DatabaseTransaction, user: i64) -> Result<String, AppError> {
 struct QueueQuery {
     date: Option<String>,
 }
-pub fn router() -> Router<Backend> {
+pub fn router() -> Router<LearningStore> {
     Router::new()
         .route("/api/v1/me/reviews", get(queue))
         .route("/api/v1/me/reviews/{id}", get(detail))
@@ -104,7 +110,7 @@ pub fn router() -> Router<Backend> {
 }
 async fn queue(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Query(query): Query<QueueQuery>,
 ) -> Result<Json<ReviewQueue>, AppError> {
     let user = owner(&auth)?;
@@ -152,7 +158,7 @@ async fn queue(
 }
 async fn detail(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Path(id): Path<String>,
 ) -> Result<Json<ReviewCard>, AppError> {
     let tx = backend
@@ -166,7 +172,7 @@ async fn detail(
 }
 async fn attempt(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Path(id): Path<String>,
     Json(request): Json<ReviewAttemptRequest>,
 ) -> Result<Json<ReviewAttemptResult>, AppError> {
@@ -227,7 +233,7 @@ async fn attempt(
 }
 async fn preferences(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Path(id): Path<String>,
     Json(request): Json<ReviewPreferenceRequest>,
 ) -> Result<Json<ReviewCard>, AppError> {
@@ -270,7 +276,7 @@ async fn preferences(
 }
 async fn cards(
     auth: AuthSession,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     Query(page): Query<crate::library::Page>,
 ) -> Result<Json<ReviewCardsPage>, AppError> {
     let (stamp, id) = crate::library::cursor(page.cursor)?;

@@ -1,5 +1,15 @@
 # 独立账号服务：迁移中的可运行边界
 
+## 学习持久化与受限数据库角色（迁移31）
+
+远端学习启动只建立LearningStore数据库状态，不初始化身份Backend、密码服务或会话存储；legacy组合服务复用相同学习路由。产品偏好读取只查询product_user_settings，缺省返回默认值/version1，账号有效性由已验证身份负责；非法非正ID拒绝，未知账号写入仍由外键拒绝。复习时区事务锁定产品设置行，而非账号行。独立学习就绪检查只读取学习/内容表并要求两个锁函数存在，不要求账号表权限。
+
+迁移31增加chef_lock_lesson(text,integer)和chef_lock_release_state()，保持学习操作与课程撤回/目录切换的行锁保护。函数使用SECURITY DEFINER、固定pg_catalog search_path和迁移时确定的完整schema引用，撤销PUBLIC EXECUTE；它们只能锁定指定课程或当前发布状态，不能写入内容或执行任意SQL。部署所有者显式授予运行角色执行权限。[PostgreSQL SELECT文档](https://www.postgresql.org/docs/current/sql-select.html)说明直接FOR SHARE需要UPDATE权限，因此学习调用这些有限函数，避免取得课程修改权限。
+
+infra/database/learning-grants.sql提供现阶段授权模板，需显式schema和专用非所有者、NOINHERIT、非超级用户角色，由私有部署流程创建角色。模板撤销身份表权限，授予所需学习读写、内容只读及两函数执行权限。它尚不代表完整租户/RLS或身份数据库权限方案，不能直接用于旧生产程序。
+
+验证：常规Rust工作区通过；15项隔离PostgreSQL回归、全目标Clippy（-D warnings）、fmt/diff通过。最终以实际授权模板再次运行2项身份HTTP/PG回归与Clippy：真实受限学习连接无法SELECT/DELETE身份表或UPDATE课程/发布状态，实际HTTP学习开始、步骤、收藏、复习入列/提交、队列、历史、dashboard及ready成功。两个函数实际阻塞另一事务内容更新，PUBLIC无执行权限。所有测试使用无生产挂载的临时数据库。未更新生产或产品固定框架版本；schema分离、远端内容后台、Hargow学习事实与最终部署仍待完成。
+
 Chef 提供 `chef-identity` 独立进程和 `infra/Dockerfile.identity`。产品库不复制账号实现，也不自建登录服务。学习服务的私有内省消费者、产品设置与成员授权、账号编辑及账号后台边界已逐步实现；生产仍使用已验证的旧组合 API。完整学习/内容租户隔离、远端内容后台和数据库最小权限尚未完成，不能直接替换生产账号路由。
 
 ## 已实现的边界

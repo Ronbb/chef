@@ -19,6 +19,7 @@ pub mod identity_cleanup;
 pub mod identity_service;
 pub mod learning;
 pub mod learning_identity;
+pub mod learning_store;
 pub mod lesson_audio_reviews;
 pub mod library;
 pub mod media;
@@ -147,12 +148,22 @@ impl IntoResponse for AppError {
     }
 }
 pub fn router(state: AppState) -> Router {
+    build_router(state, false)
+}
+/// Independent identity deployments check learning persistence without account table access.
+pub fn independent_learning_router(state: AppState) -> Router {
+    build_router(state, true)
+}
+fn build_router(state: AppState, independent_identity: bool) -> Router {
     Router::new()
         .route(
             "/api/health",
             get(|| async { Json(serde_json::json!({"status":"ok"})) }),
         )
-        .route("/api/ready", get(ready))
+        .route(
+            "/api/ready",
+            get(ready).layer(axum::Extension(independent_identity)),
+        )
         .route("/api/catalog", get(catalog))
         .route("/api/lessons/{id}", get(lesson))
         .route("/api/demo/lessons/{id}/grade", post(demo_grade))
@@ -202,11 +213,21 @@ async fn demo_grade(
         })?;
     Ok(([("Cache-Control", "no-store")], Json(result)))
 }
-async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, AppError> {
+async fn ready(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(independent_identity): axum::Extension<bool>,
+) -> Result<Json<serde_json::Value>, AppError> {
     if let Some(db) = &state.db {
-        db.execute_unprepared("SELECT users.profile_version, product_user_settings.version, identity_tokens.product_id, account_admin_audit.product_id FROM lesson_revisions, product_user_settings, product_memberships, users, browser_sessions, identity_tokens, account_admin_audit, auth_throttle, learning_sessions, review_cards, review_attempts, saved_items, content_state, content_releases, content_withdrawals, media_assets, character_revisions, asset_import_audit LIMIT 0")
+        let sql = if independent_identity {
+            "SELECT product_user_settings.version FROM product_user_settings,lesson_revisions,learning_sessions,lesson_progress,step_progress,exercise_hints,exercise_attempts,learning_operations,review_cards,review_attempts,saved_items,content_state,content_releases,release_entries,content_withdrawals,media_assets,character_revisions LIMIT 0"
+        } else {
+            "SELECT users.profile_version, product_user_settings.version, identity_tokens.product_id, account_admin_audit.product_id FROM lesson_revisions, product_user_settings, product_memberships, users, browser_sessions, identity_tokens, account_admin_audit, auth_throttle, learning_sessions, review_cards, review_attempts, saved_items, content_state, content_releases, content_withdrawals, media_assets, character_revisions, asset_import_audit LIMIT 0"
+        };
+        db.execute_unprepared(sql)
             .await
             .map_err(|_| AppError::Unavailable)?;
+        db.execute_unprepared("SELECT 'chef_lock_lesson(text,integer)'::regprocedure,'chef_lock_release_state()'::regprocedure")
+            .await.map_err(|_|AppError::Unavailable)?;
     } else if state.fixture.is_none() {
         return Err(AppError::Unavailable);
     }

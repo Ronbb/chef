@@ -1,5 +1,7 @@
 //! Request-local identity verification. No credentials, sessions or authorization cache in learning.
-use crate::{AppError, identity::Backend, identity_service::SessionIdentity, product::ProductId};
+use crate::{
+    AppError, identity_service::SessionIdentity, learning_store::LearningStore, product::ProductId,
+};
 use axum::{
     Router,
     extract::{FromRequestParts, Request, State},
@@ -200,7 +202,7 @@ async fn gate(State(client): State<Client>, mut request: Request, next: Next) ->
 }
 async fn profile(
     auth: LearningAuth,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
 ) -> Result<axum::Json<brioche_course_contract::UserProfile>, AppError> {
     let preferences =
         crate::product_settings::read(&backend.db, auth.identity.product, auth.account_id()?)
@@ -222,7 +224,7 @@ fn profile_payload(
 }
 async fn settings(
     auth: LearningAuth,
-    State(backend): State<Backend>,
+    State(backend): State<LearningStore>,
     axum::Json(request): axum::Json<brioche_course_contract::UpdateProfileRequest>,
 ) -> Result<axum::Json<brioche_course_contract::UserProfile>, AppError> {
     // Shared account edits belong to identity, never a learning database write.
@@ -260,7 +262,7 @@ async fn settings(
     )))
 }
 /// Until full product facts isolation is migrated, remote business routes are Brioche-only.
-pub fn router(backend: Backend, client: Client) -> anyhow::Result<Router> {
+pub fn router(db: sea_orm::DatabaseConnection, client: Client) -> anyhow::Result<Router> {
     anyhow::ensure!(
         client.product == ProductId::Brioche,
         "Product learning data migration incomplete"
@@ -268,12 +270,9 @@ pub fn router(backend: Backend, client: Client) -> anyhow::Result<Router> {
     Ok(Router::new()
         .route("/api/v1/me", axum::routing::get(profile))
         .route("/api/v1/me/settings", axum::routing::patch(settings))
-        .merge(crate::learning::router())
-        .merge(crate::reviews::router())
-        .merge(crate::library::router())
-        .merge(crate::dashboard::router())
+        .merge(crate::learning_store::routes())
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
-        .with_state(backend)
+        .with_state(LearningStore::new(db))
         .route_layer(axum::middleware::from_fn_with_state(client, gate)))
 }
 

@@ -22,22 +22,44 @@ pub async fn read<C: ConnectionTrait>(
     product: ProductId,
     user: i64,
 ) -> Result<Preferences, AppError> {
+    read_impl(db, product, user, false).await
+}
+/// Keep scheduling timezone and preference updates ordered on their own product row.
+pub(crate) async fn read_locked<C: ConnectionTrait>(
+    db: &C,
+    product: ProductId,
+    user: i64,
+) -> Result<Preferences, AppError> {
+    ensure(db, product, user).await?;
+    read_impl(db, product, user, true).await
+}
+async fn read_impl<C: ConnectionTrait>(
+    db: &C,
+    product: ProductId,
+    user: i64,
+    locked: bool,
+) -> Result<Preferences, AppError> {
+    if user <= 0 {
+        return Err(AppError::Unauthorized);
+    }
     let row = db.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-        "SELECT s.settings,s.version FROM users u LEFT JOIN product_user_settings s ON s.user_id=u.id AND s.product_id=$2 WHERE u.id=$1",
-        [user.into(), product.as_str().into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::Unauthorized)?;
-    let settings: Option<serde_json::Value> = row
+        format!("SELECT settings,version FROM product_user_settings WHERE user_id=$1 AND product_id=$2 {}", if locked {"FOR SHARE"} else {""}),
+        [user.into(), product.as_str().into()])).await.map_err(|_| AppError::Unavailable)?;
+    let Some(row) = row else {
+        return Ok(Preferences {
+            settings: UserSettings::default(),
+            version: 1,
+        });
+    };
+    let settings: serde_json::Value = row
         .try_get("", "settings")
         .map_err(|_| AppError::Unavailable)?;
-    let version: Option<i32> = row
+    let version: i32 = row
         .try_get("", "version")
         .map_err(|_| AppError::Unavailable)?;
     Ok(Preferences {
-        settings: settings
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|_| AppError::Unavailable)?
-            .unwrap_or_default(),
-        version: u32::try_from(version.unwrap_or(1)).map_err(|_| AppError::Unavailable)?,
+        settings: serde_json::from_value(settings).map_err(|_| AppError::Unavailable)?,
+        version: u32::try_from(version).map_err(|_| AppError::Unavailable)?,
     })
 }
 /// Caller uses its transaction; optimistic concurrency is independent per product.
@@ -100,10 +122,18 @@ mod tests {
         assert_eq!(other.version, 1);
         assert_eq!(other.settings.time_zone, "Asia/Shanghai");
         assert!(!other.settings.show_translation);
+        // Account validity belongs to identity verification, not a credentials-table join.
+        assert_eq!(read(&db, ProductId::Hargow, 999).await.unwrap().version, 1);
         assert!(matches!(
-            read(&db, ProductId::Hargow, 999).await,
+            read(&db, ProductId::Hargow, 0).await,
             Err(AppError::Unauthorized)
         ));
+        let absent = db.begin().await.unwrap();
+        assert!(matches!(
+            save(&absent, ProductId::Hargow, 999, 1, &UserSettings::default()).await,
+            Err(AppError::Unavailable)
+        ));
+        absent.rollback().await.unwrap();
         let tx = db.begin().await.unwrap();
         let mut french = before.settings;
         french.time_zone = "Pacific/Honolulu".into();
