@@ -1,8 +1,9 @@
 //! Read-only study facts. Goal minutes are a preference, never fabricated measured duration.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend},
+    identity::Backend,
     learning::{field, one, owner},
+    learning_identity::LearningAuth as AuthSession,
     library::STAMP,
 };
 use axum::{Json, Router, extract::State, routing::get};

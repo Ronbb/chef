@@ -519,7 +519,7 @@ async fn update_profile(
     }))
 }
 
-fn profile_changes(
+pub(crate) fn profile_changes(
     display_name: &str,
     mut settings: UserSettings,
     request: UpdateProfileRequest,

@@ -96,7 +96,7 @@ pub async fn protect(
         .append("vary", "Cookie".parse().unwrap());
     response
 }
-async fn validate_write(
+pub(crate) async fn validate_write(
     policy: &CsrfPolicy,
     session: &Session,
     headers: &axum::http::HeaderMap,

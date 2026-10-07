@@ -1,8 +1,9 @@
 //! Owned review queue and atomic fixed-interval scheduling.
 use crate::{
     AppError,
-    identity::{AuthSession, Backend},
+    identity::Backend,
     learning::{exec, field, hash, one, owner, random_id, record, replay, validate_key},
+    learning_identity::LearningAuth as AuthSession,
 };
 use axum::{
     Json, Router,

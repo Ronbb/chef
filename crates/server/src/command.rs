@@ -721,6 +721,15 @@ pub async fn run() -> Result<()> {
         "serve" => {}
         _ => bail!("unknown command"),
     }
+    let remote_origin = match std::env::var("IDENTITY_INTERNAL_URL") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => bail!("Invalid identity endpoint configuration"),
+    };
+    let remote_identity = remote_origin.is_some();
+    if remote_identity && db.is_none() {
+        bail!("Remote identity requires database mode");
+    }
     let auth_router = if let Some(db) = &db {
         let public_url = std::env::var("PUBLIC_APP_URL")
             .context("PUBLIC_APP_URL is required in database mode")?;
@@ -737,11 +746,23 @@ pub async fn run() -> Result<()> {
         let policy = crate::csrf::CsrfPolicy::new(origins)?;
         let secure = url::Url::parse(&public_url)?.scheme() == "https";
         let backend = crate::identity::Backend::new(db.clone()).await?;
-        Some(crate::identity::router(backend, policy, secure))
+        Some(if let Some(origin) = remote_origin {
+            let key = std::env::var("IDENTITY_INTERNAL_KEY")
+                .map_err(|_| anyhow::anyhow!("Identity service credential required"))?;
+            let client = crate::learning_identity::Client::new(
+                &origin,
+                &key,
+                crate::product::ProductId::Brioche,
+                secure,
+            )?;
+            crate::learning_identity::router(backend, client)?
+        } else {
+            crate::identity::router(backend, policy, secure)
+        })
     } else {
         None
     };
-    let cleanup = db.clone().map(|db| tokio::spawn(async move {
+    let cleanup = db.clone().filter(|_| !remote_identity).map(|db| tokio::spawn(async move {
         let store = crate::session_store::PgSessionStore::new(db.clone());
         let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {

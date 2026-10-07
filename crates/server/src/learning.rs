@@ -2,14 +2,15 @@
 use crate::{
     AppError,
     grading::{GradeError, Grader},
-    identity::{AuthSession, Backend},
+    identity::Backend,
+    learning_identity::LearningAuth as AuthSession,
 };
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
     routing::{get, post, put},
 };
-use axum_login::AuthUser;
+
 use brioche_course_contract::*;
 use sea_orm::{
     ConnectionTrait, DatabaseTransaction, DbBackend, QueryResult, Statement, TransactionTrait,
@@ -20,11 +21,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 const STAMP: &str = "YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"";
-pub(crate) fn owner(auth: &AuthSession) -> Result<i64, AppError> {
-    auth.user
-        .as_ref()
-        .map(AuthUser::id)
-        .ok_or(AppError::Unauthorized)
+pub(crate) fn owner(auth: &impl crate::learning_identity::AccountOwner) -> Result<i64, AppError> {
+    auth.account_id()
 }
 pub(crate) fn random_id() -> Result<String, AppError> {
     let mut bytes = [0u8; 16];

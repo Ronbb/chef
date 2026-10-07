@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountProfile {
     pub id: String,
@@ -52,7 +52,7 @@ impl From<AuthResult> for AccountAuthResult {
         }
     }
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionIdentity {
     pub product: ProductId,
@@ -110,9 +110,26 @@ async fn service_only(
     response
 }
 async fn introspect(
-    State(config): State<ServiceConfig>,
+    State((config, policy)): State<(ServiceConfig, CsrfPolicy)>,
     auth: AuthSession,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<SessionIdentity>, AppError> {
+    // Trusted internal clients identify the original method; writes retain session CSRF.
+    if headers.get_all("x-chef-request-method").iter().count() > 1 {
+        return Err(AppError::Forbidden);
+    }
+    let method = headers
+        .get("x-chef-request-method")
+        .map(|value| value.to_str())
+        .transpose()
+        .map_err(|_| AppError::Forbidden)?
+        .unwrap_or("GET");
+    if !["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"].contains(&method) {
+        return Err(AppError::Forbidden);
+    }
+    if !matches!(method, "GET" | "HEAD" | "OPTIONS") {
+        crate::csrf::validate_write(&policy, &auth.session, &headers, true).await?;
+    }
     let account = identity::account_identity(auth)?;
     Ok(Json(SessionIdentity {
         product: config.product,
@@ -122,7 +139,7 @@ async fn introspect(
 pub fn router(backend: Backend, policy: CsrfPolicy, secure: bool, config: ServiceConfig) -> Router {
     let internal = Router::new()
         .route("/internal/v1/session", get(introspect))
-        .with_state(config.clone());
+        .with_state((config.clone(), policy.clone()));
     // The credential gate wraps authentication, rejecting invalid clients before DB reads.
     let internal = identity::protect_routes(
         internal,

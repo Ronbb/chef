@@ -17,3 +17,5 @@ Web 真源补充：通用页面/播放器/管理员界面与完整 Web/SSR/浏�
 独立账号迁移补充：chef-identity与产品会话范围校验已经落地，配置/限制见docs/identity-service.md。学习服务消费者、产品settings/schema/权限分离仍未完成；禁止把新二进制或账号DTO去settings当作完整迁移，不在未验证产品数据隔离前更新生产路由。账号实现继续只属于Chef，产品仅配置和部署装配。
 
 产品学习设置补充：迁移28已移除users.settings，Brioche legacy组合API使用product_user_settings独立版本；账号Backend/独立identity不读取学习设置。新消费者必须区分account version与product preference version，不把全局role当产品管理员；迁移必须匹配新API，旧prod二进制不可先drop列。Hargow设置核心已有隔离回归，其余学习/目录/媒体/后台产品隔离与identity消费者未完成。
+
+内省消费者补充：learning_identity按每个私有请求验证，严格Cookie/产品/ID/载荷与有界HTTP，无缓存/失败回退。写请求在独立identity核验原method+Origin+CSRF；远端模式仍Brioche learner-only，globalrole不作为其他产品管理员授权。原本地AuthSession仅legacy及未迁移后台。不得切生产或给Hargow开放未隔离的业务路由，余下角色/后台/账号编辑/schema隔离仍待完成。

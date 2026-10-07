@@ -16,6 +16,7 @@ pub mod grading;
 pub mod identity;
 pub mod identity_service;
 pub mod learning;
+pub mod learning_identity;
 pub mod lesson_audio_reviews;
 pub mod library;
 pub mod media;

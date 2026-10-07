@@ -192,6 +192,138 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     .unwrap();
     assert_eq!(hargow["product"], "hargow");
     assert!(hargow["account"].get("settings").is_none());
+    // Real learning handlers verify this real identity server over TCP for every request.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let service_url = format!("http://{}", listener.local_addr().unwrap());
+    let identity_http = french.app.clone();
+    let service_task =
+        tokio::spawn(async move { axum::serve(listener, identity_http).await.unwrap() });
+    let client =
+        chef_engine::learning_identity::Client::new(&service_url, KEY, ProductId::Brioche, false)
+            .unwrap();
+    let remote = chef_engine::learning_identity::router(backend.clone(), client).unwrap();
+    let request = |method: &str, path: &str, body: serde_json::Value, csrf: &str, cookie: &str| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header("origin", french.origin)
+            .header("cookie", cookie)
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    };
+    let response = remote
+        .clone()
+        .oneshot(request(
+            "GET",
+            "/api/v1/me",
+            serde_json::Value::Null,
+            &french.csrf,
+            &french.cookie,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let profile: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(profile["id"], account);
+    let settings_body = serde_json::json!({"version":1,"showTranslation":true});
+    assert_eq!(
+        remote
+            .clone()
+            .oneshot(request(
+                "PATCH",
+                "/api/v1/me/settings",
+                settings_body.clone(),
+                "bad",
+                &french.cookie
+            ))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        403
+    );
+    assert_eq!(
+        remote
+            .clone()
+            .oneshot(request(
+                "PATCH",
+                "/api/v1/me/settings",
+                settings_body,
+                &french.csrf,
+                &french.cookie
+            ))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200
+    );
+    assert!(
+        chef_engine::product_settings::read(&db, ProductId::Brioche, account.parse().unwrap())
+            .await
+            .unwrap()
+            .settings
+            .show_translation
+    );
+    assert!(
+        !chef_engine::product_settings::read(&db, ProductId::Hargow, account.parse().unwrap())
+            .await
+            .unwrap()
+            .settings
+            .show_translation
+    );
+    assert_eq!(
+        remote
+            .clone()
+            .oneshot(request(
+                "GET",
+                "/api/v1/me/saved-items",
+                serde_json::Value::Null,
+                &french.csrf,
+                &french.cookie
+            ))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200
+    );
+    assert_eq!(
+        remote
+            .clone()
+            .oneshot(request(
+                "GET",
+                "/api/v1/me",
+                serde_json::Value::Null,
+                &french.csrf,
+                &cantonese.cookie
+            ))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401
+    );
+    service_task.abort();
+    let _ = service_task.await;
+    assert_eq!(
+        remote
+            .oneshot(request(
+                "GET",
+                "/api/v1/me",
+                serde_json::Value::Null,
+                &french.csrf,
+                &french.cookie
+            ))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        503
+    );
     assert_eq!(
         french
             .request("GET", "/internal/v1/session", None, None)
