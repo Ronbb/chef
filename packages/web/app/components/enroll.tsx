@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import type { ReviewCard } from "@brioche/contracts/ReviewCard";
+import type { ReadingReviewCard as ReviewCard } from "../lib/reading-model";
 import { useLearning } from "./learning";
 import { useOwnedWrite } from "./owned-write";
 export function Enroll({
@@ -37,7 +37,7 @@ export function Enroll({
           disabled={write.blocked}
           onClick={() =>
             write.write(
-              "/api/v1/me/review-enrollments",
+              "/api/v2/me/review-enrollments",
               {
                 knowledgeId,
                 sourceLessonId: lessonId,

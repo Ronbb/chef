@@ -1,5 +1,8 @@
+import product from "@chef/product";
+import { ReadingTextLabel } from "../components/reading-text";
+import { targetText } from "../lib/reading-model";
 import { Link, redirect, useLocation } from "react-router";
-import type { ReviewHistoryPage } from "@brioche/contracts/ReviewHistoryPage";
+import type { ReadingReviewHistoryPage as ReviewHistoryPage } from "../lib/reading-model";
 import { getPrivate } from "../lib/api.server";
 import { Icon } from "../components/icon";
 import { usePageCursorFocus } from "../components/page-cursor-focus";
@@ -9,7 +12,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   try {
     return await getPrivate<ReviewHistoryPage>(
       request,
-      "/api/v1/me/review-history" +
+      "/api/v2/me/review-history" +
         (cursor ? "?cursor=" + encodeURIComponent(cursor) : ""),
     );
   } catch (error) {
@@ -46,9 +49,13 @@ export default function History({ loaderData }: Route.ComponentProps) {
             <div>
               <span
                 className="result-expression"
-                lang={item.withdrawn ? "zh-CN" : "fr"}
+                lang={item.withdrawn ? "zh-CN" : product.targetLanguage}
               >
-                {item.vocabulary?.lemma ?? "来源内容已撤回"}
+                {item.vocabulary ? (
+                  <ReadingTextLabel reading={item.vocabulary.lemma} />
+                ) : (
+                  "来源内容已撤回"
+                )}
               </span>
               <small>
                 {new Date(item.reviewedAt).toLocaleString("zh-CN", {

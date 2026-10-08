@@ -113,6 +113,19 @@ test("owned operation recovery fixes endpoint, source, version and mutation fiel
   assert.equal(new Set(cases.map((c) => ownedTargetKey(c.target))).size, 4);
   for (const { target, job } of cases) {
     assert.ok(validOwnedPending(job, target));
+    const native = {
+      ...job,
+      path: (job as { path: string }).path.replace("/api/v1/", "/api/v2/"),
+    };
+    const original = JSON.stringify(native);
+    assert.ok(validOwnedPending(native, target));
+    assert.equal(JSON.stringify(native), original);
+    assert.ok(
+      !validOwnedPending(
+        { ...native, path: native.path.replace("/v2/", "/v3/") },
+        target,
+      ),
+    );
     const value = job as { path: string; method: string; body: object };
     for (const changed of [
       { ...value, path: "/api/v1/me/settings" },

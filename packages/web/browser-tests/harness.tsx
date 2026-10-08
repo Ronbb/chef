@@ -46,7 +46,7 @@ import {
   saveDraft,
 } from "../app/lib/learning-draft";
 import { ownedTargetKey } from "../app/lib/owned-draft";
-import type { SavedItem } from "@brioche/contracts/SavedItem";
+import type { ReadingSavedItem as SavedItem } from "../app/lib/reading-model";
 import type { ReviewCard } from "@brioche/contracts/ReviewCard";
 import type { ReviewQueue } from "@brioche/contracts/ReviewQueue";
 import type { ReviewAttemptResult } from "@brioche/contracts/ReviewAttemptResult";
@@ -129,6 +129,7 @@ const qa = {
   learningPaths: [] as { path: string; method?: string }[],
   learningReads: [] as ((value: LearningState | number) => void)[],
   sessionLesson: lesson as ReadingLesson,
+  reviewPaths: [] as string[],
   reviewWrites: [] as Record<string, unknown>[],
   reviewRelease: [] as ((value: ReviewAttemptResult | number) => void)[],
   queueReads: [] as ((value: ReviewQueue | number) => void)[],
@@ -270,6 +271,10 @@ function controlledAuth(
   });
 }
 window.fetch = async (input, init) => {
+  const personalInput = String(input).replace(
+    /^\/api\/v2\/me\//,
+    "/api/v1/me/",
+  );
   if (
     String(input).startsWith("/api/demo/lessons/") &&
     init?.method === "POST"
@@ -329,10 +334,10 @@ window.fetch = async (input, init) => {
       }),
     );
   if (
-    (String(input).startsWith("/api/v1/me/saved-items/") &&
+    (personalInput.startsWith("/api/v1/me/saved-items/") &&
       init?.method === "PUT") ||
-    String(input) === "/api/v1/me/review-enrollments" ||
-    String(input) === "/api/v1/me/reviews/qa-card/preferences"
+    personalInput === "/api/v1/me/review-enrollments" ||
+    personalInput === "/api/v1/me/reviews/qa-card/preferences"
   ) {
     const index =
       qa.ownedWrites.push({
@@ -349,7 +354,7 @@ window.fetch = async (input, init) => {
     });
   }
   if (
-    String(input) === "/api/v1/me/reviews/qa-card" &&
+    personalInput === "/api/v1/me/reviews/qa-card" &&
     init?.method === "GET"
   ) {
     return new Promise<Response>((resolve) => {
@@ -362,7 +367,8 @@ window.fetch = async (input, init) => {
       );
     });
   }
-  if (String(input) === "/api/v1/me/reviews/qa-card/attempts") {
+  if (personalInput === "/api/v1/me/reviews/qa-card/attempts") {
+    qa.reviewPaths.push(String(input));
     const index = qa.reviewWrites.push(JSON.parse(String(init?.body))) - 1;
     return new Promise<Response>((resolve) => {
       qa.reviewRelease[index] = (value) =>
@@ -373,7 +379,7 @@ window.fetch = async (input, init) => {
         );
     });
   }
-  if (String(input) === "/api/v1/me/reviews") {
+  if (personalInput === "/api/v1/me/reviews") {
     return new Promise<Response>((resolve) => {
       qa.queueReads.push((value) =>
         resolve(
@@ -751,12 +757,29 @@ const reviewUser: UserProfile = {
     speechRate: 1,
   },
 };
+const nativeReviewQueue = {
+  ...reviewQueue,
+  items: [
+    {
+      ...reviewQueue.items[0],
+      sourceLessonId: neutralReading.id,
+      knowledgeId: neutralReading.knowledge.vocabulary[0].id,
+      vocabulary: {
+        ...neutralReading.knowledge.vocabulary[0],
+        recording: { asset: lesson.audio![0], startMs: 1200, endMs: 1800 },
+      },
+    },
+  ],
+};
+Object.assign(qa, { nativeReviewQueue });
 function ReviewsHarness() {
+  const currentQueue =
+    kind === "reviews-neutral" ? nativeReviewQueue : reviewQueue;
   return (
     <LearningProvider user={reviewUser}>
       <main>
         <Reviews
-          loaderData={reviewQueue}
+          loaderData={currentQueue}
           params={{}}
           matches={[
             {
@@ -770,7 +793,7 @@ function ReviewsHarness() {
               id: "routes/reviews",
               params: {},
               pathname: "/",
-              loaderData: reviewQueue,
+              loaderData: currentQueue,
               handle: undefined,
             },
           ]}
@@ -1054,7 +1077,17 @@ function LibraryHarness() {
         }
       : {
           view: "saved" as const,
-          page: { items: [savedItem], nextCursor: null },
+          page: {
+            items: [
+              kind === "library-neutral"
+                ? {
+                    ...savedItem,
+                    vocabulary: nativeReviewQueue.items[0].vocabulary,
+                  }
+                : savedItem,
+            ],
+            nextCursor: null,
+          },
           cursor: null,
         };
   return (
@@ -1277,9 +1310,11 @@ const router = createMemoryRouter(
         kind === "session-multi" ||
         kind === "session-neutral" ? (
         <SessionHarness />
-      ) : kind === "reviews" ? (
+      ) : kind === "reviews" || kind === "reviews-neutral" ? (
         <ReviewsHarness />
-      ) : kind === "library" || kind === "managed-library" ? (
+      ) : kind === "library" ||
+        kind === "library-neutral" ||
+        kind === "managed-library" ? (
         <LibraryHarness />
       ) : kind === "pending" ? (
         <PendingHarness />

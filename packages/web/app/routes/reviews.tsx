@@ -1,10 +1,13 @@
+import product from "@chef/product";
+import { ReadingTextLabel } from "../components/reading-text";
+import { targetText } from "../lib/reading-model";
 import { productNamespace } from "../lib/product-runtime";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, redirect } from "react-router";
-import type { ReviewQueue } from "@brioche/contracts/ReviewQueue";
+import type { ReadingReviewQueue as ReviewQueue } from "../lib/reading-model";
 import type { ReviewRating } from "@brioche/contracts/ReviewRating";
 import type { ReviewAttemptRequest } from "@brioche/contracts/ReviewAttemptRequest";
-import type { ReviewAttemptResult } from "@brioche/contracts/ReviewAttemptResult";
+import type { ReadingReviewAttemptResult as ReviewAttemptResult } from "../lib/reading-model";
 import { getPrivate } from "../lib/api.server";
 import { knowledgeUnit } from "../lib/recording-playback";
 import {
@@ -27,7 +30,7 @@ import { usePendingOwnedWrites } from "../components/pending-owned-writes";
 import type { Route } from "./+types/reviews";
 export async function loader({ request }: Route.LoaderArgs) {
   try {
-    return await getPrivate<ReviewQueue>(request, "/api/v1/me/reviews");
+    return await getPrivate<ReviewQueue>(request, "/api/v2/me/reviews");
   } catch (error) {
     if (error instanceof Response && error.status === 401)
       throw redirect("/login?next=/reviews");
@@ -51,6 +54,7 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
     [results, setResults] = useState<ReviewAttemptResult[]>([]);
   const pending = useRef<{
       cardId: string;
+      path?: string;
       body: ReviewAttemptRequest;
       restored?: boolean;
     } | null>(null),
@@ -87,7 +91,7 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
       const path = (stored as { path?: unknown }).path;
       const match =
         typeof path === "string"
-          ? /^\/api\/v1\/me\/reviews\/([A-Za-z0-9_-]{1,100})\/attempts$/.exec(
+          ? /^\/api\/v[12]\/me\/reviews\/([A-Za-z0-9_-]{1,100})\/attempts$/.exec(
               path,
             )
           : null;
@@ -97,6 +101,7 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
       ) {
         pending.current = {
           cardId: match[1],
+          path: stored.path,
           body: stored.body as unknown as ReviewAttemptRequest,
           restored: true,
         };
@@ -146,7 +151,7 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
     if (busy.current) return;
     const gen = generation.current;
     const stored = {
-      path: "/api/v1/me/reviews/" + job.cardId + "/attempts",
+      path: job.path ?? "/api/v2/me/reviews/" + job.cardId + "/attempts",
       method: "POST",
       body: job.body,
     };
@@ -176,7 +181,7 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
       if (job.restored) {
         try {
           const fresh = await privateRequest<ReviewQueue>(
-            "/api/v1/me/reviews",
+            "/api/v2/me/reviews",
             "GET",
           );
           if (!alive.current || gen !== generation.current) return;
@@ -223,7 +228,7 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
           let accepted = false;
           try {
             const fresh = await privateRequest<ReviewQueue>(
-              "/api/v1/me/reviews",
+              "/api/v2/me/reviews",
               "GET",
             );
             if (alive.current && gen === generation.current) {
@@ -260,7 +265,7 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
     setError("");
     try {
       const fresh = await privateRequest<ReviewQueue>(
-        "/api/v1/me/reviews",
+        "/api/v2/me/reviews",
         "GET",
       );
       if (alive.current && gen === generation.current) {
@@ -287,7 +292,7 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
       audio.play([
         knowledgeUnit(
           "review-" + term.id,
-          term.vocabulary.lemma,
+          targetText(term.vocabulary.lemma),
           term.vocabulary.recording,
         ),
       ]);
@@ -388,13 +393,15 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
                 ? "常用表达"
                 : "日常词汇"}
             </span>
-            <span className="review-expression" lang="fr">
-              {term.vocabulary.gender === "feminine"
+            <span className="review-expression" lang={product.targetLanguage}>
+              {product.targetLanguage === "fr-FR" &&
+              term.vocabulary.gender === "feminine"
                 ? "une "
-                : term.vocabulary.gender === "masculine"
+                : product.targetLanguage === "fr-FR" &&
+                    term.vocabulary.gender === "masculine"
                   ? "un "
                   : ""}
-              {term.vocabulary.lemma}
+              <ReadingTextLabel reading={term.vocabulary.lemma} />
             </span>
             {revealed && (
               <span className="review-solution">
@@ -460,8 +467,13 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
               {results.map((result) => (
                 <li key={result.card.id}>
                   <div>
-                    <span className="result-expression" lang="fr">
-                      {result.card.vocabulary.lemma}
+                    <span
+                      className="result-expression"
+                      lang={product.targetLanguage}
+                    >
+                      <ReadingTextLabel
+                        reading={result.card.vocabulary.lemma}
+                      />
                     </span>
                     <small>{result.card.vocabulary.meaningZh}</small>
                   </div>

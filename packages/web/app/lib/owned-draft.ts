@@ -23,7 +23,7 @@ export function pendingOwned(
     if (!job || typeof job.path !== "string" || !job.body) continue;
     let target: OwnedTarget | null = null;
     const match =
-      /^\/api\/v1\/me\/reviews\/([A-Za-z0-9_-]{1,100})\/(preferences|attempts)$/.exec(
+      /^\/api\/v[12]\/me\/reviews\/([A-Za-z0-9_-]{1,100})\/(preferences|attempts)$/.exec(
         job.path,
       );
     if (match)
@@ -33,7 +33,7 @@ export function pendingOwned(
           : { kind: "rating", cardId: match[1] };
     else {
       const body = job.body,
-        saved = /^\/api\/v1\/me\/saved-items\/([A-Za-z0-9_-]{1,100})$/.exec(
+        saved = /^\/api\/v[12]\/me\/saved-items\/([A-Za-z0-9_-]{1,100})$/.exec(
           job.path,
         );
       const knowledgeId = saved?.[1] ?? body.knowledgeId;
@@ -88,11 +88,15 @@ export function validOwnedPending(
     !/^[a-zA-Z0-9_-]{16,100}$/.test(body.idempotencyKey)
   )
     return false;
+  const path =
+    typeof job.path === "string"
+      ? job.path.replace(/^\/api\/v2\/me\//, "/api/v1/me/")
+      : null;
   const fields = Object.keys(body);
   if (target.kind === "rating")
     return (
       job.method === "POST" &&
-      job.path ===
+      path ===
         "/api/v1/me/reviews/" +
           encodeURIComponent(target.cardId) +
           "/attempts" &&
@@ -106,7 +110,7 @@ export function validOwnedPending(
   if (target.kind === "preference")
     return (
       job.method === "PUT" &&
-      job.path ===
+      path ===
         "/api/v1/me/reviews/" +
           encodeURIComponent(target.cardId) +
           "/preferences" &&
@@ -125,7 +129,7 @@ export function validOwnedPending(
   if (target.kind === "enroll")
     return (
       job.method === "POST" &&
-      job.path === "/api/v1/me/review-enrollments" &&
+      path === "/api/v1/me/review-enrollments" &&
       body.knowledgeId === target.knowledgeId &&
       fields.every((key) =>
         [
@@ -138,7 +142,7 @@ export function validOwnedPending(
     );
   return (
     job.method === "PUT" &&
-    job.path ===
+    path ===
       "/api/v1/me/saved-items/" + encodeURIComponent(target.knowledgeId) &&
     Number.isSafeInteger(body.version) &&
     (body.version as number) >= 0 &&

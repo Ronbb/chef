@@ -710,6 +710,52 @@ test("knowledge recordings play fixed intervals in teaching notes, saved cards a
   }
 });
 
+test("native review and saved cards render authored Jyutping and reuse recorded playback", async () => {
+  for (const [kind, selector] of [
+    ["library-neutral", ".library-entry-heading"],
+    ["reviews-neutral", ".review-flashcard"],
+  ]) {
+    await open(kind);
+    await browser("set", "viewport", "390", "844");
+    assert.ok(await evaluate("!!document.querySelector('ruby rt')"));
+    assert.equal(
+      await evaluate("document.querySelector('ruby rt').textContent"),
+      "nei5 hou2",
+    );
+    assert.equal(
+      await evaluate("document.body.textContent.includes('[object Object]')"),
+      false,
+    );
+    await browser("focus", selector);
+    await press("Enter");
+    await browser("wait", "--fn", "qa.mediaPlays.length===1");
+    assert.ok(Math.abs((await evaluate("qa.mediaPlays[0]")).time - 1.2) < 0.02);
+    assert.deepEqual(await evaluate("qa.spoken"), []);
+    assert.equal(
+      await evaluate("document.documentElement.scrollWidth>innerWidth"),
+      false,
+    );
+    if (kind === "reviews-neutral") {
+      await browser("focus", ".review-ratings button:last-child");
+      await press("Enter");
+      await browser("wait", "--fn", "qa.reviewWrites.length===1");
+      assert.equal(
+        await evaluate("qa.reviewPaths[0]"),
+        "/api/v2/me/reviews/qa-card/attempts",
+      );
+      await evaluate(
+        "qa.reviewRelease[0]({card:{...qa.nativeReviewQueue.items[0],version:2},reviewedAt:'2026-10-08T00:00:00Z',timeZone:'Asia/Shanghai'})",
+      );
+      await browser("wait", "--text", "本轮回顾");
+      assert.ok(
+        await evaluate(
+          "!!document.querySelector('.result-expression ruby rt')",
+        ),
+      );
+    }
+  }
+});
+
 test("recording pause and speed changes preserve the same audio position and explicit resume", async () => {
   await open("reading");
   await browser("focus", ".playback-line");
@@ -1867,6 +1913,42 @@ test("review navigation preserves the original rating and does not treat queue r
     "qa.queueReads[0]({items:[],dueCount:0,nextDueAt:null,localDate:'2026-10-06',timeZone:'Asia/Shanghai'})",
   );
   assert.equal(await evaluate("qa.route"), "/login");
+});
+
+test("restored legacy review rating replays its exact v1 endpoint in the v2 client", async () => {
+  await open("reviews");
+  await evaluate("qa.navigate('/login')");
+  await browser("wait", "--fn", "qa.route==='/login'");
+  const job = {
+    path: "/api/v1/me/reviews/qa-card/attempts",
+    method: "POST",
+    body: {
+      cardVersion: 1,
+      rating: "remembered",
+      idempotencyKey: "legacy-rating-fixed-1234",
+    },
+  };
+  await evaluate(
+    `sessionStorage.setItem('brioche.learning.v1:qa-account:reviews:1:pending',${JSON.stringify(JSON.stringify(job))});qa.navigate('/')`,
+  );
+  await browser("wait", "--text", "确认上次复习");
+  await browser("focus", ".review-page > button.primary");
+  await press("Enter");
+  await browser("wait", "--fn", "qa.reviewWrites.length===1");
+  assert.equal(await evaluate("qa.reviewPaths[0]"), job.path);
+  assert.deepEqual(await evaluate("qa.reviewWrites[0]"), job.body);
+  await evaluate(
+    "qa.reviewRelease[0]({card:{...qa.reviewFixture.items[0],version:2},reviewedAt:'2026-10-08T00:00:00Z',timeZone:'Asia/Shanghai'})",
+  );
+  await browser("wait", "--fn", "qa.queueReads.length===1");
+  assert.equal(
+    await evaluate(
+      "sessionStorage.getItem('brioche.learning.v1:qa-account:reviews:1:pending')",
+    ),
+    null,
+  );
+  await evaluate("qa.queueReads[0]({...qa.reviewFixture,items:[],dueCount:0})");
+  await browser("wait", "--text", "本轮回顾");
 });
 
 test("revoked reviews close the leave prompt, focus recovery, and never revive an unavailable card", async () => {

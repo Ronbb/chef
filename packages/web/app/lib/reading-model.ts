@@ -90,3 +90,34 @@ export function readingTokens(segment: ReadingSegment): ReadingToken[] {
 export const titleText = (
   title: { fr: string; zh: string } | { target: string; zh: string },
 ) => ("target" in title ? title.target : title.fr);
+
+// Shared rendering accepts existing snapshots without rewriting persisted facts.
+export type ReadingSavedItem =
+  | import("@brioche/contracts/SavedItem").SavedItem
+  | import("@brioche/contracts/NeutralSavedItem").NeutralSavedItem;
+export type ReadingReviewCard =
+  | import("@brioche/contracts/ReviewCard").ReviewCard
+  | import("@brioche/contracts/NeutralReviewCard").NeutralReviewCard;
+export type ReadingSavedPage = {
+  items: ReadingSavedItem[];
+  nextCursor: string | null;
+};
+export type ReadingReviewCardsPage = {
+  items: ReadingReviewCard[];
+  nextCursor: string | null;
+};
+export type ReadingReviewQueue = Omit<
+  import("@brioche/contracts/ReviewQueue").ReviewQueue,
+  "items"
+> & { items: ReadingReviewCard[] };
+export type ReadingReviewAttemptResult = Omit<
+  import("@brioche/contracts/ReviewAttemptResult").ReviewAttemptResult,
+  "card"
+> & { card: ReadingReviewCard };
+export type ReadingReviewHistoryPage = {
+  items: (
+    | import("@brioche/contracts/ReviewHistoryItem").ReviewHistoryItem
+    | import("@brioche/contracts/NeutralReviewHistoryItem").NeutralReviewHistoryItem
+  )[];
+  nextCursor: string | null;
+};

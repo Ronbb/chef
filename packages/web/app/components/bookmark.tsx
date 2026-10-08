@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import type { SavedItem } from "@brioche/contracts/SavedItem";
+import type { ReadingSavedItem as SavedItem } from "../lib/reading-model";
 import { useLearning } from "./learning";
 import { useOwnedWrite } from "./owned-write";
 import { ApiRequestError, privateRequest } from "../lib/api.client";
@@ -27,7 +27,7 @@ export function Bookmark({
     [readError, setReadError] = useState("");
   const mounted = useRef(true),
     audio = useLearning(),
-    path = "/api/v1/me/saved-items/" + encodeURIComponent(knowledgeId);
+    path = "/api/v2/me/saved-items/" + encodeURIComponent(knowledgeId);
   async function refresh() {
     try {
       const result = await privateRequest<SavedItem>(path, "GET");

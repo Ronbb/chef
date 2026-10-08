@@ -1,9 +1,12 @@
+import product from "@chef/product";
+import { ReadingTextLabel } from "../components/reading-text";
+import { targetText } from "../lib/reading-model";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Link, redirect } from "react-router";
-import type { SavedItem } from "@brioche/contracts/SavedItem";
-import type { SavedPage } from "@brioche/contracts/SavedPage";
-import type { ReviewCard } from "@brioche/contracts/ReviewCard";
-import type { ReviewCardsPage } from "@brioche/contracts/ReviewCardsPage";
+import type { ReadingSavedItem as SavedItem } from "../lib/reading-model";
+import type { ReadingSavedPage as SavedPage } from "../lib/reading-model";
+import type { ReadingReviewCard as ReviewCard } from "../lib/reading-model";
+import type { ReadingReviewCardsPage as ReviewCardsPage } from "../lib/reading-model";
 import { getPrivate } from "../lib/api.server";
 import { ApiRequestError, privateRequest } from "../lib/api.client";
 import { useOwnedWrite } from "../components/owned-write";
@@ -27,7 +30,7 @@ export async function loader({ request }: Route.LoaderArgs) {
           view: "saved" as const,
           page: await getPrivate<SavedPage>(
             request,
-            "/api/v1/me/saved-items" + query,
+            "/api/v2/me/saved-items" + query,
           ),
           cursor,
         }
@@ -35,7 +38,7 @@ export async function loader({ request }: Route.LoaderArgs) {
           view: "reviews" as const,
           page: await getPrivate<ReviewCardsPage>(
             request,
-            "/api/v1/me/review-cards" + query,
+            "/api/v2/me/review-cards" + query,
           ),
           cursor,
         };
@@ -217,15 +220,19 @@ function SavedRow({
             audio.play([
               knowledgeUnit(
                 "saved-" + current.id,
-                current.vocabulary.lemma,
+                targetText(current.vocabulary.lemma),
                 current.vocabulary.recording,
               ),
             ]);
         }}
       >
         <span>
-          <strong lang={current.withdrawn ? "zh-CN" : "fr"}>
-            {current.vocabulary?.lemma ?? "来源内容已撤回"}
+          <strong lang={current.withdrawn ? "zh-CN" : product.targetLanguage}>
+            {current.vocabulary ? (
+              <ReadingTextLabel reading={current.vocabulary.lemma} />
+            ) : (
+              "来源内容已撤回"
+            )}
           </strong>
           <small>{current.vocabulary?.meaningZh}</small>
         </span>
@@ -349,7 +356,7 @@ function ManagedCard({ initial }: { initial: ReviewCard }) {
     setRefreshing(true);
     try {
       const fresh = await privateRequest<ReviewCard>(
-        "/api/v1/me/reviews/" + initial.id,
+        "/api/v2/me/reviews/" + initial.id,
         "GET",
       );
       if (mounted.current) {
@@ -422,14 +429,16 @@ function ManagedCard({ initial }: { initial: ReviewCard }) {
             audio.play([
               knowledgeUnit(
                 "managed-" + card.id,
-                card.vocabulary.lemma,
+                targetText(card.vocabulary.lemma),
                 card.vocabulary.recording,
               ),
             ]);
         }}
       >
         <span>
-          <strong lang="fr">{card.vocabulary.lemma}</strong>
+          <strong lang={product.targetLanguage}>
+            <ReadingTextLabel reading={card.vocabulary.lemma} />
+          </strong>
           <small>{card.suspended ? "已暂停" : card.vocabulary.meaningZh}</small>
         </span>
         <Icon name="chevron" />
@@ -445,7 +454,7 @@ function ManagedCard({ initial }: { initial: ReviewCard }) {
             onClick={() => {
               if (write.blocked || readFailed || refreshing) return;
               write.write(
-                "/api/v1/me/reviews/" + card.id + "/preferences",
+                "/api/v2/me/reviews/" + card.id + "/preferences",
                 { cardVersion: card.version, suspended: !card.suspended },
                 setCard,
               );

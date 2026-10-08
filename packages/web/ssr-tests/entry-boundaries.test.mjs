@@ -187,18 +187,55 @@ const server = createServer((request, response) => {
         nextId: null,
       }),
     );
-  } else if (request.url === "/api/v1/me/reviews" && authenticated) {
+  } else if (
+    request.url === "/api/v2/me/saved-items" &&
+    authenticated &&
+    neutralPublicLesson
+  ) {
     response.end(
       JSON.stringify({
-        items: [],
-        dueCount: 0,
+        items: [
+          {
+            id: "native-saved",
+            knowledgeId: neutralPublicLesson.knowledge.vocabulary[0].id,
+            sourceLessonId: neutralPublicLesson.id,
+            sourceRevision: 1,
+            vocabulary: neutralPublicLesson.knowledge.vocabulary[0],
+            saved: true,
+            withdrawn: false,
+            version: 1,
+            createdAt: "2026-10-08T00:00:00Z",
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+  } else if (request.url === "/api/v2/me/reviews" && authenticated) {
+    response.end(
+      JSON.stringify({
+        items: neutralPublicLesson
+          ? [
+              {
+                id: "native-card",
+                knowledgeId: neutralPublicLesson.knowledge.vocabulary[0].id,
+                sourceLessonId: neutralPublicLesson.id,
+                sourceRevision: 1,
+                vocabulary: neutralPublicLesson.knowledge.vocabulary[0],
+                stage: 0,
+                dueAt: "2026-10-08T00:00:00Z",
+                version: 1,
+                suspended: false,
+              },
+            ]
+          : [],
+        dueCount: neutralPublicLesson ? 1 : 0,
         nextDueAt: null,
         localDate: "2026-10-06",
         timeZone: "Asia/Shanghai",
       }),
     );
   } else if (
-    request.url.startsWith("/api/v1/me/review-history") &&
+    request.url.startsWith("/api/v2/me/review-history") &&
     authenticated
   ) {
     response.end(
@@ -209,7 +246,8 @@ const server = createServer((request, response) => {
               {
                 id: "ssr-history",
                 cardId: "ssr-card",
-                vocabulary: lesson.knowledge.vocabulary[0],
+                vocabulary: (neutralPublicLesson ?? lesson).knowledge
+                  .vocabulary[0],
                 withdrawn: false,
                 rating: "familiar",
                 oldStage: 0,
@@ -569,13 +607,13 @@ test("production history SSR forwards encoded cursors privately and distinguishe
     assert.match(html, /href="\/review-history"/);
     assert.ok(!html.includes("完成一次复习后，记录会显示在这里。"));
     const reads = requests.filter((entry) =>
-      entry.path.startsWith("/api/v1/me/review-history"),
+      entry.path.startsWith("/api/v2/me/review-history"),
     );
     assert.deepEqual(
       reads.map((entry) => entry.path),
       [
-        "/api/v1/me/review-history",
-        "/api/v1/me/review-history?cursor=older%2Fqa%3F%2B",
+        "/api/v2/me/review-history",
+        "/api/v2/me/review-history?cursor=older%2Fqa%3F%2B",
       ],
     );
     assert.ok(
@@ -712,7 +750,7 @@ test("signed-in legacy review redirects to the private queue and forwards only i
     assert.equal(queue.status, 200);
     assert.ok((await queue.text()).includes("复习"));
     const privateRead = requests.find(
-      (entry) => entry.path === "/api/v1/me/reviews",
+      (entry) => entry.path === "/api/v2/me/reviews",
     );
     assert.equal(privateRead?.cookie, "brioche.sid=controlled-ssr-session");
     assert.ok(requests.every((entry) => entry.method === "GET"));
@@ -1164,8 +1202,21 @@ test("public lesson SSR reads v2 and renders native Cantonese words and pronunci
       ),
     );
     assert.ok(!requests.some((r) => r.path === "/api/catalog"));
+    authenticated = true;
+    requests.length = 0;
+    for (const path of ["/reviews", "/library", "/review-history"]) {
+      const personal = await request(path);
+      assert.equal(personal.status, 200);
+      const personalHtml = await personal.text();
+      assert.ok(personalHtml.includes("<rt>nei5 hou2</rt>"), path);
+      assert.ok(!personalHtml.includes("[object Object]"), path);
+    }
+    assert.ok(requests.some((r) => r.path === "/api/v2/me/reviews"));
+    assert.ok(requests.some((r) => r.path === "/api/v2/me/saved-items"));
+    assert.ok(requests.some((r) => r.path === "/api/v2/me/review-history"));
   } finally {
     neutralPublicLesson = null;
+    authenticated = false;
   }
 });
 
