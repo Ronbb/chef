@@ -69,9 +69,6 @@ fn item(row: &QueryResult) -> Result<AdminVoiceJob, AppError> {
         updated_at: field(row, "updated_at")?,
     })
 }
-pub(crate) async fn load(db: &impl ConnectionTrait, id: &str) -> Result<AdminVoiceJob, AppError> {
-    load_for_product(db, None, id).await
-}
 pub(crate) async fn load_for_product(
     db: &impl ConnectionTrait,
     product: Option<crate::product::ProductId>,

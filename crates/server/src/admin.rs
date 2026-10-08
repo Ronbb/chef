@@ -75,7 +75,7 @@ pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
         .merge(crate::character_voices::router(db.clone(), product))
         .merge(crate::voice_references::router(db.clone(), product))
         .merge(crate::voice_jobs::router(db.clone(), product))
-        .merge(crate::voice_auditions::router(db.clone()))
+        .merge(crate::voice_auditions::router(db.clone(), product))
         .merge(crate::admin_speech_plans::router(db.clone()))
         .merge(crate::speech_clips::router(db.clone()))
         .merge(crate::speech_export::router(db.clone()))
@@ -165,7 +165,7 @@ async fn history(
             SELECT 'import:'||lesson_id||':'||revision, 'import', lesson_id||' v'||revision, actor, reason, created_at FROM lesson_import_audit WHERE true{course_scope}
             {account_events}
             UNION ALL
-            SELECT 'voice:'||character_id||':'||character_revision||':'||revision, 'voiceProfile', character_id||' v'||character_revision||' / voice v'||revision, 'user:'||actor_id, reason, created_at FROM character_voice_profiles
+            SELECT 'voice:'||character_id||':'||character_revision||':'||revision, 'voiceProfile', character_id||' v'||character_revision||' / voice v'||revision, 'user:'||actor_id, reason, created_at FROM character_voice_profiles WHERE true{course_scope}
             UNION ALL
             SELECT 'alignment:'||id,'alignmentImport',id,'user:'||actor_id,reason,created_at FROM speech_alignments
             UNION ALL
@@ -183,21 +183,21 @@ async fn history(
             UNION ALL
             SELECT 'speechPlan:'||id, 'speechPlan', lesson_id||' v'||lesson_revision, 'user:'||actor_id, reason, created_at FROM course_speech_plans
             UNION ALL
-            SELECT 'asset:'||id, 'assetImport', target, 'user:'||actor_id, reason, created_at FROM asset_import_audit WHERE actor_id IS NOT NULL
+            SELECT 'asset:'||id, 'assetImport', target, 'user:'||actor_id, reason, created_at FROM asset_import_audit WHERE actor_id IS NOT NULL{course_scope}
             UNION ALL
-            SELECT 'audio:'||id, 'audioImport', target, 'user:'||actor_id, reason, created_at FROM audio_import_audit WHERE actor_id IS NOT NULL
+            SELECT 'audio:'||id, 'audioImport', target, 'user:'||actor_id, reason, created_at FROM audio_import_audit WHERE actor_id IS NOT NULL{course_scope}
             UNION ALL
-            SELECT 'reference:'||id, 'referenceGrant', character_id||' v'||character_revision||' / voice v'||voice_revision, 'user:'||actor_id, reason, created_at FROM voice_reference_grants
+            SELECT 'reference:'||id, 'referenceGrant', character_id||' v'||character_revision||' / voice v'||voice_revision, 'user:'||actor_id, reason, created_at FROM voice_reference_grants WHERE true{course_scope}
             UNION ALL
-            SELECT 'referenceRevoked:'||grant_id, 'referenceRevoke', grant_id, 'user:'||actor_id, reason, created_at FROM voice_reference_revocations
+            SELECT 'referenceRevoked:'||grant_id, 'referenceRevoke', grant_id, 'user:'||actor_id, reason, created_at FROM voice_reference_revocations WHERE true{course_scope}
             UNION ALL
-            SELECT 'voiceJob:'||id, 'voiceJobCreated', id, 'user:'||actor_id, reason, created_at FROM voice_clone_jobs
+            SELECT 'voiceJob:'||id, 'voiceJobCreated', id, 'user:'||actor_id, reason, created_at FROM voice_clone_jobs WHERE true{course_scope}
             UNION ALL
-            SELECT 'voiceCheck:'||job_id||':'||version, 'voiceJobCheck', job_id, 'user:'||actor_id, reason, created_at FROM voice_clone_events WHERE status='checking' AND actor_id IS NOT NULL
+            SELECT 'voiceCheck:'||job_id||':'||version, 'voiceJobCheck', job_id, 'user:'||actor_id, reason, created_at FROM voice_clone_events WHERE status='checking' AND actor_id IS NOT NULL{course_scope}
             UNION ALL
-            SELECT 'audition:'||id, 'voiceAudition', id, 'user:'||actor_id, reason, created_at FROM voice_auditions
+            SELECT 'audition:'||id, 'voiceAudition', id, 'user:'||actor_id, reason, created_at FROM voice_auditions WHERE true{course_scope}
             UNION ALL
-            SELECT 'auditionReview:'||audition_id, CASE WHEN accepted THEN 'voiceAuditionAccepted' ELSE 'voiceAuditionRejected' END, audition_id, 'user:'||actor_id, reason, created_at FROM voice_audition_reviews
+            SELECT 'auditionReview:'||audition_id, CASE WHEN accepted THEN 'voiceAuditionAccepted' ELSE 'voiceAuditionRejected' END, audition_id, 'user:'||actor_id, reason, created_at FROM voice_audition_reviews WHERE true{course_scope}
         )
         SELECT key,action,target,actor,reason,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
         FROM events WHERE $1::timestamptz IS NULL OR (created_at,key COLLATE "C") < ($1::timestamptz,$2::text COLLATE "C")

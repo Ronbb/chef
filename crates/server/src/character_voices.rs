@@ -264,13 +264,6 @@ pub(crate) async fn append_profile_in(
         .await?;
     append_profile_body(tx, None, actor, request).await
 }
-pub(crate) async fn append_profile_authorized_in(
-    tx: &sea_orm::DatabaseTransaction,
-    operator: &crate::product_memberships::Operator,
-    request: AdminCharacterVoiceRequest,
-) -> Result<AdminCharacterVoice, AppError> {
-    append_profile_authorized_for_product(tx, None, operator, request).await
-}
 pub(crate) async fn append_profile_authorized_for_product(
     tx: &sea_orm::DatabaseTransaction,
     product: Option<crate::product::ProductId>,

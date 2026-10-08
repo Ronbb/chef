@@ -3,7 +3,7 @@ use crate::{
     AppError,
     admin_auth::AdminAuth,
     identity::Backend,
-    learning::{exec, field, one},
+    learning::{exec, field, one, product_filter},
     qwen::{ProviderError, Service},
     voice_references::hex,
 };
@@ -20,25 +20,42 @@ use brioche_course_contract::{
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, TransactionTrait};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
-const SELECT: &str = r#"SELECT a.id,a.clone_job_id,COALESCE(g.character_id,a.character_id) AS character_id,COALESCE(g.character_revision,a.character_revision) AS character_revision,COALESCE(g.voice_revision,a.base_voice_revision) AS voice_revision,a.profile,a.parameters,e.result,
+fn projection(product: Option<crate::product::ProductId>) -> String {
+    let same = |column: &str| {
+        if product.is_some() {
+            format!(" AND {column}=a.product_id")
+        } else {
+            String::new()
+        }
+    };
+    format!(
+        r#"SELECT a.id,a.clone_job_id,COALESCE(g.character_id,a.character_id) AS character_id,COALESCE(g.character_revision,a.character_revision) AS character_revision,COALESCE(g.voice_revision,a.base_voice_revision) AS voice_revision,a.profile,a.parameters,e.result,
 CASE WHEN e.status='submitted' AND e.created_at<clock_timestamp()-interval '300 seconds' THEN 'unknown' ELSE e.status END AS status,
 r.accepted,r.voice_revision AS applied_voice_revision,to_char(a.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
-FROM voice_auditions a LEFT JOIN voice_clone_jobs j ON j.id=a.clone_job_id LEFT JOIN voice_reference_grants g ON g.id=j.grant_id
-JOIN LATERAL (SELECT * FROM voice_audition_events WHERE audition_id=a.id ORDER BY version DESC LIMIT 1) e ON true
-LEFT JOIN voice_audition_reviews r ON r.audition_id=a.id"#;
+FROM voice_auditions a LEFT JOIN voice_clone_jobs j ON j.id=a.clone_job_id{} LEFT JOIN voice_reference_grants g ON g.id=j.grant_id{}
+JOIN LATERAL (SELECT * FROM voice_audition_events WHERE audition_id=a.id{} ORDER BY version DESC LIMIT 1) e ON true
+LEFT JOIN voice_audition_reviews r ON r.audition_id=a.id{}"#,
+        same("j.product_id"),
+        same("g.product_id"),
+        same("product_id"),
+        same("r.product_id")
+    )
+}
 #[derive(Clone)]
 struct Store {
+    product: Option<crate::product::ProductId>,
     db: sea_orm::DatabaseConnection,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/voice-auditions", get(list).post(create))
         .route("/api/v1/operator/voice-auditions/{id}", get(read))
         .route("/api/v1/operator/voice-auditions/{id}/file", get(file))
         .route("/api/v1/operator/voice-auditions/{id}/review", post(review))
-        .with_state(Store { db })
+        .with_state(Store { db, product })
 }
 fn item(row: &QueryResult) -> Result<AdminAudition, AppError> {
     let p: Value = field(row, "profile")?;
@@ -75,13 +92,25 @@ fn item(row: &QueryResult) -> Result<AdminAudition, AppError> {
         created_at: field(row, "created_at")?,
     })
 }
-async fn load(db: &impl ConnectionTrait, id: &str) -> Result<QueryResult, AppError> {
+async fn load(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    id: &str,
+) -> Result<QueryResult, AppError> {
     if !hex(id, 32) {
         return Err(AppError::InvalidInput);
     }
-    one(db, &format!("{SELECT} WHERE a.id=$1"), vec![id.into()])
-        .await?
-        .ok_or(AppError::NotFound)
+    one(
+        db,
+        &format!(
+            "{} WHERE a.id=$1{}",
+            projection(product),
+            product_filter(product, "a.product_id")
+        ),
+        vec![id.into()],
+    )
+    .await?
+    .ok_or(AppError::NotFound)
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -114,7 +143,7 @@ async fn list(
     {
         return Err(AppError::InvalidInput);
     }
-    let rows=b.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("{SELECT} WHERE a.id>$1 AND ($2::text IS NULL OR a.clone_job_id=$2) AND ($3::text IS NULL OR COALESCE(g.character_id,a.character_id)=$3) AND ($4::integer IS NULL OR COALESCE(g.character_revision,a.character_revision)=$4) ORDER BY a.id LIMIT 21"),vec![after.into(),clone.into(),cursor.character_id.into(),cursor.character_revision.map(|v|v as i32).into()])).await.map_err(|_|AppError::Unavailable)?;
+    let rows=b.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("{} WHERE a.id>$1 AND ($2::text IS NULL OR a.clone_job_id=$2) AND ($3::text IS NULL OR COALESCE(g.character_id,a.character_id)=$3) AND ($4::integer IS NULL OR COALESCE(g.character_revision,a.character_revision)=$4) {} ORDER BY a.id LIMIT 21",projection(b.product),product_filter(b.product,"a.product_id")),vec![after.into(),clone.into(),cursor.character_id.into(),cursor.character_revision.map(|v|v as i32).into()])).await.map_err(|_|AppError::Unavailable)?;
     let items = rows
         .iter()
         .take(20)
@@ -131,13 +160,17 @@ async fn list(
         configured: service.is_some(),
     }))
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ItemQuery {}
 async fn read(
     auth: AdminAuth,
     State(b): State<Store>,
     Path(id): Path<String>,
+    Query(_query): Query<ItemQuery>,
 ) -> Result<Json<AdminAudition>, AppError> {
     auth.require_operator().await?;
-    Ok(Json(item(&load(&b.db, &id).await?)?))
+    Ok(Json(item(&load(&b.db, b.product, &id).await?)?))
 }
 
 /// Trusted local operator entry: shares persistence, current-role checks and exact retry with HTTP.
@@ -158,7 +191,10 @@ pub async fn submit_local(
     )
     .await?;
     let Json(mut result) = create_for_actor(
-        Store { db: b.db.clone() },
+        Store {
+            db: b.db.clone(),
+            product: None,
+        },
         &operator,
         service,
         root,
@@ -168,7 +204,7 @@ pub async fn submit_local(
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(245);
     while result.status == "submitted" && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        result = item(&load(&b.db, &id).await?)?;
+        result = item(&load(&b.db, None, &id).await?)?;
     }
     Ok(result)
 }
@@ -190,6 +226,9 @@ async fn create_for_actor(
     root: PathBuf,
     request: AdminAuditionRequest,
 ) -> Result<Json<AdminAudition>, AppError> {
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !request.cost_confirmed || !hex(&request.id, 32) {
@@ -230,10 +269,22 @@ async fn create_for_actor(
         vec![format!("voice-audition:{}", request.id).into()],
     )
     .await?;
-    if let Some(row)=one(&tx,"SELECT actor_id,reason,clone_job_id,clone_version,parameters FROM voice_auditions WHERE id=$1",vec![request.id.clone().into()]).await?{
+    // Global IDs remain until the later key migration. Never read a foreign attempt for an exact retry.
+    if let Some(product) = b.product
+        && one(
+            &tx,
+            "SELECT 1 FROM voice_auditions WHERE id=$1 AND product_id<>$2",
+            vec![request.id.clone().into(), product.as_str().into()],
+        )
+        .await?
+        .is_some()
+    {
+        return Err(AppError::NotFound);
+    }
+    if let Some(row)=one(&tx,&format!("SELECT actor_id,reason,clone_job_id,clone_version,parameters FROM voice_auditions WHERE id=$1{}",product_filter(b.product,"product_id")),vec![request.id.clone().into()]).await?{
         let p:Value=field(&row,"parameters")?;
         if field::<i64>(&row,"actor_id")?!=actor||field::<String>(&row,"reason")?!=request.reason||field::<Option<String>>(&row,"clone_job_id")?!=request.clone_job_id||field::<Option<i32>>(&row,"clone_version")?.map(|v|v as u32)!=request.expected_clone_version||p["candidate"]!=candidate_json||p["input"]["text"]!=request.text||p["sceneEmotion"]!=request.emotion{return Err(AppError::Conflict);}
-        return Ok(Json(item(&load(&tx,&request.id).await?)?));
+        return Ok(Json(item(&load(&tx,b.product,&request.id).await?)?));
     }
     let service = service.ok_or(AppError::Unavailable)?;
     let permit = service
@@ -244,7 +295,7 @@ async fn create_for_actor(
     let (profile, character_id, character_revision, base_voice_revision) = if let Some(c) =
         &request.candidate
     {
-        let row=one(&tx,"SELECT COALESCE(MAX(v.revision),0)::integer AS voice_revision FROM character_revisions c LEFT JOIN character_voice_profiles v ON v.character_id=c.character_id AND v.character_revision=c.revision WHERE c.character_id=$1 AND c.revision=$2 GROUP BY c.character_id,c.revision",vec![c.character_id.clone().into(),(c.character_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
+        let row=one(&tx,&format!("SELECT COALESCE(MAX(v.revision),0)::integer AS voice_revision FROM character_revisions c LEFT JOIN character_voice_profiles v ON v.character_id=c.character_id AND v.character_revision=c.revision{} WHERE c.character_id=$1 AND c.revision=$2{} GROUP BY c.character_id,c.revision",if b.product.is_some(){" AND v.product_id=c.product_id"}else{""},product_filter(b.product,"c.product_id")),vec![c.character_id.clone().into(),(c.character_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
         if field::<i32>(&row, "voice_revision")? as u32 != c.expected_voice_revision {
             return Err(AppError::Conflict);
         }
@@ -261,17 +312,20 @@ async fn create_for_actor(
             .ok_or(AppError::InvalidInput)?;
         exec(
             &tx,
-            "SELECT id FROM voice_clone_jobs WHERE id=$1 FOR UPDATE",
+            &format!(
+                "SELECT id FROM voice_clone_jobs WHERE id=$1{} FOR UPDATE",
+                product_filter(b.product, "product_id")
+            ),
             vec![job_id.into()],
         )
         .await?;
-        let source = crate::voice_jobs::load(&tx, job_id).await?;
+        let source = crate::voice_jobs::load_for_product(&tx, b.product, job_id).await?;
         if Some(source.version) != request.expected_clone_version
             || !matches!(source.status, VoiceJobStatus::Ready)
         {
             return Err(AppError::Conflict);
         }
-        let row=one(&tx,"SELECT profile FROM character_voice_profiles WHERE character_id=$1 AND character_revision=$2 AND revision=$3",vec![source.character_id.into(),(source.character_revision as i32).into(),(source.voice_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
+        let row=one(&tx,&format!("SELECT profile FROM character_voice_profiles WHERE character_id=$1 AND character_revision=$2 AND revision=$3{}",product_filter(b.product,"product_id")),vec![source.character_id.into(),(source.character_revision as i32).into(),(source.voice_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
         let mut profile: CharacterVoiceProfile =
             serde_json::from_value(field(&row, "profile")?).map_err(|_| AppError::Unavailable)?;
         profile.voice_id = source.voice_id.ok_or(AppError::Conflict)?;
@@ -288,14 +342,36 @@ async fn create_for_actor(
     let mut parameters = speech.parameters().map_err(|_| AppError::InvalidInput)?;
     parameters["sceneEmotion"] = json!(speech.emotion); // Private reproducibility metadata, not sent to Qwen.
     parameters["candidate"] = candidate_json;
-    exec(&tx,"INSERT INTO voice_auditions(id,clone_job_id,clone_version,profile,parameters,actor_id,reason,character_id,character_revision,base_voice_revision) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",vec![request.id.clone().into(),request.clone_job_id.into(),request.expected_clone_version.map(|v|v as i32).into(),serde_json::to_value(&speech.profile).map_err(|_|AppError::InvalidInput)?.into(),parameters.into(),actor.into(),request.reason.into(),character_id.into(),character_revision.into(),base_voice_revision.into()]).await?;
-    exec(
-        &tx,
-        "INSERT INTO voice_audition_events(audition_id,version,status) VALUES($1,1,'submitted')",
-        vec![request.id.clone().into()],
-    )
-    .await?;
-    let result = item(&load(&tx, &request.id).await?)?;
+    let mut values = vec![
+        request.id.clone().into(),
+        request.clone_job_id.into(),
+        request.expected_clone_version.map(|v| v as i32).into(),
+        serde_json::to_value(&speech.profile)
+            .map_err(|_| AppError::InvalidInput)?
+            .into(),
+        parameters.into(),
+        actor.into(),
+        request.reason.into(),
+        character_id.into(),
+        character_revision.into(),
+        base_voice_revision.into(),
+    ];
+    let sql = if let Some(product) = b.product {
+        values.push(product.as_str().into());
+        "INSERT INTO voice_auditions(id,clone_job_id,clone_version,profile,parameters,actor_id,reason,character_id,character_revision,base_voice_revision,product_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"
+    } else {
+        "INSERT INTO voice_auditions(id,clone_job_id,clone_version,profile,parameters,actor_id,reason,character_id,character_revision,base_voice_revision) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"
+    };
+    exec(&tx, sql, values).await?;
+    let mut values = vec![request.id.clone().into()];
+    let sql = if let Some(product) = b.product {
+        values.push(product.as_str().into());
+        "INSERT INTO voice_audition_events(audition_id,version,status,product_id) VALUES($1,1,'submitted',$2)"
+    } else {
+        "INSERT INTO voice_audition_events(audition_id,version,status) VALUES($1,1,'submitted')"
+    };
+    exec(&tx, sql, values).await?;
+    let result = item(&load(&tx, b.product, &request.id).await?)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     let cloned = speech.profile.voice_kind == "cloned";
     tokio::spawn(async move {
@@ -318,7 +394,10 @@ async fn create_for_actor(
             Err(ProviderError::Rejected) => ("failed", None),
             Err(ProviderError::Unknown) => ("unknown", None),
         };
-        if finish(&b.db, &request.id, status, result).await.is_err() {
+        if finish(&b.db, b.product, &request.id, status, result)
+            .await
+            .is_err()
+        {
             tracing::warn!("voice audition result persistence unavailable");
         }
     });
@@ -326,17 +405,19 @@ async fn create_for_actor(
 }
 async fn finish(
     db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
     id: &str,
     status: &str,
     result: Option<Value>,
 ) -> Result<(), AppError> {
-    exec(
-        db,
-        "INSERT INTO voice_audition_events(audition_id,version,status,result) VALUES($1,2,$2,$3)",
-        vec![id.into(), status.into(), result.into()],
-    )
-    .await
-    .map(|_| ())
+    let mut values = vec![id.into(), status.into(), result.into()];
+    let sql = if let Some(product) = product {
+        values.push(product.as_str().into());
+        "INSERT INTO voice_audition_events(audition_id,version,status,result,product_id) VALUES($1,2,$2,$3,$4)"
+    } else {
+        "INSERT INTO voice_audition_events(audition_id,version,status,result) VALUES($1,2,$2,$3)"
+    };
+    exec(db, sql, values).await.map(|_| ())
 }
 async fn file(
     auth: AdminAuth,
@@ -345,9 +426,10 @@ async fn file(
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     headers: HeaderMap,
+    Query(_query): Query<ItemQuery>,
 ) -> Result<axum::response::Response, AppError> {
     auth.require_operator().await?;
-    let row = load(&b.db, &id).await?;
+    let row = load(&b.db, b.product, &id).await?;
     if item(&row)?.status != "ready" {
         return Err(AppError::NotFound);
     }
@@ -385,7 +467,16 @@ pub async fn review_local(
         actor,
     )
     .await?;
-    review_for_actor(&Store { db: b.db.clone() }, &operator, id, request).await
+    review_for_actor(
+        &Store {
+            db: b.db.clone(),
+            product: None,
+        },
+        &operator,
+        id,
+        request,
+    )
+    .await
 }
 
 async fn review_for_actor(
@@ -394,6 +485,9 @@ async fn review_for_actor(
     id: String,
     request: AdminAuditionReview,
 ) -> Result<AdminAudition, AppError> {
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !hex(&id, 32) || !request.heard {
@@ -403,11 +497,14 @@ async fn review_for_actor(
     operator.lock_content(&tx).await?;
     exec(
         &tx,
-        "SELECT id FROM voice_auditions WHERE id=$1 FOR UPDATE",
+        &format!(
+            "SELECT id FROM voice_auditions WHERE id=$1{} FOR UPDATE",
+            product_filter(b.product, "product_id")
+        ),
         vec![id.clone().into()],
     )
     .await?;
-    let row = load(&tx, &id).await?;
+    let row = load(&tx, b.product, &id).await?;
     let audition = item(&row)?;
     if audition.status != "ready"
         || audition.accepted.is_some()
@@ -419,8 +516,9 @@ async fn review_for_actor(
         let profile =
             serde_json::from_value(field(&row, "profile")?).map_err(|_| AppError::Unavailable)?;
         Some(
-            crate::character_voices::append_profile_authorized_in(
+            crate::character_voices::append_profile_authorized_for_product(
                 &tx,
+                b.product,
                 operator,
                 AdminCharacterVoiceRequest {
                     character_id: audition.character_id.clone(),
@@ -436,8 +534,23 @@ async fn review_for_actor(
     } else {
         None
     };
-    exec(&tx,"INSERT INTO voice_audition_reviews(audition_id,accepted,character_id,character_revision,voice_revision,actor_id,reason) VALUES($1,$2,$3,$4,$5,$6,$7)",vec![id.clone().into(),request.accepted.into(),audition.character_id.into(),(audition.character_revision as i32).into(),voice.into(),actor.into(),request.reason.into()]).await?;
-    let result = item(&load(&tx, &id).await?)?;
+    let mut values = vec![
+        id.clone().into(),
+        request.accepted.into(),
+        audition.character_id.into(),
+        (audition.character_revision as i32).into(),
+        voice.into(),
+        actor.into(),
+        request.reason.into(),
+    ];
+    let sql = if let Some(product) = b.product {
+        values.push(product.as_str().into());
+        "INSERT INTO voice_audition_reviews(audition_id,accepted,character_id,character_revision,voice_revision,actor_id,reason,product_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)"
+    } else {
+        "INSERT INTO voice_audition_reviews(audition_id,accepted,character_id,character_revision,voice_revision,actor_id,reason) VALUES($1,$2,$3,$4,$5,$6,$7)"
+    };
+    exec(&tx, sql, values).await?;
+    let result = item(&load(&tx, b.product, &id).await?)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(result)
 }

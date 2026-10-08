@@ -98,6 +98,29 @@ impl chef_engine::qwen::Transport for EnrollmentFixture {
         })
     }
 }
+async fn history_pages(
+    app: &Router,
+    cookie: &mut String,
+    csrf: &mut String,
+) -> Vec<serde_json::Value> {
+    let mut pages = Vec::new();
+    let mut path = "/api/v1/operator/history".to_owned();
+    for _ in 0..100 {
+        let (status, page) = request(app, "GET", &path, None, cookie, csrf).await;
+        assert_eq!(status, 200, "{page}");
+        let next = page["next"].clone();
+        pages.push(page);
+        if next.is_null() {
+            return pages;
+        }
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("beforeTime", next["beforeTime"].as_str().unwrap())
+            .append_pair("beforeKey", next["beforeKey"].as_str().unwrap())
+            .finish();
+        path = format!("/api/v1/operator/history?{query}");
+    }
+    panic!("History pagination did not terminate");
+}
 async fn settled_job(
     app: &Router,
     path: &str,
@@ -3156,7 +3179,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     revoked_character["characterId"] = "split-revoked-character".into();
     let mut revoked_voice = voice.clone();
     revoked_voice["expectedVoiceRevision"] = 3.into();
-    let mut revoked_audition = audition_request;
+    let mut revoked_audition = audition_request.clone();
     revoked_audition["id"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
     let mut revoked_plan = plan_request;
     revoked_plan["id"] = "dddddddddddddddddddddddddddddddd".into();
@@ -3923,6 +3946,157 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         ],
         "foreign requests never reach the provider"
     );
+
+    let (status, auditions_before) = request(
+        &content_app,
+        "GET",
+        audition_route,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{auditions_before}");
+    let history_before = history_pages(&content_app, &mut cookie, &mut csrf).await;
+    for page in &history_before {
+        let text = page.to_string();
+        for forbidden in [
+            "Poisoned foreign",
+            "Synthetic foreign revocation",
+            "Synthetic foreign clone",
+        ] {
+            assert!(!text.contains(forbidden), "Foreign history leaked: {page}");
+        }
+    }
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO voice_clone_events(product_id,job_id,version,status,voice_id,actor_id,reason) SELECT 'hargow',id,2,'checking','qwen-audio-3.1-tts-flash-'||prefix||'-fixture',$1,'Foreign query fixture' FROM voice_clone_jobs WHERE product_id='hargow'",[account.into()])).await.unwrap();
+
+    // Ready foreign auditions use real test WAV receipts: file rejection must precede reading the media.
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO voice_auditions(product_id,id,character_id,character_revision,base_voice_revision,profile,parameters,actor_id,reason) SELECT 'hargow',lpad(to_hex(200+i),32,'0'),'aaa-foreign-character-'||i,1,0,jsonb_set(a.profile,'{referenceAudio}','null'),a.parameters,$1,'Foreign audition fixture' FROM generate_series(1,25) i CROSS JOIN voice_auditions a WHERE a.id=repeat('a',32)",[account.into()])).await.unwrap();
+    owner.execute_unprepared("INSERT INTO voice_audition_events(product_id,audition_id,version,status,result) SELECT 'hargow',a.id,1,'ready',e.result FROM voice_auditions a CROSS JOIN voice_audition_events e WHERE a.product_id='hargow' AND e.audition_id=repeat('a',32) AND e.version=2").await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO voice_audition_reviews(product_id,audition_id,accepted,character_id,character_revision,voice_revision,actor_id,reason) SELECT 'hargow',id,false,character_id,character_revision,NULL,$1,'Foreign audition decision fixture' FROM voice_auditions WHERE product_id='hargow'",[account.into()])).await.unwrap();
+    let (status, auditions_after) = request(
+        &content_app,
+        "GET",
+        audition_route,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{auditions_after}");
+    assert_eq!(
+        auditions_before, auditions_after,
+        "foreign auditions cannot consume pagination"
+    );
+    assert_eq!(
+        history_before,
+        history_pages(&content_app, &mut cookie, &mut csrf).await,
+        "foreign auditions do not alter any history page"
+    );
+    let foreign_audition = format!("{:032x}", 201);
+    let foreign_path = format!("{audition_route}/{foreign_audition}");
+    for path in [foreign_path.clone(), format!("{foreign_path}/file")] {
+        let (status, body) =
+            request(&content_app, "GET", &path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 404, "{path}: {body}");
+    }
+    for path in [
+        format!("{audition_route}?product=hargow"),
+        format!("{foreign_path}?product=hargow"),
+        format!("{foreign_path}/file?product=hargow"),
+    ] {
+        let (status, body) =
+            request(&content_app, "GET", &path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 400, "{path}: {body}");
+    }
+    let before=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_auditions)+(SELECT count(*) FROM voice_audition_events)+(SELECT count(*) FROM voice_audition_reviews)+(SELECT count(*) FROM character_voice_profiles) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    let calls_before = [
+        enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment
+            .syntheses
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ];
+    let mut foreign_clone_request = audition_request.clone();
+    foreign_clone_request["id"] = format!("{:032x}", 301).into();
+    foreign_clone_request["cloneJobId"] = foreign_job.clone().into();
+    foreign_clone_request["expectedCloneVersion"] = 1.into();
+    let mut system_profile = voice["profile"].clone();
+    system_profile["voiceId"] = brioche_course_contract::QWEN_FRENCH_SYSTEM_VOICES[0]
+        .0
+        .into();
+    let foreign_system_request = serde_json::json!({"id":format!("{:032x}",302),"candidate":{"characterId":"aaa-foreign-character-1","characterRevision":1,"expectedVoiceRevision":1,"profile":system_profile},"text":"Bonjour !","emotion":"Friendly.","costConfirmed":true,"reason":"Must not synthesize foreign character"});
+    let mut foreign_retry = audition_request.clone();
+    foreign_retry["id"] = foreign_audition.clone().into();
+    for body in [foreign_clone_request, foreign_system_request, foreign_retry] {
+        let (status, result) = request(
+            &content_app,
+            "POST",
+            audition_route,
+            Some(body),
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, 404, "{result}");
+    }
+    let (status,body)=request(&content_app,"POST",&format!("{foreign_path}/review"),Some(serde_json::json!({"accepted":true,"heard":true,"expectedVoiceRevision":0,"reason":"Synthetic foreign adoption rejected"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 404, "{body}");
+    let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_auditions)+(SELECT count(*) FROM voice_audition_events)+(SELECT count(*) FROM voice_audition_reviews)+(SELECT count(*) FROM character_voice_profiles) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    assert_eq!(before, after, "foreign create/retry/adoption has no writes");
+    assert_eq!(
+        calls_before,
+        [
+            enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment
+                .syntheses
+                .load(std::sync::atomic::Ordering::SeqCst)
+        ],
+        "foreign auditions do not call provider"
+    );
+    // Same-product system candidate exercises its explicit product writes and asynchronous result.
+    let system_request = serde_json::json!({"id":format!("{:032x}",303),"candidate":{"characterId":"split-character","characterRevision":2,"expectedVoiceRevision":3,"profile":system_profile},"text":"Bonjour !","emotion":"Friendly.","costConfirmed":true,"reason":"Independent synthetic system audition"});
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        audition_route,
+        Some(system_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let system_path = format!("{audition_route}/{:032x}", 303);
+    let settled = settled_job(&content_app, &system_path, &mut cookie, &mut csrf).await;
+    assert_eq!(settled["status"], "ready");
+    let calls = enrollment
+        .syntheses
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        audition_route,
+        Some(system_request),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        calls,
+        enrollment
+            .syntheses
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    let (status,body)=request(&content_app,"POST",&format!("{system_path}/review"),Some(serde_json::json!({"accepted":false,"heard":true,"expectedVoiceRevision":3,"reason":"Synthetic rejection protocol"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["accepted"], false);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_auditions WHERE id=lpad(to_hex(303),32,'0') AND product_id='brioche') AS attempts,(SELECT count(*) FROM voice_audition_events WHERE audition_id=lpad(to_hex(303),32,'0') AND product_id='brioche') AS events,(SELECT count(*) FROM voice_audition_reviews WHERE audition_id=lpad(to_hex(303),32,'0') AND product_id='brioche') AS reviews")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "attempts").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "events").unwrap(), 2);
+    assert_eq!(row.try_get::<i64>("", "reviews").unwrap(), 1);
+
     let mut foreign_reference = voice.clone();
     foreign_reference["expectedVoiceRevision"] = 3.into();
     foreign_reference["profile"]["referenceAudio"] = serde_json::json!({"assetId":"foreign-course-recording","revision":1,"transcript":"Bonjour.","cloningPermission":"Synthetic fixture only"});
