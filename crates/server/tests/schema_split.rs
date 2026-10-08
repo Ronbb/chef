@@ -4643,6 +4643,141 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         "package delivery/retries do not contact providers"
     );
 
+    // Automatic delivery also selects own latest receipts when another product
+    // shares the generation key. Synthetic predictions test binding, not accuracy.
+    let tar_members = |bytes: &[u8]| {
+        let mut archive = tar::Archive::new(std::io::Cursor::new(bytes));
+        let mut members = std::collections::BTreeMap::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut data = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut data).unwrap();
+            assert!(members.insert(path, data).is_none());
+        }
+        members
+    };
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&direct_export_path)
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let current_input_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let current_input = tar_members(&current_input_bytes);
+    let current_manifest: serde_json::Value =
+        serde_json::from_slice(&current_input["manifest.json"]).unwrap();
+    let mut own_automatic: serde_json::Value =
+        serde_json::from_str(automatic_request["reportJson"].as_str().unwrap()).unwrap();
+    own_automatic["sourceArchiveSha256"] =
+        format!("{:x}", Sha256::digest(&current_input_bytes)).into();
+    for clip in own_automatic["clips"].as_array_mut().unwrap() {
+        let current = current_manifest["clips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["generationKey"] == clip["generationKey"])
+            .unwrap();
+        clip["clipId"] = current["id"].clone();
+    }
+    let mut own_automatic_request = automatic_request.clone();
+    own_automatic_request["reportJson"] = own_automatic.to_string().into();
+    own_automatic_request["package"]["expectedReportHash"] = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&own_automatic).unwrap())
+    )
+    .into();
+    own_automatic_request["package"]["lessonRevision"] = (lesson.revision + 10).into();
+    let before=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_package_imports)+(SELECT count(*) FROM lesson_revisions)+(SELECT count(*) FROM audio_assets)+(SELECT count(*) FROM speech_alignment_reviews)+(SELECT count(*) FROM course_speech_clip_reviews)+(SELECT count(*) FROM lesson_direct_publications) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    let mut foreign_automatic = own_automatic.clone();
+    foreign_automatic["planId"] = "4".repeat(32).into();
+    let mut foreign_clip_automatic = own_automatic.clone();
+    foreign_clip_automatic["clips"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|c| c["generationKey"] == clip_request["generationKey"])
+        .unwrap()["clipId"] = foreign_clip_id.clone().into();
+    for (report, expected) in [(foreign_automatic, 404), (foreign_clip_automatic, 409)] {
+        let mut body = own_automatic_request.clone();
+        body["reportJson"] = report.to_string().into();
+        body["package"]["expectedReportHash"] =
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&report).unwrap())).into();
+        let (status, result) = request(
+            &content_app,
+            "POST",
+            automatic_path,
+            Some(body),
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, expected, "{result}");
+    }
+    let response = content_app
+        .clone()
+        .oneshot(json_write(
+            automatic_path,
+            &own_automatic_request,
+            &cookie,
+            &csrf,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let members = tar_members(&bytes);
+    let output: serde_json::Value = serde_json::from_slice(&members["manifest.json"]).unwrap();
+    assert_eq!(output["planId"], plan_id);
+    assert_eq!(output["automaticAlignment"], own_automatic);
+    assert_eq!(output["assembly"]["humanListeningAsserted"], false);
+    assert_eq!(output["assembly"]["approvalRequired"], false);
+    assert!(
+        output["clips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == format!("{:032x}", 502))
+    );
+    assert!(
+        output["clips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["id"] != foreign_clip_id)
+    );
+    let automatic_source: serde_json::Value =
+        serde_json::from_slice(&members["lesson.json"]).unwrap();
+    assert_eq!(automatic_source["id"], lesson.id);
+    assert_eq!(automatic_source["revision"], lesson.revision + 10);
+    chef_engine::project_source(automatic_source)
+        .unwrap()
+        .validate()
+        .unwrap();
+    let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_package_imports)+(SELECT count(*) FROM lesson_revisions)+(SELECT count(*) FROM audio_assets)+(SELECT count(*) FROM speech_alignment_reviews)+(SELECT count(*) FROM course_speech_clip_reviews)+(SELECT count(*) FROM lesson_direct_publications) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    assert_eq!(
+        before, after,
+        "automatic delivery neither imports nor inserts hearing/publication decisions"
+    );
+    assert_eq!(
+        alignment_calls_before,
+        [
+            enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment
+                .syntheses
+                .load(std::sync::atomic::Ordering::SeqCst)
+        ],
+        "automatic delivery never calls paid providers"
+    );
+
     let foreign_audition = format!("{:032x}", 201);
     let foreign_path = format!("{audition_route}/{foreign_audition}");
     for path in [foreign_path.clone(), format!("{foreign_path}/file")] {

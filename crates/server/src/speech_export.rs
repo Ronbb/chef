@@ -43,11 +43,12 @@ pub(crate) async fn snapshot_for_product(
 ) -> Result<Value, AppError> {
     snapshot_policy(db, product, id, true).await
 }
-pub(crate) async fn snapshot_direct(
+pub(crate) async fn snapshot_direct_for_product(
     db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
     id: &str,
 ) -> Result<Value, AppError> {
-    snapshot_policy(db, None, id, false).await
+    snapshot_policy(db, product, id, false).await
 }
 async fn snapshot_policy(
     db: &impl ConnectionTrait,

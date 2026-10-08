@@ -2,7 +2,7 @@
 use crate::{
     AppError,
     identity::Backend,
-    learning::{exec, field, hash, one},
+    learning::{exec, field, hash, one, product_filter},
 };
 use axum::{
     Extension, Json, Router,
@@ -20,17 +20,19 @@ use unicode_normalization::UnicodeNormalization;
 
 #[derive(Clone)]
 struct Store {
+    product: Option<crate::product::ProductId>,
     db: sea_orm::DatabaseConnection,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route(
             "/api/v1/operator/speech-packages/automatic",
             post(assemble_http).layer(DefaultBodyLimit::max(5 * 1024 * 1024)),
         )
-        .with_state(Store { db })
+        .with_state(Store { db, product })
 }
 async fn assemble_http(
     auth: crate::admin_auth::AdminAuth,
@@ -191,10 +193,13 @@ fn check_report(report: &Value, request: &AdminSpeechPackageRequest) -> Result<(
 }
 async fn snapshot(
     db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
     report: &Value,
     request: &AdminSpeechPackageRequest,
 ) -> Result<Value, AppError> {
-    let input = crate::speech_export::snapshot_direct(db, text(report, "planId")?).await?;
+    let input =
+        crate::speech_export::snapshot_direct_for_product(db, product, text(report, "planId")?)
+            .await?;
     let plan = &input["plan"];
     if plan["planHash"] != report["planHash"] {
         return Err(AppError::Conflict);
@@ -206,7 +211,10 @@ async fn snapshot(
         .ok_or(AppError::InvalidInput)?;
     let row = one(
         db,
-        "SELECT server_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2",
+        &format!(
+            "SELECT server_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2{}",
+            product_filter(product, "product_id")
+        ),
         vec![lesson.into(), revision.into()],
     )
     .await?
@@ -217,7 +225,10 @@ async fn snapshot(
     }
     let latest = one(
         db,
-        "SELECT MAX(revision) AS revision FROM lesson_revisions WHERE lesson_id=$1",
+        &format!(
+            "SELECT MAX(revision) AS revision FROM lesson_revisions WHERE lesson_id=$1{}",
+            product_filter(product, "product_id")
+        ),
         vec![lesson.into()],
     )
     .await?
@@ -328,7 +339,10 @@ pub async fn assemble_for_actor(
     )
     .await?;
     assemble_authorized(
-        &Store { db: b.db.clone() },
+        &Store {
+            db: b.db.clone(),
+            product: None,
+        },
         &operator,
         root,
         report,
@@ -343,6 +357,9 @@ async fn assemble_authorized(
     report: Value,
     request: AdminSpeechPackageRequest,
 ) -> Result<Vec<u8>, AppError> {
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let actor = operator.actor;
     check_report(&report, &request)?;
     let tx =
@@ -350,7 +367,7 @@ async fn assemble_authorized(
             .await
             .map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
-    let original = snapshot(&tx, &report, &request).await?;
+    let original = snapshot(&tx, b.product, &report, &request).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     let expected = original.clone();
     let assembled_manifest = manifest(&original, &report)?;
@@ -369,11 +386,17 @@ async fn assemble_authorized(
     operator.lock_content(&tx).await?;
     exec(
         &tx,
-        "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            b.product.map_or_else(
+                || "singleton".to_owned(),
+                |p| format!("product_id='{}'", p.as_str())
+            )
+        ),
         vec![],
     )
     .await?;
-    if snapshot(&tx, &report, &request).await? != expected {
+    if snapshot(&tx, b.product, &report, &request).await? != expected {
         return Err(AppError::Conflict);
     }
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
