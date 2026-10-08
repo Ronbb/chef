@@ -3848,6 +3848,81 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         before, after,
         "foreign issue, revoke and download leave authorization/read audit unchanged"
     );
+    let (status, jobs_before) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/voice-jobs",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{jobs_before}");
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO voice_clone_jobs(product_id,id,grant_id,prefix,actor_id,reason) SELECT 'hargow',lpad(to_hex(100+i),32,'0'),lpad(to_hex(i),32,'0'),'hf'||i,$1,'Synthetic foreign clone' FROM generate_series(1,25) i",[account.into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO voice_clone_events(product_id,job_id,version,status,voice_id,actor_id,reason) SELECT 'hargow',id,1,'ready','qwen-audio-3.1-tts-flash-'||prefix||'-fixture',$1,'Synthetic foreign clone' FROM voice_clone_jobs WHERE product_id='hargow'",[account.into()])).await.unwrap();
+    let (status, jobs_after) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/voice-jobs",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{jobs_after}");
+    assert_eq!(
+        jobs_before, jobs_after,
+        "foreign jobs do not consume pagination or appear in the list"
+    );
+    let foreign_job = format!("{:032x}", 101);
+    let job_path = format!("/api/v1/operator/voice-jobs/{foreign_job}");
+    let (status, body) =
+        request(&content_app, "GET", &job_path, None, &mut cookie, &mut csrf).await;
+    assert_eq!(status, 404, "{body}");
+    for path in [
+        "/api/v1/operator/voice-jobs?product=hargow".to_owned(),
+        format!("{job_path}?product=hargow"),
+    ] {
+        let (status, body) =
+            request(&content_app, "GET", &path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 400, "{path}: {body}");
+    }
+    let before=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_clone_jobs)+(SELECT count(*) FROM voice_clone_events) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    let calls_before = [
+        enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment
+            .syntheses
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ];
+    let (status,body)=request(&content_app,"POST","/api/v1/operator/voice-jobs",Some(serde_json::json!({"grantId":format!("{:032x}",1),"token":foreign_token,"costConfirmed":true,"reason":"Must not enroll foreign reference"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 404, "{body}");
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        &format!("{job_path}/check"),
+        Some(serde_json::json!({"expectedVersion":1,"reason":"Must not query foreign voice"})),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_clone_jobs)+(SELECT count(*) FROM voice_clone_events) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    assert_eq!(
+        before, after,
+        "foreign enrollment and recovery leave jobs/events unchanged"
+    );
+    assert_eq!(
+        calls_before,
+        [
+            enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment
+                .syntheses
+                .load(std::sync::atomic::Ordering::SeqCst)
+        ],
+        "foreign requests never reach the provider"
+    );
     let mut foreign_reference = voice.clone();
     foreign_reference["expectedVoiceRevision"] = 3.into();
     foreign_reference["profile"]["referenceAudio"] = serde_json::json!({"assetId":"foreign-course-recording","revision":1,"transcript":"Bonjour.","cloningPermission":"Synthetic fixture only"});

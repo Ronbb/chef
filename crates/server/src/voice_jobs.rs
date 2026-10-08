@@ -2,7 +2,7 @@
 use crate::{
     AppError,
     admin_auth::AdminAuth,
-    learning::{exec, field, one},
+    learning::{exec, field, one, product_filter},
     qwen::{self, ProviderError, Service},
     voice_references::{hex, inspect},
 };
@@ -16,24 +16,40 @@ use brioche_course_contract::{
 };
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, TransactionTrait};
 use std::{path::PathBuf, sync::Arc};
-const SELECT: &str = r#"SELECT j.id,j.grant_id,j.prefix,g.character_id,g.character_revision,g.voice_revision,g.model,e.version,
+fn projection(product: Option<crate::product::ProductId>) -> String {
+    format!(
+        r#"SELECT j.id,j.grant_id,j.prefix,g.character_id,g.character_revision,g.voice_revision,g.model,e.version,
 CASE WHEN e.status IN ('submitted','checking') AND e.created_at<clock_timestamp()-interval '60 seconds' THEN 'unknown' ELSE e.status END AS status,
 e.voice_id,e.request_id,to_char(j.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
 to_char(e.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
-FROM voice_clone_jobs j JOIN voice_reference_grants g ON g.id=j.grant_id
-JOIN LATERAL (SELECT * FROM voice_clone_events WHERE job_id=j.id ORDER BY version DESC LIMIT 1) e ON true"#;
+FROM voice_clone_jobs j JOIN voice_reference_grants g ON g.id=j.grant_id{}
+JOIN LATERAL (SELECT * FROM voice_clone_events WHERE job_id=j.id{} ORDER BY version DESC LIMIT 1) e ON true"#,
+        if product.is_some() {
+            " AND g.product_id=j.product_id"
+        } else {
+            ""
+        },
+        if product.is_some() {
+            " AND product_id=j.product_id"
+        } else {
+            ""
+        }
+    )
+}
 #[derive(Clone)]
 struct Store {
+    product: Option<crate::product::ProductId>,
     db: sea_orm::DatabaseConnection,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/voice-jobs", get(list).post(create))
         .route("/api/v1/operator/voice-jobs/{id}", get(read))
         .route("/api/v1/operator/voice-jobs/{id}/check", post(check))
-        .with_state(Store { db })
+        .with_state(Store { db, product })
 }
 fn item(row: &QueryResult) -> Result<AdminVoiceJob, AppError> {
     Ok(AdminVoiceJob {
@@ -54,15 +70,33 @@ fn item(row: &QueryResult) -> Result<AdminVoiceJob, AppError> {
     })
 }
 pub(crate) async fn load(db: &impl ConnectionTrait, id: &str) -> Result<AdminVoiceJob, AppError> {
+    load_for_product(db, None, id).await
+}
+pub(crate) async fn load_for_product(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    id: &str,
+) -> Result<AdminVoiceJob, AppError> {
     if !hex(id, 32) {
         return Err(AppError::InvalidInput);
     }
     item(
-        &one(db, &format!("{SELECT} WHERE j.id=$1"), vec![id.into()])
-            .await?
-            .ok_or(AppError::NotFound)?,
+        &one(
+            db,
+            &format!(
+                "{} WHERE j.id=$1{}",
+                projection(product),
+                product_filter(product, "j.product_id")
+            ),
+            vec![id.into()],
+        )
+        .await?
+        .ok_or(AppError::NotFound)?,
     )
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JobQuery {}
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Cursor {
@@ -83,7 +117,11 @@ async fn list(
         .db
         .query_all_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            format!("{SELECT} WHERE j.id>$1 ORDER BY j.id LIMIT 21"),
+            format!(
+                "{} WHERE j.id>$1{} ORDER BY j.id LIMIT 21",
+                projection(backend.product),
+                product_filter(backend.product, "j.product_id")
+            ),
             vec![after.into()],
         ))
         .await
@@ -108,12 +146,15 @@ async fn read(
     auth: AdminAuth,
     State(backend): State<Store>,
     Path(id): Path<String>,
+    Query(_query): Query<JobQuery>,
 ) -> Result<Json<AdminVoiceJob>, AppError> {
     auth.require_operator().await?;
-    Ok(Json(load(&backend.db, &id).await?))
+    Ok(Json(
+        load_for_product(&backend.db, backend.product, &id).await?,
+    ))
 }
 async fn event(
-    db: &impl ConnectionTrait,
+    (db, product): (&impl ConnectionTrait, Option<crate::product::ProductId>),
     id: &str,
     status: &str,
     voice: Option<String>,
@@ -121,7 +162,21 @@ async fn event(
     actor: Option<i64>,
     reason: &str,
 ) -> Result<(), AppError> {
-    exec(db,"INSERT INTO voice_clone_events(job_id,version,status,voice_id,request_id,actor_id,reason) SELECT $1,COALESCE(max(version),0)+1,$2,$3,$4,$5,$6 FROM voice_clone_events WHERE job_id=$1",vec![id.into(),status.into(),voice.into(),request.into(),actor.into(),reason.into()]).await.map(|_|())
+    let mut values = vec![
+        id.into(),
+        status.into(),
+        voice.into(),
+        request.into(),
+        actor.into(),
+        reason.into(),
+    ];
+    let sql = if let Some(product) = product {
+        values.push(product.as_str().into());
+        "INSERT INTO voice_clone_events(job_id,version,status,voice_id,request_id,actor_id,reason,product_id) SELECT $1,COALESCE(max(version),0)+1,$2,$3,$4,$5,$6,$7 FROM voice_clone_events WHERE job_id=$1 AND product_id=$7"
+    } else {
+        "INSERT INTO voice_clone_events(job_id,version,status,voice_id,request_id,actor_id,reason) SELECT $1,COALESCE(max(version),0)+1,$2,$3,$4,$5,$6 FROM voice_clone_events WHERE job_id=$1"
+    };
+    exec(db, sql, values).await.map(|_| ())
 }
 async fn create(
     auth: AdminAuth,
@@ -132,6 +187,12 @@ async fn create(
     Json(request): Json<AdminVoiceJobRequest>,
 ) -> Result<Json<AdminVoiceJob>, AppError> {
     let operator = auth.require_operator().await?;
+    if backend
+        .product
+        .is_some_and(|product| product != operator.product)
+    {
+        return Err(AppError::Forbidden);
+    }
     crate::admin::reason(&request.reason)?;
     if !request.cost_confirmed || !hex(&request.grant_id, 32) || !hex(&request.token, 64) {
         return Err(AppError::InvalidInput);
@@ -149,7 +210,7 @@ async fn create(
         .await
         .map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
-    let row=one(&tx,"SELECT g.descriptor,g.actor_id FROM voice_reference_grants g WHERE g.id=$1 AND g.token_hash=$2 AND g.expires_at>clock_timestamp()+interval '60 seconds' AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id) AND (SELECT count(*) FROM voice_reference_reads r WHERE r.grant_id=g.id)<32",vec![request.grant_id.clone().into(),crate::media::digest(request.token.as_bytes()).into()]).await?.ok_or(AppError::NotFound)?;
+    let row=one(&tx,&format!("SELECT g.descriptor,g.actor_id FROM voice_reference_grants g WHERE g.id=$1 AND g.token_hash=$2 AND g.expires_at>clock_timestamp()+interval '60 seconds'{} AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id{}) AND (SELECT count(*) FROM voice_reference_reads r WHERE r.grant_id=g.id{})<32",product_filter(backend.product,"g.product_id"),if backend.product.is_some(){" AND r.product_id=g.product_id"}else{""},if backend.product.is_some(){" AND r.product_id=g.product_id"}else{""}),vec![request.grant_id.clone().into(),crate::media::digest(request.token.as_bytes()).into()]).await?.ok_or(AppError::NotFound)?;
     let grant_actor: i64 = field(&row, "actor_id")?;
     let grant_authorized = if let Some(remote) = &operator.remote {
         remote.is_operator(grant_actor).await?
@@ -164,7 +225,10 @@ async fn create(
     }
     if one(
         &tx,
-        "SELECT id FROM voice_clone_jobs WHERE grant_id=$1",
+        &format!(
+            "SELECT id FROM voice_clone_jobs WHERE grant_id=$1{}",
+            product_filter(backend.product, "product_id")
+        ),
         vec![request.grant_id.clone().into()],
     )
     .await?
@@ -177,20 +241,22 @@ async fn create(
     inspect(root, descriptor, media_permits).await?;
     let id = crate::learning::random_id()?;
     let prefix = format!("b{}", &id[..9]);
-    exec(
-        &tx,
-        "INSERT INTO voice_clone_jobs(id,grant_id,prefix,actor_id,reason) VALUES($1,$2,$3,$4,$5)",
-        vec![
-            id.clone().into(),
-            request.grant_id.clone().into(),
-            prefix.clone().into(),
-            actor.into(),
-            request.reason.clone().into(),
-        ],
-    )
-    .await?;
+    let mut values = vec![
+        id.clone().into(),
+        request.grant_id.clone().into(),
+        prefix.clone().into(),
+        actor.into(),
+        request.reason.clone().into(),
+    ];
+    let sql = if let Some(product) = backend.product {
+        values.push(product.as_str().into());
+        "INSERT INTO voice_clone_jobs(id,grant_id,prefix,actor_id,reason,product_id) VALUES($1,$2,$3,$4,$5,$6)"
+    } else {
+        "INSERT INTO voice_clone_jobs(id,grant_id,prefix,actor_id,reason) VALUES($1,$2,$3,$4,$5)"
+    };
+    exec(&tx, sql, values).await?;
     event(
-        &tx,
+        (&tx, backend.product),
         &id,
         "submitted",
         None,
@@ -199,7 +265,7 @@ async fn create(
         &request.reason,
     )
     .await?;
-    let result = load(&tx, &id).await?;
+    let result = load_for_product(&tx, backend.product, &id).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     // Only memory holds the capability. Durable state was committed BEFORE any billable call.
     // Losing this worker leaves a recoverable unknown attempt, never an automatic resend.
@@ -233,7 +299,17 @@ async fn create(
             _ => ("unknown", None, None),
         };
         // A version CAS prevents late worker results overwriting an explicit recovery query.
-        if let Err(_error) = finish(&backend.db, &id, 1, status, voice, request_id).await {
+        if let Err(_error) = finish(
+            &backend.db,
+            backend.product,
+            &id,
+            1,
+            status,
+            voice,
+            request_id,
+        )
+        .await
+        {
             tracing::warn!("voice enrollment result persistence unavailable");
         }
     });
@@ -241,6 +317,7 @@ async fn create(
 }
 async fn finish(
     db: &sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     id: &str,
     expected: u32,
     status: &str,
@@ -250,14 +327,26 @@ async fn finish(
     let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
     exec(
         &tx,
-        "SELECT id FROM voice_clone_jobs WHERE id=$1 FOR UPDATE",
+        &format!(
+            "SELECT id FROM voice_clone_jobs WHERE id=$1{} FOR UPDATE",
+            product_filter(product, "product_id")
+        ),
         vec![id.into()],
     )
     .await?;
-    if load(&tx, id).await?.version != expected {
+    if load_for_product(&tx, product, id).await?.version != expected {
         return Err(AppError::Conflict);
     }
-    event(&tx, id, status, voice, request, None, "provider response").await?;
+    event(
+        (&tx, product),
+        id,
+        status,
+        voice,
+        request,
+        None,
+        "provider response",
+    )
+    .await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)
 }
 async fn check(
@@ -268,6 +357,12 @@ async fn check(
     Json(request): Json<AdminVoiceJobCheck>,
 ) -> Result<Json<AdminVoiceJob>, AppError> {
     let operator = auth.require_operator().await?;
+    if backend
+        .product
+        .is_some_and(|product| product != operator.product)
+    {
+        return Err(AppError::Forbidden);
+    }
     crate::admin::reason(&request.reason)?;
     let service = service.ok_or(AppError::Unavailable)?.0;
     let permit = service
@@ -287,11 +382,14 @@ async fn check(
     }
     exec(
         &tx,
-        "SELECT id FROM voice_clone_jobs WHERE id=$1 FOR UPDATE",
+        &format!(
+            "SELECT id FROM voice_clone_jobs WHERE id=$1{} FOR UPDATE",
+            product_filter(backend.product, "product_id")
+        ),
         vec![id.clone().into()],
     )
     .await?;
-    let current = load(&tx, &id).await?;
+    let current = load_for_product(&tx, backend.product, &id).await?;
     if current.version != request.expected_version
         || matches!(
             current.status,
@@ -309,7 +407,7 @@ async fn check(
         })
         .ok_or(AppError::InvalidInput)?;
     event(
-        &tx,
+        (&tx, backend.product),
         &id,
         "checking",
         Some(voice.clone()),
@@ -318,7 +416,7 @@ async fn check(
         &request.reason,
     )
     .await?;
-    let result = load(&tx, &id).await?;
+    let result = load_for_product(&tx, backend.product, &id).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     tokio::spawn(async move {
         let _permit = permit;
@@ -345,6 +443,7 @@ async fn check(
         };
         if let Err(_error) = finish(
             &backend.db,
+            backend.product,
             &id,
             current.version + 1,
             status,

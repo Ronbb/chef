@@ -1,5 +1,7 @@
 # 身份与学习schema分离
 
+独立音色任务接口补充：voice_jobs::Store由可信后台装配接收产品，列表/游标、固定任务及授权/最新事件关联同产品；客户端product查询拒绝。提交和查询恢复核对Operator产品，授权/撤销/访问次数及重复任务查询同产品，新任务/事件显式归属；异步供应商回执使用提交时同一产品锁与版本CAS。旧load包装None供待迁移试听调用，legacy32保持。actual split插入25个排序靠前H任务后B整列表/分页不变，外任务读取/有效外授权提交/查询恢复404且任务事件零增量、模拟供应商create/query/synthesis均零额外调用，产品参数400；原身份与后台克隆试听配音全链路、workspace check/tests/clippy通过。仅隔离PG和模拟供应商，未付费调用；试听/课程配音及历史范围、局部编号、真实H业务继续，产品pin/生产保持，业务与回归仅Chef。
+
 音色任务与试听关联准备补充：learning_000014_product_voice_work为clone job/event与audition/event/review五表添加默认B固定产品与归属不可变保护；任务到同产品授权、事件到任务、克隆试听到固定任务事件版本、系统试听到角色及保存声音版本、试听JSON参考录音及事件/评价到试听/角色/声音均立即验证。生成base_profile_revision保留系统版本0，可选参考录音保持；旧全局编号/不可变审计保留。actual split账本15步，五表迁移前非空旧字段指纹保持，末尾评价约束冲突整批DDL/账本/生成列回滚；双向外产品任务事件、错误克隆版本/系统声音版本、跨录音和评价边拒绝，H合成克隆/系统0/接受评价正向链回滚。独立身份原审计降级保护单独事务验证，新布局阻止旧试听列降级；原身份/后台克隆试听配音全链路与workspace clippy通过。运行任务/试听/课程配音及历史范围、局部编号、真实H业务继续，生产pin保持，SQL/回归仅Chef。
 
 独立参考录音接口补充：voice_references::Store由可信后台产品装配，临时delivery产品取固定identity Client；列表/游标及撤销/访问统计同产品，签发读取同产品声音与录音、有效授权冲突同产品；签发/撤销核对Operator，新grant/revocation/read显式归属。delivery token/expiry预检先限产品再取得account-admin锁，事务内撤销/32次上限/到期复检同产品，原真实hash/解码/PCM/Range与角色复核保持；legacy None仍原布局。actual split25条排序靠前H授权不改变B整列表/分页，H声音签发/授权撤销404且三审计表零增量；已知有效H bearer在持有账号管理锁时及时404，产品查询400，原B授权/撤销/到期/角色撤权/克隆试听配音与身份全链路、workspace clippy通过。任务/试听/课程配音及审计历史范围、局部编号、真实H业务继续，生产pin保持，实现仅Chef。
