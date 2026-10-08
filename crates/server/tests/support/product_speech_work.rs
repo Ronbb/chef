@@ -183,3 +183,54 @@ pub async fn verify(db: &DatabaseConnection, actor: i64) {
     }
     tx.rollback().await.unwrap();
 }
+
+pub async fn verify_local_keys(db: &DatabaseConnection, actor: i64) {
+    let tx = db.begin().await.unwrap();
+    for product in ["brioche", "hargow"] {
+        graph(
+            &tx,
+            Some(product),
+            "local-speech-lesson",
+            &"1".repeat(32),
+            &"2".repeat(32),
+            actor,
+        )
+        .await;
+    }
+    for (table, key) in [
+        ("course_speech_plans", "id"),
+        ("course_speech_clips", "id"),
+        ("course_speech_clip_events", "clip_id"),
+        ("course_speech_clip_reviews", "clip_id"),
+        ("speech_alignments", "id"),
+        ("speech_alignment_reviews", "alignment_id"),
+        ("speech_package_imports", "id"),
+    ] {
+        let row = tx
+            .query_one_raw(Statement::from_string(
+                DbBackend::Postgres,
+                format!("SELECT count(*)::bigint AS n FROM {table} WHERE {key}=repeat('1',32)"),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.try_get::<i64>("", "n").unwrap(), 2, "{table}");
+        tx.execute_unprepared("SAVEPOINT local_speech_duplicate")
+            .await
+            .unwrap();
+        let error=tx.execute_unprepared(&format!("INSERT INTO {table} SELECT * FROM {table} WHERE product_id='hargow' AND {key}=repeat('1',32)")).await.unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate key"),
+            "{table}: {error}"
+        );
+        tx.execute_unprepared("ROLLBACK TO SAVEPOINT local_speech_duplicate")
+            .await
+            .unwrap();
+    }
+    let error=tx.execute_unprepared("INSERT INTO speech_package_imports(product_id,id,alignment_id,actor_id,request,result,manifest,reason,lesson_id,revision) SELECT product_id,repeat('3',32),alignment_id,actor_id,request,result,manifest,reason,lesson_id,revision FROM speech_package_imports WHERE product_id='brioche' AND id=repeat('1',32)").await.unwrap_err();
+    assert!(
+        error.to_string().contains("chef_local_package_lesson"),
+        "{error}"
+    );
+    tx.rollback().await.unwrap();
+}

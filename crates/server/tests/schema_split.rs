@@ -707,6 +707,35 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         )
         .await
         .unwrap();
+    owner.execute_unprepared("CREATE TABLE extra_speech_work_edge(id TEXT,FOREIGN KEY(id) REFERENCES course_speech_clips(id))").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let error = brioche_migration::layout::up(&owner, &source, &target)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Unverified legacy speech work dependency"),
+        "{error}"
+    );
+    assert_eq!(
+        product_speech_work::snapshot(&owner).await,
+        speech_work_snapshot
+    );
+    owner.execute_unprepared("DROP TABLE extra_speech_work_edge; ALTER TABLE speech_package_imports ADD CONSTRAINT chef_local_package_lesson CHECK(true)").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='course_speech_plans' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(
+        product_speech_work::snapshot(&owner).await,
+        speech_work_snapshot
+    );
+    owner
+        .execute_unprepared(
+            "ALTER TABLE speech_package_imports DROP CONSTRAINT chef_local_package_lesson",
+        )
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -714,7 +743,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=23 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=24 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -750,6 +779,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         speech_work_snapshot
     );
     product_speech_work::verify(&owner, account).await;
+    product_speech_work::verify_local_keys(&owner, account).await;
     assert_eq!(
         product_speech_work::snapshot(&owner).await,
         speech_work_snapshot
