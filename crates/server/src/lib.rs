@@ -382,15 +382,9 @@ async fn lesson(
     lesson.validate().map_err(|_| AppError::Unavailable)?;
     Ok(Json(lesson))
 }
-fn project_source_types(mut source: serde_json::Value) -> anyhow::Result<PublicLesson> {
-    author_source::editorial(&source)?;
-    let object = source
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("lesson must be an object"))?;
-    object.remove("serverOnly");
-    object.remove("editorial");
-    object.remove("assetRefs");
-    object.remove("audioRefs");
+fn project_source_types(source: serde_json::Value) -> anyhow::Result<PublicLesson> {
+    let source = author_source::public_projection(source)?;
+    let object = source.as_object().expect("validated author object");
     if let Some(blocks) = object.get("blocks").and_then(serde_json::Value::as_array) {
         for (index, block) in blocks.iter().enumerate() {
             brioche_course_contract::Block::from_value_with_path(

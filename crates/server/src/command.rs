@@ -121,7 +121,7 @@ pub async fn run() -> Result<()> {
             }
         } else {
             let document = crate::author_json::Document::load(path)?;
-            crate::author_source::check_lesson(&document)?;
+            crate::author_source::check_any_lesson(&document)?;
         }
         println!(
             "Structural checks passed. Publication still requires registered media, editorial review and release-stage validation."

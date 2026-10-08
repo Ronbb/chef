@@ -1,0 +1,277 @@
+{
+  "schemaVersion": "2.0",
+  "targetLanguage": "yue-Hant-HK",
+  "explanationLanguage": "zh-CN",
+  "id": "neutral-protocol",
+  "revision": 1,
+  "levelId": "starter",
+  "unitId": "greetings",
+  "title": {
+    "target": "你好",
+    "zh": "语言中立协议测试"
+  },
+  "summaryZh": "仅协议测试，不是正式粤语课程。",
+  "estimatedMinutes": 3,
+  "objectivesZh": [
+    "验证作者范围与三种题型。"
+  ],
+  "knowledge": {
+    "vocabulary": [
+      {
+        "id": "expr-greeting",
+        "lemma": {
+          "text": "你好",
+          "words": [
+            {
+              "start": 0,
+              "end": 2
+            }
+          ],
+          "pronunciations": [
+            {
+              "range": {
+                "start": 0,
+                "end": 2
+              },
+              "system": "jyutping",
+              "text": "nei5 hou2"
+            }
+          ]
+        },
+        "partOfSpeech": "phrase",
+        "meaningZh": "你好",
+        "noteZh": "合成协议词条。"
+      }
+    ],
+    "grammar": [
+      {
+        "id": "grammar-greeting",
+        "titleZh": "合成示例",
+        "bodyZh": "仅验证例句字段。",
+        "examples": [
+          {
+            "target": {
+              "text": "你好",
+              "words": [
+                {
+                  "start": 0,
+                  "end": 2
+                }
+              ],
+              "pronunciations": [
+                {
+                  "range": {
+                    "start": 0,
+                    "end": 2
+                  },
+                  "system": "jyutping",
+                  "text": "nei5 hou2"
+                }
+              ]
+            },
+            "zh": "你好"
+          }
+        ]
+      }
+    ]
+  },
+  "blocks": [
+    {
+      "id": "reading",
+      "type": "article",
+      "titleZh": "合成正文",
+      "narratorId": "character-camille",
+      "paragraphs": [
+        {
+          "id": "paragraph-greeting",
+          "segments": [
+            {
+              "id": "segment-greeting",
+              "reading": {
+                "text": "你好",
+                "words": [
+                  {
+                    "start": 0,
+                    "end": 2
+                  }
+                ],
+                "pronunciations": [
+                  {
+                    "range": {
+                      "start": 0,
+                      "end": 2
+                    },
+                    "system": "jyutping",
+                    "text": "nei5 hou2"
+                  }
+                ]
+              },
+              "vocabularyId": "expr-greeting"
+            }
+          ],
+          "translationZh": "你好"
+        }
+      ]
+    },
+    {
+      "id": "words",
+      "type": "vocabulary",
+      "entryIds": [
+        "expr-greeting"
+      ]
+    },
+    {
+      "id": "grammar",
+      "type": "grammar",
+      "entryIds": [
+        "grammar-greeting"
+      ]
+    },
+    {
+      "id": "choice",
+      "type": "exercise",
+      "promptZh": "选择合成问候。",
+      "options": [
+        {
+          "id": "greeting",
+          "text": "你好"
+        },
+        {
+          "id": "farewell",
+          "text": "再見"
+        }
+      ],
+      "exerciseType": "single-choice"
+    },
+    {
+      "id": "text",
+      "type": "exercise",
+      "promptZh": "输入合成词条「點心」，用于检查繁体文字判分。",
+      "templateTarget": "____",
+      "hintZh": "仅协议测试。",
+      "exerciseType": "fill-blank"
+    },
+    {
+      "id": "order",
+      "type": "exercise",
+      "promptZh": "排列合成词条。",
+      "tokens": [
+        {
+          "id": "first",
+          "text": "你好"
+        },
+        {
+          "id": "bye",
+          "text": "再見"
+        },
+        {
+          "id": "second",
+          "text": "你好"
+        }
+      ],
+      "exerciseType": "order"
+    },
+    {
+      "id": "summary",
+      "type": "summary",
+      "takeawaysZh": [
+        "合成测试不表示粤语审校通过。"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-read",
+      "kind": "read",
+      "titleZh": "合成步骤",
+      "blockIds": [
+        "reading"
+      ]
+    },
+    {
+      "id": "step-meaning",
+      "kind": "explore",
+      "titleZh": "合成步骤",
+      "blockIds": [
+        "words",
+        "grammar"
+      ]
+    },
+    {
+      "id": "step-practice",
+      "kind": "practice",
+      "titleZh": "合成步骤",
+      "blockIds": [
+        "choice",
+        "text",
+        "order"
+      ]
+    },
+    {
+      "id": "step-recap",
+      "kind": "recap",
+      "titleZh": "合成步骤",
+      "blockIds": [
+        "summary"
+      ]
+    }
+  ],
+  "completion": {
+    "strategy": "attempt-all",
+    "requiredStepIds": [
+      "step-read",
+      "step-practice",
+      "step-recap"
+    ],
+    "requiredExerciseIds": [
+      "choice",
+      "text",
+      "order"
+    ]
+  },
+  "reviewItemIds": [
+    "expr-greeting"
+  ],
+  "cast": [
+    {
+      "characterId": "character-camille",
+      "revision": 1,
+      "displayName": "合成角色",
+      "avatarId": "avatar-camille-v1",
+      "speechLocale": "yue-Hant-HK"
+    }
+  ],
+  "media": [],
+  "audio": [],
+  "audioTracks": [],
+  "editorial": {
+    "status": "draft",
+    "note": "仅结构/判分协议测试，无教学审校或发布授权。"
+  },
+  "serverOnly": {
+    "grading": {
+      "choice": {
+        "kind": "choice",
+        "correctOptionId": "greeting",
+        "feedbackZh": "合成问候。"
+      },
+      "text": {
+        "kind": "text",
+        "accepted": [
+          "點心"
+        ],
+        "caseSensitive": false,
+        "feedbackZh": "保留作者字形。"
+      },
+      "order": {
+        "kind": "order",
+        "correctTokenIds": [
+          "first",
+          "bye",
+          "second"
+        ],
+        "feedbackZh": "合成排序。"
+      }
+    }
+  }
+}

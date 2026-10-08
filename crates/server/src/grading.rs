@@ -1,8 +1,9 @@
 //! Answer keys stay in this crate. Validation precedes import and grading.
+use brioche_course_contract::neutral::{self, NeutralLesson};
 pub use brioche_course_contract::normalize_text;
 use brioche_course_contract::{
     Block, Exercise, ExerciseAnswer, GradeResult, MAX_TEXT_ANSWER_BYTES,
-    MAX_TEXT_ANSWER_UTF16_UNITS, PublicLesson, valid_text_answer_length,
+    MAX_TEXT_ANSWER_UTF16_UNITS, OptionItem, PublicLesson, valid_text_answer_length,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
@@ -38,6 +39,33 @@ pub enum GradeError {
     InvalidContent,
     UnknownExercise,
     InvalidAnswer,
+}
+
+// Borrow only the grading-relevant public fields. No French wire projection or
+// copied language-specific grading implementation is needed for version 2.
+#[derive(Clone, Copy)]
+enum ExerciseView<'a> {
+    Choice(&'a [OptionItem]),
+    Text,
+    Order(&'a [OptionItem]),
+}
+impl<'a> From<&'a Exercise> for ExerciseView<'a> {
+    fn from(exercise: &'a Exercise) -> Self {
+        match exercise {
+            Exercise::SingleChoice { options, .. } => Self::Choice(options),
+            Exercise::FillBlank { .. } => Self::Text,
+            Exercise::Order { tokens, .. } => Self::Order(tokens),
+        }
+    }
+}
+impl<'a> From<&'a neutral::Exercise> for ExerciseView<'a> {
+    fn from(exercise: &'a neutral::Exercise) -> Self {
+        match exercise {
+            neutral::Exercise::SingleChoice { options, .. } => Self::Choice(options),
+            neutral::Exercise::FillBlank { .. } => Self::Text,
+            neutral::Exercise::Order { tokens, .. } => Self::Order(tokens),
+        }
+    }
 }
 
 pub struct Grader {
@@ -165,16 +193,57 @@ impl Grader {
         lesson: &PublicLesson,
         source: &serde_json::Value,
     ) -> anyhow::Result<Self> {
+        Self::from_exercises(
+            lesson
+                .blocks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, block)| match block {
+                    Block::Exercise { id, exercise } => {
+                        Some((index, id.as_str(), ExerciseView::from(exercise)))
+                    }
+                    _ => None,
+                }),
+            source,
+        )
+    }
+    pub fn from_neutral_source(
+        lesson: &NeutralLesson,
+        source: &serde_json::Value,
+    ) -> Result<Self, GradeError> {
+        Self::from_neutral_author_source(lesson, source).map_err(|_| GradeError::InvalidContent)
+    }
+    /// Author diagnostics stay private; runtime callers use the opaque error above.
+    pub fn from_neutral_author_source(
+        lesson: &NeutralLesson,
+        source: &serde_json::Value,
+    ) -> anyhow::Result<Self> {
+        Self::from_exercises(
+            lesson
+                .blocks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, block)| match block {
+                    neutral::Block::Exercise { id, exercise } => {
+                        Some((index, id.as_str(), ExerciseView::from(exercise)))
+                    }
+                    _ => None,
+                }),
+            source,
+        )
+    }
+    fn from_exercises<'a>(
+        items: impl Iterator<Item = (usize, &'a str, ExerciseView<'a>)>,
+        source: &serde_json::Value,
+    ) -> anyhow::Result<Self> {
         use anyhow::{Context, bail, ensure};
         let rules = Self::author_rules(source)?;
         let mut exercises = BTreeMap::new();
-        for (index, block) in lesson.blocks.iter().enumerate() {
-            if let Block::Exercise { id, exercise } = block {
-                ensure!(
-                    exercises.insert(id, exercise).is_none(),
-                    "/blocks/{index}/id: duplicate exercise ID"
-                );
-            }
+        for (index, id, exercise) in items {
+            ensure!(
+                exercises.insert(id, exercise).is_none(),
+                "/blocks/{index}/id: duplicate exercise ID"
+            );
         }
         let path = |id: &str| {
             format!(
@@ -184,7 +253,7 @@ impl Grader {
         };
         for id in rules.grading.keys() {
             ensure!(
-                exercises.contains_key(id),
+                exercises.contains_key(id.as_str()),
                 "{}: rule references unknown exercise",
                 path(id)
             );
@@ -206,7 +275,7 @@ impl Grader {
             );
             match (exercise, rule) {
                 (
-                    Exercise::SingleChoice { options, .. },
+                    ExerciseView::Choice(options),
                     Rule::Choice {
                         correct_option_id, ..
                     },
@@ -216,9 +285,9 @@ impl Grader {
                         "{pointer}/correctOptionId: unknown option reference"
                     );
                 }
-                (Exercise::FillBlank { .. }, Rule::Text { .. }) => {}
+                (ExerciseView::Text, Rule::Text { .. }) => {}
                 (
-                    Exercise::Order { tokens, .. },
+                    ExerciseView::Order(tokens),
                     Rule::Order {
                         correct_token_ids, ..
                     },
@@ -256,14 +325,41 @@ impl Grader {
                 Block::Exercise {
                     id: block_id,
                     exercise,
-                } if block_id == id => Some(exercise),
+                } if block_id == id => Some(ExerciseView::from(exercise)),
                 _ => None,
             })
             .ok_or(GradeError::UnknownExercise)?;
+        self.grade_exercise(exercise, id, answer)
+    }
+    pub fn grade_neutral(
+        &self,
+        lesson: &NeutralLesson,
+        id: &str,
+        answer: &ExerciseAnswer,
+    ) -> Result<GradeResult, GradeError> {
+        let exercise = lesson
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                neutral::Block::Exercise {
+                    id: block_id,
+                    exercise,
+                } if block_id == id => Some(ExerciseView::from(exercise)),
+                _ => None,
+            })
+            .ok_or(GradeError::UnknownExercise)?;
+        self.grade_exercise(exercise, id, answer)
+    }
+    fn grade_exercise(
+        &self,
+        exercise: ExerciseView<'_>,
+        id: &str,
+        answer: &ExerciseAnswer,
+    ) -> Result<GradeResult, GradeError> {
         let rule = self.rules.get(id).ok_or(GradeError::InvalidContent)?;
         let (correct, feedback) = match (exercise, rule, answer) {
             (
-                Exercise::SingleChoice { options, .. },
+                ExerciseView::Choice(options),
                 Rule::Choice {
                     correct_option_id,
                     feedback_zh,
@@ -276,7 +372,7 @@ impl Grader {
                 (option_id == correct_option_id, feedback_zh)
             }
             (
-                Exercise::FillBlank { .. },
+                ExerciseView::Text,
                 Rule::Text {
                     accepted,
                     case_sensitive,
@@ -297,7 +393,7 @@ impl Grader {
                 )
             }
             (
-                Exercise::Order { tokens, .. },
+                ExerciseView::Order(tokens),
                 Rule::Order {
                     correct_token_ids,
                     feedback_zh,
