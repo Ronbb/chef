@@ -3209,7 +3209,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     revoked_voice["expectedVoiceRevision"] = 3.into();
     let mut revoked_audition = audition_request.clone();
     revoked_audition["id"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
-    let mut revoked_plan = plan_request;
+    let mut revoked_plan = plan_request.clone();
     revoked_plan["id"] = "dddddddddddddddddddddddddddddddd".into();
     let mut revoked_clip = clip_request;
     revoked_clip["id"] = "99999999999999999999999999999999".into();
@@ -3996,6 +3996,134 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(status, 200, "{auditions_before}");
     let history_before = history_pages(&content_app, &mut cookie, &mut csrf).await;
     product_speech_work::seed_foreign(&owner, account).await;
+    let foreign_plan_path = format!("{plan_route}/{}", "4".repeat(32));
+    let foreign_options =
+        "/api/v1/operator/lessons/layout-h-speech-lesson/revisions/1/speech-options";
+    for path in [foreign_plan_path.as_str(), foreign_options] {
+        let (status, body) = request(&content_app, "GET", path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 404, "{path}: {body}");
+    }
+    let (status, body) = request(
+        &content_app,
+        "GET",
+        &format!("{plan_route}?lessonId=layout-h-speech-lesson&lessonRevision=1"),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body["items"].as_array().unwrap().is_empty());
+    for path in [
+        format!("{foreign_plan_path}?product=hargow"),
+        format!("{foreign_options}?product=hargow"),
+        format!("{plan_route}?lessonId=layout-h-speech-lesson&lessonRevision=1&product=hargow"),
+    ] {
+        let (status, body) =
+            request(&content_app, "GET", &path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 400, "{path}: {body}");
+    }
+    let before = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM course_speech_plans",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "n")
+        .unwrap();
+    let calls_before = [
+        enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment
+            .syntheses
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ];
+    let mut foreign_preview = preview_request.clone();
+    foreign_preview["lessonId"] = "layout-h-speech-lesson".into();
+    foreign_preview["lessonRevision"] = 1.into();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        &preview_route,
+        Some(foreign_preview.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let mut foreign_save = plan_request.clone();
+    foreign_save["id"] = format!("{:032x}", 401).into();
+    foreign_save["preview"] = foreign_preview;
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        plan_route,
+        Some(foreign_save),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let mut foreign_retry = plan_request.clone();
+    foreign_retry["id"] = "4".repeat(32).into();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        plan_route,
+        Some(foreign_retry),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let mut foreign_voice_preview = preview_request.clone();
+    foreign_voice_preview["selection"]["voices"][0] = serde_json::json!({"characterId":"aaa-foreign-character-1","characterRevision":1,"voiceRevision":1});
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        &preview_route,
+        Some(foreign_voice_preview),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    let after = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM course_speech_plans",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "n")
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "foreign plan compile/save/retry has no writes"
+    );
+    assert_eq!(
+        calls_before,
+        [
+            enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment
+                .syntheses
+                .load(std::sync::atomic::Ordering::SeqCst)
+        ]
+    );
+    let row = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT product_id FROM course_speech_plans WHERE id=repeat('c',32)",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.try_get::<String>("", "product_id").unwrap(), "brioche");
+
     for page in &history_before {
         let text = page.to_string();
         for forbidden in [
