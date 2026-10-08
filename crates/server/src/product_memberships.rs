@@ -365,6 +365,7 @@ mod tests {
         ));
         let denied_import = crate::author_import::import_operator(
             &db,
+            None,
             serde_json::json!({}),
             &stale_operator,
             "stale request",

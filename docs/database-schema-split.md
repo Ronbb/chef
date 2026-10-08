@@ -1,5 +1,7 @@
 # 身份与学习schema分离
 
+独立课程导入补充：后台导入和lesson/check使用可信Store.product，管理员证明产品必须一致。相同版本重试查询固定产品，新lesson_revisions及lesson_import_audit显式写产品并原子提交。全局ID迁移前仅查询归属的碰撞保护先于素材hydration，并在全局导入锁后重新核对，避免并发写入成为异产品重试；不读取外产品server_document。actual split外课源编号导入404、上传valid=false，原外课源私有document及审计不变；B新课归属与相同重试单审计回归通过。CLI/配音交付、媒体录音hydrate/权限、私有预览与产品局部ID仍需迁移，H后台和生产pin保持。
+
 独立目录暂存补充：stage_operator接收可信产品并核对Operator，状态锁与checked_entries课源/撤回读取固定产品；上传前release/check传相同上下文且不锁行。目录、条目与暂存审计显式登记产品，保持不可变hash和原子提交。全局目录编号冲突规则仍保留，审批/课音频/素材下层内核继续迁移。actual split外产品课源暂存404、上传检查valid=false，无目录/条目/审计新增；原B正向暂存发布与权限回归保持。CLI、导入、私有预览及媒体待继续，H后台/生产pin保持。
 
 独立目录激活补充：HTTP将可信Store.product传activate_operator并核对管理员证明；内核锁对应产品状态、目录存在检查固定产品，条目/撤回/课源关联均固定产品，发布标志和active_release/generation只更新该产品，发布审计显式记录产品。实际split跨产品目录激活404，双状态/课源/撤回及审计指纹不变；原B原子切换/回滚/撤回与失效管理员回归保持。审批、课音频及素材门槛保留；这些下层内核、目录暂存、固定产品CLI、导入/预览/媒体继续迁移，H后台与生产pin保持。

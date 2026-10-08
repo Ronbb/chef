@@ -268,7 +268,7 @@ async fn check_document(
         let report = if release {
             crate::content::check_registered_release(&tx, backend.product, &document, &root).await?
         } else {
-            crate::author_import::check_registered(&tx, &document, &root).await?
+            crate::author_import::check_registered(&tx, backend.product, &document, &root).await?
         };
         tx.rollback().await.map_err(|_| AppError::Unavailable)?;
         Ok(report)
@@ -294,21 +294,27 @@ async fn import_lesson(
     .await
     .map_err(|_| AppError::Unavailable)?
     .map_err(|_| AppError::InvalidInput)?;
-    let imported =
-        crate::author_import::import_operator(&backend.db, source, &operator, &request.reason)
-            .await
-            .map_err(|error| {
-                if error.is::<crate::author_import::RevisionConflict>() {
-                    return AppError::Conflict;
-                }
-                error
-                    .downcast_ref::<AppError>()
-                    .map_or(AppError::InvalidInput, |error| match error {
-                        AppError::Forbidden => AppError::Forbidden,
-                        AppError::Unauthorized => AppError::Unauthorized,
-                        _ => AppError::Unavailable,
-                    })
-            })?;
+    let imported = crate::author_import::import_operator(
+        &backend.db,
+        backend.product,
+        source,
+        &operator,
+        &request.reason,
+    )
+    .await
+    .map_err(|error| {
+        if error.is::<crate::author_import::RevisionConflict>() {
+            return AppError::Conflict;
+        }
+        error
+            .downcast_ref::<AppError>()
+            .map_or(AppError::InvalidInput, |error| match error {
+                AppError::Forbidden => AppError::Forbidden,
+                AppError::Unauthorized => AppError::Unauthorized,
+                AppError::NotFound => AppError::NotFound,
+                _ => AppError::Unavailable,
+            })
+    })?;
     Ok(Json(imported))
 }
 async fn stage(

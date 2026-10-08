@@ -12,6 +12,7 @@ pub struct RevisionConflict;
 /// lesson, approval, release, audit or media object is created by this path.
 pub(crate) async fn check_registered(
     db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
     document: &crate::author_json::Document,
     root: &std::path::Path,
 ) -> Result<brioche_course_contract::AdminDocumentCheck, AppError> {
@@ -33,6 +34,14 @@ pub(crate) async fn check_registered(
             })
             .unwrap_or_else(|| "/".into());
         Ok(document.uploaded_issue(&pointer, message))
+    }
+    if let Err(error) = check_owner(db, product, &document.value).await {
+        return match error {
+            AppError::NotFound => {
+                Ok(document.uploaded_issue("/id", "课程编号或版本不可用于当前产品。"))
+            }
+            other => Err(other),
+        };
     }
     let source = match crate::media::hydrate_source(db, document.value.clone()).await {
         Ok(source) => source,
@@ -79,13 +88,19 @@ impl std::fmt::Display for RevisionConflict {
 impl std::error::Error for RevisionConflict {}
 pub(crate) async fn import_operator(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     source: Value,
     operator: &crate::product_memberships::Operator,
     reason: &str,
 ) -> anyhow::Result<brioche_course_contract::AdminImportResult> {
+    if product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden.into());
+    }
     let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
-    let result = import_transaction(&tx, source, &operator.audit_actor(), reason, true).await?;
+    let result =
+        import_product_transaction(&tx, product, source, &operator.audit_actor(), reason, true)
+            .await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(result)
 }
@@ -126,6 +141,16 @@ pub(crate) async fn import_transaction(
     reason: &str,
     allow_identical_retry: bool,
 ) -> anyhow::Result<brioche_course_contract::AdminImportResult> {
+    import_product_transaction(db, None, source, actor, reason, allow_identical_retry).await
+}
+async fn import_product_transaction(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    source: Value,
+    actor: &str,
+    reason: &str,
+    allow_identical_retry: bool,
+) -> anyhow::Result<brioche_course_contract::AdminImportResult> {
     anyhow::ensure!(
         !actor.trim().is_empty() && actor.len() <= 1000 && !actor.chars().any(char::is_control),
         "/: invalid import actor"
@@ -135,6 +160,7 @@ pub(crate) async fn import_transaction(
         "/: invalid import reason"
     );
     crate::validate_source_schema(source.clone())?;
+    check_owner(db, product, &source).await?;
     crate::media::source_asset_refs(&source)?;
     crate::recording::source_audio_refs(&source)?;
     let source = crate::media::hydrate_source(db, source).await?;
@@ -148,10 +174,16 @@ pub(crate) async fn import_transaction(
         vec![format!("lesson-import:{}:{}", lesson.id, lesson.revision).into()],
     )
     .await?;
+    // Recheck after the global identity lock to prevent a concurrent foreign
+    // import becoming an identical retry. Product-local keys are still pending.
+    check_owner(db, product, &source).await?;
     let identity = vec![lesson.id.clone().into(), (lesson.revision as i32).into()];
     if let Some(existing) = one(
         db,
-        "SELECT server_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2",
+        &format!(
+            "SELECT server_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2{}",
+            crate::learning::product_filter(product, "product_id")
+        ),
         identity,
     )
     .await?
@@ -160,21 +192,63 @@ pub(crate) async fn import_transaction(
             return Err(RevisionConflict.into());
         }
     } else {
-        exec(db,"INSERT INTO lesson_revisions(lesson_id,revision,published,public_document,server_document) VALUES($1,$2,false,$3,$4)",vec![lesson.id.clone().into(),(lesson.revision as i32).into(),serde_json::to_value(&lesson)?.into(),source.into()]).await?;
-        exec(
-            db,
-            "INSERT INTO lesson_import_audit(lesson_id,revision,actor,reason) VALUES($1,$2,$3,$4)",
-            vec![
-                lesson.id.clone().into(),
-                (lesson.revision as i32).into(),
-                actor.into(),
-                reason.into(),
-            ],
-        )
-        .await?;
+        let mut values = vec![
+            lesson.id.clone().into(),
+            (lesson.revision as i32).into(),
+            serde_json::to_value(&lesson)?.into(),
+            source.into(),
+        ];
+        let sql = if let Some(product) = product {
+            values.push(product.as_str().into());
+            "INSERT INTO lesson_revisions(lesson_id,revision,published,public_document,server_document,product_id) VALUES($1,$2,false,$3,$4,$5)"
+        } else {
+            "INSERT INTO lesson_revisions(lesson_id,revision,published,public_document,server_document) VALUES($1,$2,false,$3,$4)"
+        };
+        exec(db, sql, values).await?;
+        let mut values = vec![
+            lesson.id.clone().into(),
+            (lesson.revision as i32).into(),
+            actor.into(),
+            reason.into(),
+        ];
+        let sql = if let Some(product) = product {
+            values.push(product.as_str().into());
+            "INSERT INTO lesson_import_audit(lesson_id,revision,actor,reason,product_id) VALUES($1,$2,$3,$4,$5)"
+        } else {
+            "INSERT INTO lesson_import_audit(lesson_id,revision,actor,reason) VALUES($1,$2,$3,$4)"
+        };
+        exec(db, sql, values).await?;
     }
     Ok(brioche_course_contract::AdminImportResult {
         lesson_id: lesson.id,
         revision: lesson.revision,
     })
+}
+
+// Temporary global-ID collision guard: do not read another product's private
+// document. Product-local identities will replace this global ownership lookup.
+async fn check_owner(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    source: &Value,
+) -> Result<(), AppError> {
+    let Some(product) = product else {
+        return Ok(());
+    };
+    let id = source["id"].as_str().ok_or(AppError::InvalidInput)?;
+    let revision = source["revision"]
+        .as_i64()
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or(AppError::InvalidInput)?;
+    if let Some(row) = one(
+        db,
+        "SELECT product_id FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2",
+        vec![id.into(), revision.into()],
+    )
+    .await?
+        && field::<String>(&row, "product_id")? != product.as_str()
+    {
+        return Err(AppError::NotFound);
+    }
+    Ok(())
 }

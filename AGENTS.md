@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立课程导入补充：HTTP与lesson/check传可信Store.product，import_operator核对Operator；导入与重试查询同产品，新课源和导入审计显式产品。全局课ID仍保留，check_owner只读归属并在全局导入锁前后检查，禁止把外产品私有课源作为重试；上传外产品编号返回valid=false，导入404且外课源/导入审计不变。原B导入及相同重试仅一个审计，legacy CLI/配音交付仍None待迁移。素材录音内核/私有预览/产品局部ID/H业务及生产尚未完成，产品无导入副本。
+
 独立暂存补充：stage_operator核对可信产品与Operator，状态锁及checked_entries课源/撤回固定产品；release/check使用同一上下文只读。目录/条目/审计显式产品，hash/原子写入和全局目录编号冲突保持。actual split外课源暂存404、上传valid=false、目录/条目/审计零增量，B正向发布与权限保持。审批/音频/素材下层、CLI/导入/预览及媒体仍待产品化，H后台/生产保持。
 
 独立目录激活补充：activate_operator接收可信Store.product并核对Operator产品，内核状态锁、目录存在、条目/撤回/课源读取、发布标志/状态/代数及审计同产品；保留审批/课音频/素材门槛。actual split跨产品目录404且状态/课源/撤回/审计指纹不变，B原子切换回滚硬撤回及失效管理员保持。下层审批音频/素材、暂存/导入/CLI/私有预览和媒体尚待产品化，H后台/生产pin保持，实现只Chef。

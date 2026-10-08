@@ -1453,6 +1453,23 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     )
     .await;
     assert_eq!(status, 200, "{result}");
+    let (status, retried) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/lessons/import",
+        Some(document.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{retried}");
+    assert_eq!(retried, result);
+    let imported_row = owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT product_id,(SELECT count(*) FROM lesson_import_audit WHERE lesson_id='split-admin-lesson' AND revision=1 AND product_id='brioche')::bigint AS n FROM lesson_revisions WHERE lesson_id='split-admin-lesson' AND revision=1")).await.unwrap().unwrap();
+    assert_eq!(
+        imported_row.try_get::<String>("", "product_id").unwrap(),
+        "brioche"
+    );
+    assert_eq!(imported_row.try_get::<i64>("", "n").unwrap(), 1);
     let (status,result)=request(&content_app,"POST","/api/v1/operator/lessons/split-admin-lesson/revisions/1/review",Some(serde_json::json!({"version":0,"approved":true,"reason":"Independent editorial approval"})),&mut cookie,&mut csrf).await;
     assert_eq!(status, 200, "{result}");
     let manifest = serde_json::json!({"id":"split-admin-release","schemaVersion":"1.0","levels":[{"id":imported_source["levelId"],"label":"A1","units":[{"id":imported_source["unitId"],"titleZh":"Breakfast","lessons":[{"lessonId":"split-admin-lesson","revision":1}]}]}]});
@@ -3449,6 +3466,37 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .try_get::<String>("", "hash")
         .unwrap();
     assert_eq!(after_activate, before_withdraw);
+    let mut foreign_source = imported_source.clone();
+    foreign_source["id"] = h_lesson.id.clone().into();
+    let foreign_import = serde_json::json!({"document":foreign_source.to_string(),"reason":"Foreign import rejected"});
+    let (status, result) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/lessons/import",
+        Some(foreign_import.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{result}");
+    let (status, report) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/documents/lesson/check",
+        Some(foreign_import),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["valid"], false);
+    let row = owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT server_document, (SELECT count(*) FROM lesson_import_audit WHERE lesson_id=$1 AND revision=$2)::bigint AS n FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2",[h_lesson.id.clone().into(),(h_lesson.revision as i32).into()])).await.unwrap().unwrap();
+    assert_eq!(
+        row.try_get::<serde_json::Value>("", "server_document")
+            .unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let foreign_manifest = serde_json::json!({"id":"brioche-foreign-course-release","schemaVersion":"1.0","levels":[{"id":h_lesson.level_id,"label":"Synthetic","units":[{"id":h_lesson.unit_id,"titleZh":"合成单元","lessons":[{"lessonId":h_lesson.id,"revision":h_lesson.revision}]}]}]});
     let foreign_document = serde_json::json!({"document":foreign_manifest.to_string(),"reason":"Foreign staging rejected"});
     assert_eq!(
