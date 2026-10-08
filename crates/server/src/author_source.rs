@@ -11,6 +11,95 @@ pub enum CheckedLesson {
     Neutral(NeutralLesson),
 }
 impl CheckedLesson {
+    pub(crate) fn from_public_document(value: serde_json::Value) -> Result<Self> {
+        let lesson = match value
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("1.0") => Self::Legacy(serde_json::from_value(value)?),
+            Some("2.0") => Self::Neutral(serde_json::from_value(value)?),
+            _ => anyhow::bail!("unsupported public course version"),
+        };
+        lesson.validate_public()?;
+        Ok(lesson)
+    }
+    pub(crate) fn schema_version(&self) -> &str {
+        match self {
+            Self::Legacy(l) => &l.schema_version,
+            Self::Neutral(l) => &l.schema_version,
+        }
+    }
+    pub(crate) fn steps(&self) -> &[brioche_course_contract::Step] {
+        match self {
+            Self::Legacy(l) => &l.steps,
+            Self::Neutral(l) => &l.steps,
+        }
+    }
+    pub(crate) fn completion(&self) -> &brioche_course_contract::Completion {
+        match self {
+            Self::Legacy(l) => &l.completion,
+            Self::Neutral(l) => &l.completion,
+        }
+    }
+    pub(crate) fn review_item_ids(&self) -> &[String] {
+        match self {
+            Self::Legacy(l) => &l.review_item_ids,
+            Self::Neutral(l) => &l.review_item_ids,
+        }
+    }
+    pub(crate) fn vocabulary_snapshot(&self, id: &str) -> Result<serde_json::Value> {
+        match self {
+            Self::Legacy(l) => serde_json::to_value(
+                l.knowledge
+                    .vocabulary
+                    .iter()
+                    .find(|v| v.id == id)
+                    .context("missing vocabulary")?,
+            ),
+            Self::Neutral(l) => serde_json::to_value(
+                l.knowledge
+                    .vocabulary
+                    .iter()
+                    .find(|v| v.id == id)
+                    .context("missing vocabulary")?,
+            ),
+        }
+        .map_err(Into::into)
+    }
+    pub(crate) fn hint(&self, id: &str) -> Option<&str> {
+        use brioche_course_contract::{Block, Exercise, neutral};
+        match self {
+            Self::Legacy(l) => l.blocks.iter().find_map(|b| match b {
+                Block::Exercise {
+                    id: block_id,
+                    exercise: Exercise::FillBlank { hint_zh, .. },
+                } if block_id == id && !hint_zh.trim().is_empty() => Some(hint_zh.as_str()),
+                _ => None,
+            }),
+            Self::Neutral(l) => l.blocks.iter().find_map(|b| match b {
+                neutral::Block::Exercise {
+                    id: block_id,
+                    exercise: neutral::Exercise::FillBlank { hint_zh, .. },
+                } if block_id == id && !hint_zh.trim().is_empty() => Some(hint_zh.as_str()),
+                _ => None,
+            }),
+        }
+    }
+    pub(crate) fn grade(
+        &self,
+        source: &serde_json::Value,
+        id: &str,
+        answer: &brioche_course_contract::ExerciseAnswer,
+    ) -> std::result::Result<brioche_course_contract::GradeResult, crate::grading::GradeError> {
+        use crate::grading::Grader;
+        match self {
+            Self::Legacy(l) => Grader::from_source(l, source)?.grade(l, id, answer),
+            Self::Neutral(l) => {
+                Grader::from_neutral_source(l, source)?.grade_neutral(l, id, answer)
+            }
+        }
+    }
+
     pub fn id(&self) -> &str {
         match self {
             Self::Legacy(l) => &l.id,

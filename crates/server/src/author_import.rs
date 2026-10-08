@@ -735,6 +735,8 @@ mod neutral_tests {
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        let (learning_app, learning_id) =
+            crate::neutral_learning_tests::exercise(&db, &identity).await;
         let state = one(
             &db,
             "SELECT generation,active_release FROM content_state WHERE product_id='hargow'",
@@ -831,6 +833,29 @@ mod neutral_tests {
         let (status, wire) = public_request(hargow_app.clone(), "/api/v2/catalog").await;
         assert_eq!(status, axum::http::StatusCode::OK);
         assert!(wire["levels"].as_array().unwrap().is_empty());
+        assert_eq!(
+            crate::neutral_learning_tests::request(
+                &learning_app,
+                "GET",
+                &format!("/api/v2/learning-sessions/{learning_id}"),
+                None
+            )
+            .await
+            .0,
+            410
+        );
+        assert_eq!(
+            crate::neutral_learning_tests::request(
+                &learning_app,
+                "POST",
+                "/api/v2/learning-sessions",
+                Some(crate::neutral_learning_tests::start_request())
+            )
+            .await
+            .0,
+            410
+        );
+        drop(learning_app);
         drop(hargow_app);
         drop(brioche_app);
         db.close().await.unwrap();

@@ -122,6 +122,10 @@ dto!(NeutralLessonSummary {
 dto!(NeutralUnit { id:String,title_zh:String,lessons:Vec<NeutralLessonSummary> });
 dto!(NeutralLevel { id:String,label:String,units:Vec<NeutralUnit> });
 dto!(NeutralCatalog { levels:Vec<NeutralLevel>,development_fixture:bool });
+dto!(NeutralLearningSession {
+    lesson: NeutralLesson,
+    progress: LearningState
+});
 impl NeutralLesson {
     pub fn summary(&self) -> NeutralLessonSummary {
         NeutralLessonSummary {

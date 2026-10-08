@@ -28,6 +28,8 @@ pub mod library;
 mod maintenance_auth;
 pub mod media;
 mod media_read;
+#[cfg(test)]
+mod neutral_learning_tests;
 pub mod observability;
 pub mod password;
 pub mod preview;

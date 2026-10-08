@@ -1,9 +1,7 @@
 //! Owned, revision-pinned learning transactions. Client scores are never accepted.
 use crate::{
-    AppError,
-    grading::{GradeError, Grader},
-    learning_identity::LearningAuth as AuthSession,
-    learning_store::LearningStore,
+    AppError, author_source::CheckedLesson, grading::GradeError,
+    learning_identity::LearningAuth as AuthSession, learning_store::LearningStore,
 };
 use axum::{
     Json, Router,
@@ -118,11 +116,66 @@ pub(crate) async fn record<T: Serialize>(
     }
     Ok(())
 }
+#[derive(Clone, Copy)]
+enum LearningWire {
+    Legacy,
+    Neutral,
+}
+impl LearningWire {
+    fn version(self) -> &'static str {
+        match self {
+            Self::Legacy => "1.0",
+            Self::Neutral => "2.0",
+        }
+    }
+    fn scope(self) -> &'static str {
+        match self {
+            Self::Legacy => "start",
+            Self::Neutral => "start:v2",
+        }
+    }
+    fn check(self, lesson: &CheckedLesson) -> Result<(), AppError> {
+        if matches!(self, Self::Legacy) && !matches!(lesson, CheckedLesson::Legacy(_)) {
+            return Err(AppError::Conflict);
+        }
+        Ok(())
+    }
+    fn session(
+        self,
+        session: &SessionRow,
+        progress: LearningState,
+    ) -> Result<serde_json::Value, AppError> {
+        self.check(&session.lesson)?;
+        match (&session.lesson, self) {
+            (CheckedLesson::Legacy(lesson), Self::Legacy) => {
+                serde_json::to_value(LearningSession {
+                    lesson: lesson.clone(),
+                    progress,
+                })
+            }
+            (CheckedLesson::Legacy(lesson), Self::Neutral) => {
+                serde_json::to_value(neutral::NeutralLearningSession {
+                    lesson: neutral::NeutralLesson::try_from(lesson)
+                        .map_err(|_| AppError::Unavailable)?,
+                    progress,
+                })
+            }
+            (CheckedLesson::Neutral(lesson), Self::Neutral) => {
+                serde_json::to_value(neutral::NeutralLearningSession {
+                    lesson: lesson.clone(),
+                    progress,
+                })
+            }
+            _ => return Err(AppError::Conflict),
+        }
+        .map_err(|_| AppError::Unavailable)
+    }
+}
 struct SessionRow {
     product: Option<crate::product::ProductId>,
     id: String,
     user: i64,
-    lesson: PublicLesson,
+    lesson: CheckedLesson,
     source: serde_json::Value,
     version: u32,
     last: Option<String>,
@@ -217,13 +270,12 @@ async fn load<C: ConnectionTrait>(
     if !field::<bool>(&row, "published")? {
         return Err(AppError::Gone);
     }
-    let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
+    let lesson = CheckedLesson::from_public_document(field(&row, "public_document")?)
         .map_err(|_| AppError::Unavailable)?;
-    lesson.validate().map_err(|_| AppError::Unavailable)?;
-    if lesson.id != field::<String>(&row, "lesson_id")?
-        || lesson.revision
+    if lesson.id() != field::<String>(&row, "lesson_id")?
+        || lesson.revision()
             != u32::try_from(field::<i32>(&row, "revision")?).map_err(|_| AppError::Unavailable)?
-        || lesson.schema_version != field::<String>(&row, "schema_version")?
+        || lesson.schema_version() != field::<String>(&row, "schema_version")?
     {
         return Err(AppError::Unavailable);
     }
@@ -289,13 +341,13 @@ async fn progress<C: ConnectionTrait>(
         .collect::<Result<Vec<_>, AppError>>()?;
     Ok(LearningState {
         id: session.id.clone(),
-        lesson_id: session.lesson.id.clone(),
-        revision: session.lesson.revision,
+        lesson_id: session.lesson.id().to_owned(),
+        revision: session.lesson.revision(),
         version: session.version,
         last_step_id: session.last.clone(),
         confirmed_step_ids: session
             .lesson
-            .steps
+            .steps()
             .iter()
             .filter(|s| steps.contains(&s.id))
             .map(|s| s.id.clone())
@@ -316,12 +368,12 @@ fn check_version(session: &SessionRow, version: u32) -> Result<(), AppError> {
     Ok(())
 }
 fn prerequisites(
-    lesson: &PublicLesson,
+    lesson: &CheckedLesson,
     state: &LearningState,
     step_index: usize,
 ) -> Result<(), AppError> {
-    if lesson.steps[..step_index].iter().any(|s| {
-        lesson.completion.required_step_ids.contains(&s.id)
+    if lesson.steps()[..step_index].iter().any(|s| {
+        lesson.completion().required_step_ids.contains(&s.id)
             && !state.confirmed_step_ids.contains(&s.id)
     }) {
         return Err(AppError::Conflict);
@@ -357,14 +409,15 @@ async fn begin(
 }
 async fn start(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<LearningWire>,
     State(backend): State<LearningStore>,
     Json(request): Json<StartLearningRequest>,
-) -> Result<Json<LearningSession>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let user = owner(&auth)?;
     validate_key(&request.idempotency_key)?;
     if request.lesson_id.is_empty()
         || request.lesson_id.len() > 200
-        || request.schema_version != "1.0"
+        || request.schema_version != wire.version()
     {
         return Err(AppError::InvalidInput);
     }
@@ -390,17 +443,30 @@ async fn start(
         ],
     )
     .await?;
-    if let Some(cached) = replay::<LearningSession>(
+    if let Some(cached) = replay::<serde_json::Value>(
         &tx,
         backend.product,
         user,
-        "start",
+        wire.scope(),
         &request.idempotency_key,
         &fingerprint,
     )
     .await?
     {
-        load(&tx, backend.product, user, &cached.progress.id, false).await?; // Withdrawn snapshots never escape through a replay.
+        let progress = match wire {
+            LearningWire::Legacy => {
+                serde_json::from_value::<LearningSession>(cached.clone())
+                    .map_err(|_| AppError::Unavailable)?
+                    .progress
+            }
+            LearningWire::Neutral => {
+                serde_json::from_value::<neutral::NeutralLearningSession>(cached.clone())
+                    .map_err(|_| AppError::Unavailable)?
+                    .progress
+            }
+        };
+        let current = load(&tx, backend.product, user, &progress.id, false).await?;
+        wire.check(&current.lesson)?; // Withdrawn snapshots never escape through replay.
         return Ok(Json(cached));
     }
     exec(
@@ -442,12 +508,9 @@ async fn start(
             field(&row, "revision")?,
         )
         .await?;
-        let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
+        let lesson = CheckedLesson::from_public_document(field(&row, "public_document")?)
             .map_err(|_| AppError::Unavailable)?;
-        lesson.validate().map_err(|_| AppError::Unavailable)?;
-        if lesson.schema_version != request.schema_version {
-            return Err(AppError::Conflict);
-        }
+        wire.check(&lesson)?;
         let id = random_id()?;
         insert_fact(
             &tx,
@@ -459,8 +522,8 @@ async fn start(
                 user.into(),
                 request.lesson_id.clone().into(),
                 field::<i32>(&row, "revision")?.into(),
-                request.schema_version.clone().into(),
-                lesson.steps.first().map(|s| s.id.clone()).into(),
+                lesson.schema_version().to_owned().into(),
+                lesson.steps().first().map(|s| s.id.clone()).into(),
             ],
             "",
         )
@@ -469,18 +532,13 @@ async fn start(
         id
     };
     let session = load(&tx, backend.product, user, &id, true).await?;
-    if session.lesson.schema_version != request.schema_version {
-        return Err(AppError::Conflict);
-    }
-    let result = LearningSession {
-        progress: progress(&tx, &session).await?,
-        lesson: session.lesson,
-    };
+    wire.check(&session.lesson)?;
+    let result = wire.session(&session, progress(&tx, &session).await?)?;
     record(
         &tx,
         backend.product,
         user,
-        "start",
+        wire.scope(),
         &request.idempotency_key,
         &fingerprint,
         &result,
@@ -491,9 +549,10 @@ async fn start(
 }
 async fn get_session(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<LearningWire>,
     State(backend): State<LearningStore>,
     Path(id): Path<String>,
-) -> Result<Json<LearningSession>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let user = owner(&auth)?;
     let tx = backend
         .db
@@ -502,15 +561,13 @@ async fn get_session(
         .map_err(|_| AppError::Unavailable)?;
     // The row lock makes the document and progress a consistent read while a writer commits.
     let session = load(&tx, backend.product, user, &id, true).await?;
-    let result = LearningSession {
-        progress: progress(&tx, &session).await?,
-        lesson: session.lesson,
-    };
+    let result = wire.session(&session, progress(&tx, &session).await?)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
 async fn confirm_step(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<LearningWire>,
     State(backend): State<LearningStore>,
     Path((id, step)): Path<(String, String)>,
     Json(request): Json<LearningWriteRequest>,
@@ -519,6 +576,7 @@ async fn confirm_step(
     let scope = format!("{id}:step:{step}");
     let fingerprint = hash(&request)?;
     let (tx, session) = begin(&backend, user, &id, &request.idempotency_key).await?;
+    wire.check(&session.lesson)?;
     if let Some(cached) = replay(
         &tx,
         backend.product,
@@ -534,7 +592,7 @@ async fn confirm_step(
     check_version(&session, request.version)?;
     let index = session
         .lesson
-        .steps
+        .steps()
         .iter()
         .position(|s| s.id == step)
         .ok_or(AppError::NotFound)?;
@@ -544,10 +602,10 @@ async fn confirm_step(
             return Err(AppError::Conflict);
         }
         prerequisites(&session.lesson, &state, index)?;
-        let target = &session.lesson.steps[index];
+        let target = &session.lesson.steps()[index];
         if session
             .lesson
-            .completion
+            .completion()
             .required_exercise_ids
             .iter()
             .any(|exercise| {
@@ -569,7 +627,7 @@ async fn confirm_step(
         // Resume at the following step; optional steps can be revisited without erasing confirmations.
         let next = session
             .lesson
-            .steps
+            .steps()
             .get(index + 1)
             .map(|s| s.id.as_str())
             .unwrap_or(&step);
@@ -591,6 +649,7 @@ async fn confirm_step(
 }
 async fn submit(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<LearningWire>,
     State(backend): State<LearningStore>,
     Path(id): Path<String>,
     Json(request): Json<SubmitAttemptRequest>,
@@ -599,6 +658,7 @@ async fn submit(
     let scope = format!("{id}:attempt");
     let fingerprint = hash(&request)?;
     let (tx, session) = begin(&backend, user, &id, &request.idempotency_key).await?;
+    wire.check(&session.lesson)?;
     if let Some(cached) = replay(
         &tx,
         backend.product,
@@ -617,15 +677,15 @@ async fn submit(
     }
     let index = session
         .lesson
-        .steps
+        .steps()
         .iter()
         .position(|s| s.block_ids.contains(&request.exercise_id))
         .ok_or(AppError::NotFound)?;
     let state = progress(&tx, &session).await?;
     prerequisites(&session.lesson, &state, index)?;
-    let result = Grader::from_source(&session.lesson, &session.source)
-        .map_err(|_| AppError::Unavailable)?
-        .grade(&session.lesson, &request.exercise_id, &request.answer)
+    let result = session
+        .lesson
+        .grade(&session.source, &request.exercise_id, &request.answer)
         .map_err(|e| match e {
             GradeError::UnknownExercise => AppError::NotFound,
             GradeError::InvalidAnswer => AppError::InvalidAnswer,
@@ -665,7 +725,13 @@ async fn submit(
         "",
     )
     .await?;
-    bump(&tx, &session, Some(&session.lesson.steps[index].id), false).await?;
+    bump(
+        &tx,
+        &session,
+        Some(&session.lesson.steps()[index].id),
+        false,
+    )
+    .await?;
     let response = AttemptResult {
         result,
         progress: progress(&tx, &load(&tx, backend.product, user, &id, false).await?).await?,
@@ -685,6 +751,7 @@ async fn submit(
 }
 async fn hint(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<LearningWire>,
     State(backend): State<LearningStore>,
     Path((id, exercise)): Path<(String, String)>,
     Json(request): Json<LearningWriteRequest>,
@@ -693,6 +760,7 @@ async fn hint(
     let scope = format!("{id}:hint:{exercise}");
     let fingerprint = hash(&request)?;
     let (tx, session) = begin(&backend, user, &id, &request.idempotency_key).await?;
+    wire.check(&session.lesson)?;
     if let Some(cached) = replay(
         &tx,
         backend.product,
@@ -711,19 +779,12 @@ async fn hint(
     }
     let hint = session
         .lesson
-        .blocks
-        .iter()
-        .find_map(|b| match b {
-            Block::Exercise {
-                id,
-                exercise: Exercise::FillBlank { hint_zh, .. },
-            } if id == &exercise && !hint_zh.trim().is_empty() => Some(hint_zh.clone()),
-            _ => None,
-        })
-        .ok_or(AppError::NotFound)?;
+        .hint(&exercise)
+        .ok_or(AppError::NotFound)?
+        .to_owned();
     let index = session
         .lesson
-        .steps
+        .steps()
         .iter()
         .position(|s| s.block_ids.contains(&exercise))
         .ok_or(AppError::Unavailable)?;
@@ -739,7 +800,13 @@ async fn hint(
     .await?
         > 0
     {
-        bump(&tx, &session, Some(&session.lesson.steps[index].id), false).await?;
+        bump(
+            &tx,
+            &session,
+            Some(&session.lesson.steps()[index].id),
+            false,
+        )
+        .await?;
     }
     let response = HintResult {
         hint_zh: hint,
@@ -760,6 +827,7 @@ async fn hint(
 }
 async fn complete(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<LearningWire>,
     State(backend): State<LearningStore>,
     Path(id): Path<String>,
     Json(request): Json<LearningWriteRequest>,
@@ -768,6 +836,7 @@ async fn complete(
     let scope = format!("{id}:complete");
     let fingerprint = hash(&request)?;
     let (tx, session) = begin(&backend, user, &id, &request.idempotency_key).await?;
+    wire.check(&session.lesson)?;
     if let Some(cached) = replay(
         &tx,
         backend.product,
@@ -785,13 +854,13 @@ async fn complete(
         let state = progress(&tx, &session).await?;
         if session
             .lesson
-            .completion
+            .completion()
             .required_step_ids
             .iter()
             .any(|s| !state.confirmed_step_ids.contains(s))
             || session
                 .lesson
-                .completion
+                .completion()
                 .required_exercise_ids
                 .iter()
                 .any(|e| !state.attempts.iter().any(|a| &a.exercise_id == e))
@@ -799,21 +868,18 @@ async fn complete(
             return Err(AppError::Conflict);
         }
         bump(&tx, &session, None, true).await?;
-        exec(&tx,&format!("UPDATE lesson_progress SET first_completed_at=COALESCE(first_completed_at,CURRENT_TIMESTAMP),latest_completed_revision=$3 WHERE user_id=$1 AND lesson_id=$2{}",product_filter(backend.product,"product_id")),vec![user.into(),session.lesson.id.clone().into(),i32::try_from(session.lesson.revision).map_err(|_| AppError::Unavailable)?.into()]).await?;
+        exec(&tx,&format!("UPDATE lesson_progress SET first_completed_at=COALESCE(first_completed_at,CURRENT_TIMESTAMP),latest_completed_revision=$3 WHERE user_id=$1 AND lesson_id=$2{}",product_filter(backend.product,"product_id")),vec![user.into(),session.lesson.id().to_owned().into(),i32::try_from(session.lesson.revision()).map_err(|_| AppError::Unavailable)?.into()]).await?;
         // Deterministic knowledge lock order avoids deadlocks when different lessons share expressions.
         for knowledge in session
             .lesson
-            .review_item_ids
+            .review_item_ids()
             .iter()
             .collect::<BTreeSet<_>>()
         {
             let vocabulary = session
                 .lesson
-                .knowledge
-                .vocabulary
-                .iter()
-                .find(|v| &v.id == knowledge)
-                .ok_or(AppError::Unavailable)?;
+                .vocabulary_snapshot(knowledge)
+                .map_err(|_| AppError::Unavailable)?;
             insert_fact(
                 &tx,
                 backend.product,
@@ -823,13 +889,11 @@ async fn complete(
                     random_id()?.into(),
                     user.into(),
                     knowledge.clone().into(),
-                    session.lesson.id.clone().into(),
-                    i32::try_from(session.lesson.revision)
+                    session.lesson.id().to_owned().into(),
+                    i32::try_from(session.lesson.revision())
                         .map_err(|_| AppError::Unavailable)?
                         .into(),
-                    serde_json::to_value(vocabulary)
-                        .map_err(|_| AppError::Unavailable)?
-                        .into(),
+                    vocabulary.into(),
                 ],
                 review_conflict(backend.product),
             )
@@ -926,19 +990,28 @@ async fn overview(
             .map_err(|_| AppError::Unavailable)?,
     }))
 }
-pub fn router() -> Router<LearningStore> {
+fn session_routes(prefix: &str, wire: LearningWire) -> Router<LearningStore> {
     Router::new()
-        .route("/api/v1/learning-sessions", post(start))
-        .route("/api/v1/learning-sessions/{id}", get(get_session))
+        .route(prefix, post(start))
+        .route(&format!("{prefix}/{{id}}"), get(get_session))
         .route(
-            "/api/v1/learning-sessions/{id}/steps/{step}",
+            &format!("{prefix}/{{id}}/steps/{{step}}"),
             put(confirm_step),
         )
-        .route("/api/v1/learning-sessions/{id}/attempts", post(submit))
-        .route(
-            "/api/v1/learning-sessions/{id}/hints/{exercise}",
-            post(hint),
-        )
-        .route("/api/v1/learning-sessions/{id}/complete", post(complete))
+        .route(&format!("{prefix}/{{id}}/attempts"), post(submit))
+        .route(&format!("{prefix}/{{id}}/hints/{{exercise}}"), post(hint))
+        .route(&format!("{prefix}/{{id}}/complete"), post(complete))
+        .layer(axum::Extension(wire))
+}
+pub fn router() -> Router<LearningStore> {
+    Router::new()
+        .merge(session_routes(
+            "/api/v1/learning-sessions",
+            LearningWire::Legacy,
+        ))
+        .merge(session_routes(
+            "/api/v2/learning-sessions",
+            LearningWire::Neutral,
+        ))
         .route("/api/v1/me/learning", get(overview))
 }

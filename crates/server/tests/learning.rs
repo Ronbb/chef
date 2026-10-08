@@ -1209,6 +1209,71 @@ async fn learning_revision_ownership_idempotency_and_completion() {
         .await;
     assert_eq!(status, 200);
     assert_eq!(opened["lesson"]["revision"], 1);
+    let mut neutral_initial = initial.clone();
+    neutral_initial["schemaVersion"] = json!("2.0");
+    assert_eq!(
+        a.send(
+            "POST",
+            "/api/v2/learning-sessions",
+            Some(neutral_initial.clone()),
+            false
+        )
+        .await
+        .0,
+        403
+    );
+    let (status, neutral_opened) = a
+        .send(
+            "POST",
+            "/api/v2/learning-sessions",
+            Some(neutral_initial.clone()),
+            true,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(neutral_opened["progress"], opened["progress"]);
+    assert_eq!(neutral_opened["lesson"]["schemaVersion"], "2.0");
+    assert_eq!(neutral_opened["lesson"]["targetLanguage"], "fr-FR");
+    assert_eq!(
+        neutral_opened["lesson"]["title"]["target"],
+        opened["lesson"]["title"]["fr"]
+    );
+    assert!(neutral_opened["lesson"]["title"].get("fr").is_none());
+    assert_eq!(
+        a.send(
+            "POST",
+            "/api/v2/learning-sessions",
+            Some(neutral_initial),
+            true
+        )
+        .await,
+        (200, neutral_opened.clone())
+    );
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT schema_version FROM learning_sessions WHERE id=$1",
+            [opened["progress"]["id"].as_str().unwrap().into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.try_get::<String>("", "schema_version").unwrap(), "1.0");
+    assert_eq!(count(&db, "learning_sessions").await, 1);
+    let (status, neutral_read) = a
+        .send(
+            "GET",
+            &format!(
+                "/api/v2/learning-sessions/{}",
+                opened["progress"]["id"].as_str().unwrap()
+            ),
+            None,
+            true,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(neutral_read, neutral_opened);
+
     let text = serde_json::to_string(&opened).unwrap();
     for forbidden in [
         "serverOnly",
