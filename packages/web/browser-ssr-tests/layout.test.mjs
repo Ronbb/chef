@@ -2378,6 +2378,8 @@ test("operator confirms final lesson listening with explicit declaration and exa
       origin + `/author-preview?lessonId=${lesson.id}&revision=1`,
     );
     await browser("wait", ".lesson-audio-review");
+    await browser("click", ".admin-optional-review summary");
+    const accept = ".admin-optional-review button";
     const check = ".lesson-audio-review input[type=checkbox]",
       reason = ".lesson-audio-review textarea";
     assert.equal(
@@ -2386,21 +2388,34 @@ test("operator confirms final lesson listening with explicit declaration and exa
     );
     assert.equal(
       await evaluate(
-        "document.querySelector('.lesson-audio-review .primary').disabled",
+        "document.querySelector('.admin-optional-review button').disabled",
       ),
       true,
     );
     await browser("fill", reason, "仅为界面协议确认，非真实法语审听");
     assert.equal(
       await evaluate(
-        "document.querySelector('.lesson-audio-review .primary').disabled",
+        "document.querySelector('.admin-optional-review button').disabled",
       ),
       true,
     );
     await browser("check", check);
-    await browser("scrollintoview", ".lesson-audio-review .primary");
-    await browser("focus", ".lesson-audio-review .primary");
-    await browser("press", "Enter");
+    if (
+      !(await evaluate("document.querySelector('.admin-optional-review').open"))
+    )
+      await browser("click", ".admin-optional-review summary");
+    await browser(
+      "wait",
+      "--fn",
+      "document.querySelector('.admin-optional-review').open",
+    );
+    await browser("scrollintoview", accept);
+    await browser(
+      "wait",
+      "--fn",
+      "!document.querySelector('.admin-optional-review button').disabled",
+    );
+    await browser("click", accept);
     await browser("wait", "--text", "操作未确认，请刷新核对状态后重试。");
     assert.equal(
       await evaluate(
@@ -2411,7 +2426,7 @@ test("operator confirms final lesson listening with explicit declaration and exa
     await browser("scrollintoview", ".brand");
     await browser("click", ".brand");
     await browser("wait", ".lesson-audio-review dialog[open]");
-    await assertNamedModal("审核结果尚未确认");
+    await assertNamedModal("操作结果尚未确认");
     await browser("press", "Escape");
     await browser(
       "wait",
@@ -2426,7 +2441,7 @@ test("operator confirms final lesson listening with explicit declaration and exa
     await browser("scrollintoview", ".lesson-audio-review .primary");
     await browser("focus", ".lesson-audio-review .primary");
     await browser("press", "Enter");
-    await browser("wait", "--text", "整课试听已通过，可以回到后台审批课程。");
+    await browser("wait", "--text", "整课试听已通过，可以回到后台发布目录。");
     assert.equal(adminWrites.length, 2);
     assert.deepEqual(adminWrites[0], adminWrites[1]);
     assert.equal(adminWrites[0].heard, true);

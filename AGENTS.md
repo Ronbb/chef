@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+2026-10-08 CI 实际日志修复：管理员分页使用数据库动态未来边界，不写死日期；SSR 人工试听必须从可选入口进行，默认 primary 保持直接发布。Brioche maintenance 框架提交仅测试补丁，不部署多产品迁移。Hargow 已部署独立品牌准备页，serve-product-launch.mjs 无身份/DB/课程接口，不能视作正式 H serve 或完整双产品上线；真实粤语运行门槛保持。见 docs/ci-repair-20261008.md。
+
 课程2.0公开模型：neutral::NeutralLesson及独立TS/Schema导出只Chef；结构/媒体复用旧内核，私有字段位置视图不返回或保存，角色使用真实目标locale。旧1.0仍固定法语；2.0词音cue精确对应作者Unicode范围，不用法语空格词界。当前公开模型已实现，但作者/判分、旧适配、导入/API/UI/配音仍待贯通，生产/pin与H运行门槛保持；见 docs/neutral-course-contract.md。
 
 语言中立正文原语：ReadingText/TargetLanguage 的 Rust 真源与 TS/Schema 生成只 Chef；作者显式 Unicode scalar 词段，原文不归一化，粤拼独立注音且精确附着。词音区间不能越过作者范围，语言格式检查不是粤语/TTS质量证明。当前尚未贯通2.0课程/适配/API/UI，保持1.0及H运行关闭与生产/pin门槛；见 docs/language-neutral-reading.md。
