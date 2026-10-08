@@ -97,7 +97,7 @@ impl PublicLesson {
         Ok(())
     }
 
-    pub(crate) fn validate_flow(&self) -> Result<(), String> {
+    pub(crate) fn validate_flow(&self, locale: &str) -> Result<(), String> {
         self.validate_choice_labels()?;
         for (value, path) in [
             (self.id.as_str(), "/id"),
@@ -403,11 +403,8 @@ impl PublicLesson {
                 ));
             }
             nonempty(&cast.display_name, &format!("/cast/{ci}/displayName"))?;
-            if cast.speech_locale != crate::CHARACTER_SPEECH_LOCALE {
-                return Err(format!(
-                    "/cast/{ci}/speechLocale: expected {}",
-                    crate::CHARACTER_SPEECH_LOCALE
-                ));
+            if cast.speech_locale != locale {
+                return Err(format!("/cast/{ci}/speechLocale: expected {}", locale));
             }
         }
         Ok(())

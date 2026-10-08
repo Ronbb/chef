@@ -171,9 +171,10 @@ fn parse_type_value<T: serde::de::DeserializeOwned>(
 }
 
 macro_rules! exercises {
-    ($($variant:ident => $kind:literal { $($field:ident: $ty:ty),* $(,)? }),* $(,)?) => {
+    ($ts_name:literal; $($variant:ident => $kind:literal { $($field:ident: $ty:ty),* $(,)? }),* $(,)?) => {
         #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, TS)]
         #[serde(tag = "exerciseType", rename_all = "kebab-case", deny_unknown_fields)]
+        #[ts(rename = $ts_name)]
         pub enum Exercise {
             $(#[serde(rename_all = "camelCase")] $variant { $($field: $ty),* },)*
         }
@@ -199,7 +200,7 @@ macro_rules! exercises {
         }
     };
 }
-exercises! {
+exercises! { "Exercise";
     SingleChoice => "single-choice" {
         prompt_zh: String,
         options: Vec<OptionItem>,
@@ -218,10 +219,11 @@ exercises! {
 // Serde does not support deny_unknown_fields on a container with flattened fields.
 // The exercise branch therefore removes only its envelope before parsing Exercise.
 macro_rules! blocks {
-    ($($(#[$meta:meta])* $variant:ident { $($field:ident: $ty:ty),* $(,)? }),* $(,)?) => {
+    ($ts_name:literal; $($(#[$meta:meta])* $variant:ident { $($field:ident: $ty:ty),* $(,)? }),* $(,)?) => {
         #[derive(Clone, Debug, Serialize, JsonSchema, TS)]
         #[serde(tag = "type", rename_all = "lowercase")]
         #[schemars(deny_unknown_fields)]
+        #[ts(rename = $ts_name)]
         pub enum Block {
             $($(#[$meta])* $variant { $($field: $ty),* },)*
             Exercise { id: String, #[serde(flatten)] exercise: Exercise },
@@ -266,7 +268,7 @@ macro_rules! blocks {
         }
     };
 }
-blocks! {
+blocks! { "Block";
     #[serde(rename_all = "camelCase")]
     Scene {
         id: String,
@@ -590,6 +592,9 @@ impl PublicLesson {
     /// Course semantics independent of registered recording descriptors.
     /// Import preflight may defer media descriptors; hydrated lessons still use validate().
     pub fn validate_intrinsic(&self) -> Result<(), String> {
+        self.validate_intrinsic_for_locale(CHARACTER_SPEECH_LOCALE)
+    }
+    pub(crate) fn validate_intrinsic_for_locale(&self, locale: &str) -> Result<(), String> {
         if self.schema_version != "1.0" {
             return Err("/schemaVersion: unsupported version".into());
         }
@@ -776,7 +781,7 @@ impl PublicLesson {
                 "/completion/requiredExerciseIds/{i}: unknown completion reference"
             ));
         }
-        self.validate_flow()
+        self.validate_flow(locale)
     }
 }
 
@@ -887,3 +892,5 @@ mod tests {
         }
     }
 }
+
+pub mod neutral;

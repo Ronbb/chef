@@ -3,6 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 impl PublicLesson {
     pub(crate) fn validate_audio(&self) -> Result<(), String> {
+        self.validate_audio_with_word_policy(true)
+    }
+    // V2 checks exact authored spans after this shared media/time/reference validation.
+    pub(crate) fn validate_audio_with_word_policy(
+        &self,
+        legacy_boundaries: bool,
+    ) -> Result<(), String> {
         if self.audio.len() > 500 {
             return Err("/audio: too many recording assets".into());
         }
@@ -148,10 +155,15 @@ impl PublicLesson {
                             let (start, end) = (word.start as usize, word.end as usize);
                             if start >= end
                                 || end > chars.len()
-                                || chars[start..end].iter().any(|c| c.is_whitespace())
+                                || (legacy_boundaries
+                                    && chars[start..end].iter().any(|c| c.is_whitespace()))
                                 || !chars[start..end].iter().any(|c| c.is_alphanumeric())
-                                || (start > 0 && chars[start - 1].is_alphanumeric())
-                                || (end < chars.len() && chars[end].is_alphanumeric())
+                                || (legacy_boundaries
+                                    && start > 0
+                                    && chars[start - 1].is_alphanumeric())
+                                || (legacy_boundaries
+                                    && end < chars.len()
+                                    && chars[end].is_alphanumeric())
                             {
                                 return Err(format!(
                                     "{cue_path}/wordRange: invalid Unicode scalar word boundaries"
