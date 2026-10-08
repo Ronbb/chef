@@ -1,5 +1,5 @@
 import type { ExerciseAnswer } from "@brioche/contracts/ExerciseAnswer";
-import type { PublicLesson } from "@brioche/contracts/PublicLesson";
+import type { ReadingLesson } from "./reading-model.ts";
 import { MAX_TEXT_ANSWER_UTF16_UNITS } from "@brioche/contracts/answer-limits";
 
 import { checkedNamespace, type SessionNamespace } from "./product-session.ts";
@@ -89,7 +89,7 @@ export function clearPending(key: string, idempotencyKey: unknown) {
 }
 export function validAnswer(
   value: unknown,
-  block: Extract<PublicLesson["blocks"][number], { type: "exercise" }>,
+  block: Extract<ReadingLesson["blocks"][number], { type: "exercise" }>,
 ): value is ExerciseAnswer {
   if (!value || typeof value !== "object") return false;
   const answer = value as Record<string, unknown>;
@@ -121,14 +121,27 @@ export type StoredPending = {
   method: "POST" | "PUT";
   body: Record<string, unknown>;
 };
+// Retain the original request path and key when recovering an older client.
+export function sessionMutationSuffix(
+  path: unknown,
+  sessionId: string,
+): string | null {
+  if (typeof path !== "string") return null;
+  for (const version of ["v1", "v2"]) {
+    const base = `/api/${version}/learning-sessions/${sessionId}`;
+    if (path.startsWith(base + "/")) return path.slice(base.length);
+  }
+  return null;
+}
 export function validPending(
   value: unknown,
   sessionId: string,
-  lesson: PublicLesson,
+  lesson: ReadingLesson,
 ): value is StoredPending {
   if (!value || typeof value !== "object") return false;
   const job = value as StoredPending,
-    base = "/api/v1/learning-sessions/" + sessionId;
+    suffix = sessionMutationSuffix(job.path, sessionId);
+  if (suffix === null) return false;
   if (
     !job.body ||
     typeof job.body !== "object" ||
@@ -139,7 +152,7 @@ export function validPending(
   )
     return false;
   const fields = Object.keys(job.body);
-  if (job.path === base + "/attempts" && job.method === "POST") {
+  if (suffix === "/attempts" && job.method === "POST") {
     const block = lesson.blocks.find(
       (block) => block.type === "exercise" && block.id === job.body.exerciseId,
     );
@@ -155,15 +168,15 @@ export function validPending(
     return false;
   return (
     (job.method === "POST" &&
-      (job.path === base + "/complete" ||
+      (suffix === "/complete" ||
         lesson.blocks.some(
           (block) =>
             block.type === "exercise" &&
-            job.path === base + "/hints/" + encodeURIComponent(block.id),
+            suffix === "/hints/" + encodeURIComponent(block.id),
         ))) ||
     (job.method === "PUT" &&
       lesson.steps.some(
-        (step) => job.path === base + "/steps/" + encodeURIComponent(step.id),
+        (step) => suffix === "/steps/" + encodeURIComponent(step.id),
       ))
   );
 }

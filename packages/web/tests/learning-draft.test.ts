@@ -12,6 +12,7 @@ import {
   validPending,
 } from "../app/lib/learning-draft.ts";
 import type { PublicLesson } from "@brioche/contracts/PublicLesson";
+import type { NeutralLesson } from "@brioche/contracts/NeutralLesson";
 const lesson = JSON.parse(
   readFileSync(
     new URL("../../../docs/examples/a1-bakery.lesson.json", import.meta.url),
@@ -22,6 +23,51 @@ const exercise = lesson.blocks.find(
   (block) =>
     block.type === "exercise" && block.exerciseType === "single-choice",
 )!;
+
+test("v2 native pending recovery fixes session and authored exercises while retaining exact legacy requests", () => {
+  const native = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../crates/server/tests/fixtures/neutral-cantonese.lesson.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as NeutralLesson;
+  const job = {
+    path: "/api/v2/learning-sessions/native-session/attempts",
+    method: "POST",
+    body: {
+      exerciseId: "text",
+      answer: { kind: "text", text: "點心" },
+      version: 2,
+      idempotencyKey: "pending-native-operation",
+    },
+  };
+  const original = structuredClone(job);
+  assert.ok(validPending(job, "native-session", native));
+  assert.deepEqual(job, original);
+  for (const path of [
+    "/api/v3/learning-sessions/native-session/attempts",
+    "/api/v2/learning-sessions/other/attempts",
+    "/api/v2/learning-sessions/native-session/attempts?product=brioche",
+    "https://example.test" + job.path,
+  ])
+    assert.equal(
+      validPending({ ...job, path }, "native-session", native),
+      false,
+    );
+  for (const version of ["v1", "v2"]) {
+    const old = {
+      path: `/api/${version}/learning-sessions/existing-session/steps/${lesson.steps[0].id}`,
+      method: "PUT",
+      body: { version: 3, idempotencyKey: "existing-immutable-operation" },
+    };
+    const before = JSON.stringify(old);
+    assert.ok(validPending(old, "existing-session", lesson));
+    assert.equal(JSON.stringify(old), before);
+  }
+});
 test("restorable text answers use the same UTF-16 units as browser maxlength", () => {
   const block = lesson.blocks.find(
     (block) => block.type === "exercise" && block.exerciseType === "fill-blank",

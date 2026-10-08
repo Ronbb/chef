@@ -4,10 +4,12 @@ export function OrderEditor({
   tokens,
   order,
   onChange,
+  language = "fr-FR",
 }: {
   tokens: { id: string; text: string }[];
   order: string[];
   onChange: (order: string[]) => void;
+  language?: string;
 }) {
   const bank = useRef(new Map<string, HTMLButtonElement>()),
     sentence = useRef(new Map<string, HTMLButtonElement>()),
@@ -42,7 +44,7 @@ export function OrderEditor({
                 onChange(order.filter((value) => value !== id));
               }}
             >
-              <span lang="fr">
+              <span lang={language}>
                 {tokens.find((token) => token.id === id)?.text}
               </span>
             </button>
@@ -76,11 +78,11 @@ export function OrderEditor({
               onChange(next);
             }}
           >
-            <span lang="fr">{token.text}</span>
+            <span lang={language}>{token.text}</span>
           </button>
         ))}
       </div>
-      <span className="sr-only" role="status" lang="fr">
+      <span className="sr-only" role="status" lang={language}>
         {order
           .map((id) => tokens.find((token) => token.id === id)?.text)
           .join(" ")}

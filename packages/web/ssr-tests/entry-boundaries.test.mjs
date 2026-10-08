@@ -39,6 +39,7 @@ let fixture = false;
 let authenticated = false;
 let lessonStatus = 200;
 let neutralPublicLesson = null;
+let neutralPrivateSession = null;
 const profile = {
   id: "00000000-0000-0000-0000-000000000001",
   email: "learner@example.test",
@@ -66,6 +67,9 @@ const server = createServer((request, response) => {
   if (request.url === "/api/v1/me") {
     response.statusCode = authenticated ? 200 : fixture ? 404 : 401;
     response.end(JSON.stringify(authenticated ? profile : {}));
+  } else if (request.url === "/api/v2/learning-sessions/native-session") {
+    response.statusCode = authenticated && neutralPrivateSession ? 200 : 401;
+    response.end(JSON.stringify(authenticated ? neutralPrivateSession : {}));
   } else if (
     request.url.startsWith("/api/v1/operator/overview") &&
     authenticated &&
@@ -1142,6 +1146,67 @@ test("public lesson SSR reads v2 and renders native Cantonese words and pronunci
     assert.ok(!requests.some((r) => r.path.startsWith("/api/lessons/")));
   } finally {
     neutralPublicLesson = null;
+  }
+});
+
+test("native learning SSR uses the v2 session and forwards only its authorized owner cookie", async () => {
+  const source = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../crates/server/tests/fixtures/neutral-cantonese.lesson.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const native = Object.fromEntries(
+    [...fields, "targetLanguage", "explanationLanguage"].map((key) => [
+      key,
+      source[key],
+    ]),
+  );
+  native.media = [];
+  neutralPrivateSession = {
+    lesson: native,
+    progress: {
+      id: "native-session",
+      lessonId: source.id,
+      revision: 1,
+      version: 1,
+      lastStepId: "step-read",
+      confirmedStepIds: [],
+      hintedExerciseIds: [],
+      attempts: [],
+      completedAt: null,
+      firstCompletedAt: null,
+    },
+  };
+  fixture = false;
+  authenticated = true;
+  requests.length = 0;
+  try {
+    const response = await request("/learning/native-session");
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.ok(html.includes('class="sentence" lang="yue-Hant-HK"'));
+    assert.ok(html.includes("<rt>nei5 hou2</rt>"));
+    const read = requests.find(
+      (r) => r.path === "/api/v2/learning-sessions/native-session",
+    );
+    assert.equal(read?.cookie, "brioche.sid=controlled-ssr-session");
+    assert.ok(
+      !requests.some((r) => r.path.startsWith("/api/v1/learning-sessions")),
+    );
+    authenticated = false;
+    const denied = await request("/learning/native-session");
+    assert.equal(denied.status, 302);
+    assert.equal(
+      denied.headers.get("location"),
+      "/login?next=%2Flearning%2Fnative-session",
+    );
+  } finally {
+    authenticated = false;
+    neutralPrivateSession = null;
   }
 });
 

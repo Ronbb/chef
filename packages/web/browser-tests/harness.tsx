@@ -20,7 +20,8 @@ import type { NeutralLesson } from "@brioche/contracts/NeutralLesson";
 import { lesson } from "./lesson";
 import { ChoiceDialog } from "../app/components/choice-dialog";
 import Profile from "../app/routes/profile";
-import Learning from "../app/routes/learning";
+import { LearningSessionContent } from "../app/routes/learning";
+import type { ReadingLesson } from "../app/lib/reading-model";
 import Reviews from "../app/routes/reviews";
 import Library from "../app/routes/library";
 import PendingSaves from "../app/routes/pending-saves";
@@ -127,7 +128,7 @@ const qa = {
   learningRelease: [] as ((value: LearningState | number) => void)[],
   learningPaths: [] as { path: string; method?: string }[],
   learningReads: [] as ((value: LearningState | number) => void)[],
-  sessionLesson: lesson,
+  sessionLesson: lesson as ReadingLesson,
   reviewWrites: [] as Record<string, unknown>[],
   reviewRelease: [] as ((value: ReviewAttemptResult | number) => void)[],
   queueReads: [] as ((value: ReviewQueue | number) => void)[],
@@ -384,7 +385,7 @@ window.fetch = async (input, init) => {
     });
   }
   if (
-    String(input) === "/api/v1/learning-sessions/qa-session" &&
+    /^\/api\/v[12]\/learning-sessions\/qa-session$/.test(String(input)) &&
     init?.method === "GET"
   ) {
     return new Promise<Response>((resolve) => {
@@ -397,7 +398,7 @@ window.fetch = async (input, init) => {
       );
     });
   }
-  if (String(input).startsWith("/api/v1/learning-sessions/qa-session/")) {
+  if (/^\/api\/v[12]\/learning-sessions\/qa-session\//.test(String(input))) {
     qa.learningPaths.push({ path: String(input), method: init?.method });
     const index = qa.learningWrites.push(JSON.parse(String(init?.body))) - 1;
     return new Promise<Response>((resolve) => {
@@ -462,7 +463,7 @@ window.fetch = async (input, init) => {
       );
     });
   }
-  if (String(input) !== "/api/v1/learning-sessions")
+  if (String(input) !== "/api/v2/learning-sessions")
     return originalFetch(input, init);
   const body = JSON.parse(String(init?.body)) as {
     lessonId: string;
@@ -646,50 +647,40 @@ const progress: LearningState = {
 function SessionHarness() {
   const session = {
     lesson:
-      kind === "session-multi"
-        ? {
-            ...lesson,
-            steps: [
-              ...lesson.steps,
-              {
-                id: "recap",
-                kind: "recap",
-                titleZh: "回顾",
-                blockIds: ["evening"],
+      kind === "session-neutral"
+        ? neutralReading
+        : kind === "session-multi"
+          ? {
+              ...lesson,
+              steps: [
+                ...lesson.steps,
+                {
+                  id: "recap",
+                  kind: "recap",
+                  titleZh: "回顾",
+                  blockIds: ["evening"],
+                },
+              ],
+              completion: {
+                ...lesson.completion,
+                requiredStepIds: ["read", "recap"],
               },
-            ],
-            completion: {
-              ...lesson.completion,
-              requiredStepIds: ["read", "recap"],
-            },
+            }
+          : lesson,
+    progress:
+      kind === "session-neutral"
+        ? {
+            ...progress,
+            lessonId: neutralReading.id,
+            lastStepId: neutralReading.steps[0].id,
           }
-        : lesson,
-    progress,
+        : progress,
   };
   qa.sessionLesson = session.lesson;
   return (
     <LearningProvider user={kind === "session-revoked" ? reviewUser : null}>
       <main>
-        <Learning
-          loaderData={{ session, ownerId: "qa-account" }}
-          params={{ sessionId: "qa-session" }}
-          matches={[
-            {
-              id: "root",
-              params: {},
-              pathname: "/",
-              loaderData: { user: null, enabled: false },
-              handle: undefined,
-            },
-            {
-              id: "routes/learning",
-              params: { sessionId: "qa-session" },
-              pathname: "/",
-              loaderData: { session, ownerId: "qa-account" },
-              handle: undefined,
-            },
-          ]}
-        />
+        <LearningSessionContent initial={session} ownerId="qa-account" />
       </main>
     </LearningProvider>
   );
@@ -1321,7 +1312,8 @@ const router = createMemoryRouter(
         <ProfileHarness />
       ) : kind === "session" ||
         kind === "session-revoked" ||
-        kind === "session-multi" ? (
+        kind === "session-multi" ||
+        kind === "session-neutral" ? (
         <SessionHarness />
       ) : kind === "reviews" ? (
         <ReviewsHarness />

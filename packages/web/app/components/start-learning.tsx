@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import type { LearningSession } from "@brioche/contracts/LearningSession";
+import type { NeutralLearningSession } from "@brioche/contracts/NeutralLearningSession";
 import { ApiRequestError, privateRequest } from "../lib/api.client";
 import { operationKey } from "../lib/operation-key";
 type StartLearningProps = {
@@ -35,10 +35,10 @@ function LearningEntry({
     setExpired(false);
     key.current ??= operationKey();
     try {
-      const session = await privateRequest<LearningSession>(
-        "/api/v1/learning-sessions",
+      const session = await privateRequest<NeutralLearningSession>(
+        "/api/v2/learning-sessions",
         "POST",
-        { lessonId, schemaVersion: "1.0", idempotencyKey: key.current },
+        { lessonId, schemaVersion: "2.0", idempotencyKey: key.current },
       );
       if (alive.current) void navigate("/learning/" + session.progress.id);
     } catch (failure) {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { LearningSession } from "@brioche/contracts/LearningSession";
+import type { ReadingSession } from "../lib/reading-model";
+import type { NeutralLearningSession } from "@brioche/contracts/NeutralLearningSession";
 import type { LearningState } from "@brioche/contracts/LearningState";
 import type { AttemptResult } from "@brioche/contracts/AttemptResult";
 import type { HintResult } from "@brioche/contracts/HintResult";
@@ -15,6 +16,7 @@ import {
   readDraft,
   saveDraft,
   validPending,
+  sessionMutationSuffix,
 } from "../lib/learning-draft";
 type Result = LearningState | AttemptResult | HintResult;
 type Pending = {
@@ -23,7 +25,7 @@ type Pending = {
   body: object;
   onSaved?: () => void;
 };
-export function useLearningSession(initial: LearningSession, scope: string) {
+export function useLearningSession(initial: ReadingSession, scope: string) {
   const [progress, setProgress] = useState(initial.progress),
     [saving, setSaving] = useState(false),
     [error, setError] = useState(""),
@@ -83,10 +85,10 @@ export function useLearningSession(initial: LearningSession, scope: string) {
     setProgress(value);
   }
   async function readLatest() {
-    let fresh: LearningSession;
+    let fresh: NeutralLearningSession;
     try {
-      fresh = await privateRequest<LearningSession>(
-        "/api/v1/learning-sessions/" + initial.progress.id,
+      fresh = await privateRequest<NeutralLearningSession>(
+        "/api/v2/learning-sessions/" + initial.progress.id,
         "GET",
       );
     } catch (failure) {
@@ -156,11 +158,8 @@ export function useLearningSession(initial: LearningSession, scope: string) {
         job.method === "PUT"
           ? initial.lesson.steps.find(
               (step) =>
-                job.path ===
-                "/api/v1/learning-sessions/" +
-                  initial.progress.id +
-                  "/steps/" +
-                  encodeURIComponent(step.id),
+                sessionMutationSuffix(job.path, initial.progress.id) ===
+                "/steps/" + encodeURIComponent(step.id),
             )
           : undefined;
       if (
@@ -245,7 +244,7 @@ export function useLearningSession(initial: LearningSession, scope: string) {
     if (pending.current || busy.current || stale.current)
       return Promise.resolve(null);
     return send<T>({
-      path: "/api/v1/learning-sessions/" + initial.progress.id + suffix,
+      path: "/api/v2/learning-sessions/" + initial.progress.id + suffix,
       method,
       body: {
         ...fields,

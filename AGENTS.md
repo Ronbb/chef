@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+2026-10-08 Web会话增量：学习开始与读取、新步骤/提示/答题/完成请求使用v2；共享编辑器按真实语言显示中立题目。旧pending草稿仅校验v1/v2同会话路径，保留原URL/body/key重试，确认后按原步骤推进。原生粤语三题型/提示/完成及旧v1恢复键盘浏览器验证通过，原点击步骤/完成精确重试、冲突撤回、离开返回回归通过；SSR身份读取保持v1，会话取v2。合成夹具不是正式课程/配音；首页/个人知识/复习前端仍待迁移，H正式上线与生产/pin/gate保持。见docs/neutral-course-contract.md。
+
 2026-10-08 Web阅读增量：公开课程页使用v2详情/目录；共享Sentence/ReadingBlock/TeachingBlock支持ReadingText作者scalar词段与ruby粤拼，按真实locale，词音复用精确cue；旧法语预览兼容不写源。真实组件四宽度粤语点击/录音、法语切换与宽度、实际SSR原生v2与浏览器SSR手机/中屏动效通过。个人写入/学习会话/首页目录/复习/草稿恢复仍待前端迁移；不是H正式上线或真实粤语语音质量证明，生产/pin/gate保持。见docs/neutral-course-contract.md。
 
 2026-10-08 CI 实际日志修复：管理员分页使用数据库动态未来边界，不写死日期；SSR 人工试听必须从可选入口进行，默认 primary 保持直接发布。Brioche maintenance 框架提交仅测试补丁，不部署多产品迁移。Hargow 已部署独立品牌准备页，serve-product-launch.mjs 无身份/DB/课程接口，不能视作正式 H serve 或完整双产品上线；真实粤语运行门槛保持。见 docs/ci-repair-20261008.md。

@@ -7,8 +7,10 @@ import type { NeutralVocabulary } from "@brioche/contracts/NeutralVocabulary";
 import type { Grammar } from "@brioche/contracts/Grammar";
 import type { NeutralGrammar } from "@brioche/contracts/NeutralGrammar";
 import type { ReadingText } from "@brioche/contracts/ReadingText";
+import type { LearningState } from "@brioche/contracts/LearningState";
 
 export type ReadingLesson = PublicLesson | NeutralLesson;
+export type ReadingSession = { lesson: ReadingLesson; progress: LearningState };
 export type ReadingSegment = Segment | NeutralSegment;
 export type ReadingVocabulary = Vocabulary | NeutralVocabulary;
 export type ReadingGrammar = Grammar | NeutralGrammar;

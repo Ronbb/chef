@@ -1,7 +1,8 @@
 import { productNamespace } from "../lib/product-runtime";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, redirect } from "react-router";
-import type { LearningSession } from "@brioche/contracts/LearningSession";
+import type { NeutralLearningSession } from "@brioche/contracts/NeutralLearningSession";
+import { lessonLanguage, type ReadingSession } from "../lib/reading-model";
 import type { LearningState } from "@brioche/contracts/LearningState";
 import type { AttemptResult } from "@brioche/contracts/AttemptResult";
 import type { HintResult } from "@brioche/contracts/HintResult";
@@ -18,9 +19,9 @@ import { usePendingOwnedWrites } from "../components/pending-owned-writes";
 import type { Route } from "./+types/learning";
 export async function loader({ request, params }: Route.LoaderArgs) {
   try {
-    const session = await getPrivate<LearningSession>(
+    const session = await getPrivate<NeutralLearningSession>(
       request,
-      "/api/v1/learning-sessions/" + encodeURIComponent(params.sessionId),
+      "/api/v2/learning-sessions/" + encodeURIComponent(params.sessionId),
     );
     const identity = await getIdentity(request);
     if (!identity.user)
@@ -36,18 +37,18 @@ export async function loader({ request, params }: Route.LoaderArgs) {
 }
 export default function Learning({ loaderData }: Route.ComponentProps) {
   return (
-    <Session
+    <LearningSessionContent
       key={loaderData.ownerId + loaderData.session.progress.id}
       initial={loaderData.session}
       ownerId={loaderData.ownerId}
     />
   );
 }
-function Session({
+export function LearningSessionContent({
   initial,
   ownerId,
 }: {
-  initial: LearningSession;
+  initial: ReadingSession;
   ownerId: string;
 }) {
   const scope = draftScope(
@@ -167,7 +168,9 @@ function Session({
         <div className="crumb">
           {lesson.levelId.toUpperCase()} / {lesson.title.zh}
         </div>
-        <h1 lang="fr">{lesson.title.fr}</h1>
+        <h1 lang={lessonLanguage(lesson)}>
+          {"target" in lesson.title ? lesson.title.target : lesson.title.fr}
+        </h1>
       </div>
       <div className="learning-stage">
         {session.progress.completedAt ? (
@@ -250,6 +253,7 @@ function Session({
                       draftKey={scope + ":answer:" + block.id}
                       confirmedSubmission={session.confirmedAttempts[block.id]}
                       block={block}
+                      language={lessonLanguage(lesson)}
                       latest={session.progress.attempts
                         .filter((attempt) => attempt.exerciseId === block.id)
                         .at(-1)}

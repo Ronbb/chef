@@ -265,6 +265,7 @@ test("learning entry keeps focus, deduplicates keyboard submits, and returns thr
     ),
     { focus: "BUTTON", count: 1, busy: "true" },
   );
+  assert.equal(await evaluate("qa.writes[0].schemaVersion"), "2.0");
   await evaluate("qa.release[0](401)");
   await browser("wait", ".start-learning a");
   await press("Tab");
@@ -273,6 +274,215 @@ test("learning entry keeps focus, deduplicates keyboard submits, and returns thr
     route: "/login",
     search: "?next=%2Flessons%2Fcourse-a",
   });
+});
+
+test("native Cantonese session confirms steps, hints and all exercise kinds through v2 before completion", async () => {
+  await open("session-neutral");
+  await browser("set", "viewport", "390", "844");
+  let state = {
+    id: "qa-session",
+    lessonId: "neutral-protocol",
+    revision: 1,
+    version: 1,
+    lastStepId: "step-read",
+    confirmedStepIds: [],
+    hintedExerciseIds: [],
+    attempts: [],
+    completedAt: null,
+    firstCompletedAt: null,
+  };
+  let index = 0;
+  assert.equal(
+    await evaluate("document.querySelector('.lesson-header h1').lang"),
+    "yue-Hant-HK",
+  );
+  async function confirm(step) {
+    await browser("click", ".learning-actions .primary");
+    await browser("wait", "--fn", `qa.learningWrites.length===${index + 1}`);
+    assert.equal(
+      await evaluate(`qa.learningPaths[${index}].path`),
+      `/api/v2/learning-sessions/qa-session/steps/${step}`,
+    );
+    assert.equal(
+      await evaluate(`qa.learningWrites[${index}].version`),
+      state.version,
+    );
+    state = {
+      ...state,
+      version: state.version + 1,
+      lastStepId: step,
+      confirmedStepIds: [...state.confirmedStepIds, step],
+    };
+    await evaluate(`qa.learningRelease[${index++}](${JSON.stringify(state)})`);
+    await browser(
+      "wait",
+      "--fn",
+      "!document.querySelector('.learning-actions .primary')?.getAttribute('aria-busy') || document.querySelector('.learning-actions .primary')?.getAttribute('aria-busy')==='false'",
+    );
+  }
+  await confirm("step-read");
+  await confirm("step-meaning");
+  await browser(
+    "wait",
+    "--fn",
+    "document.querySelectorAll('form.exercise-sheet').length===3",
+  );
+  assert.equal(
+    await evaluate("document.querySelector('.practice-input').lang"),
+    "yue-Hant-HK",
+  );
+  assert.equal(
+    await evaluate("document.querySelector('.practice-sentence').textContent"),
+    "____",
+  );
+  await browser("click", ".practice-hint");
+  await browser("wait", "--fn", `qa.learningWrites.length===${index + 1}`);
+  assert.equal(
+    await evaluate(`qa.learningPaths[${index}].path`),
+    "/api/v2/learning-sessions/qa-session/hints/text",
+  );
+  state = { ...state, version: state.version + 1, hintedExerciseIds: ["text"] };
+  await evaluate(
+    `qa.learningRelease[${index++}](${JSON.stringify({ progress: state, hintZh: "仅协议测试。" })})`,
+  );
+  await browser("wait", "--text", "仅协议测试。");
+  const answers = [
+    { kind: "choice", optionId: "greeting" },
+    { kind: "text", text: "點心" },
+    { kind: "order", tokenIds: ["first", "bye", "second"] },
+  ];
+  await browser("check", 'input[value="greeting"]');
+  await browser("fill", ".practice-input", "點心");
+  for (let n = 0; n < 3; n++) {
+    await evaluate(
+      `document.querySelector('.order-bank button:nth-child(${n + 1})').focus()`,
+    );
+    await press("Enter");
+  }
+  for (const [n, exerciseId] of ["choice", "text", "order"].entries()) {
+    if (exerciseId === "text")
+      assert.equal(
+        await evaluate("document.querySelector('.practice-input').value"),
+        "點心",
+      );
+    await evaluate(
+      `document.querySelector('form.exercise-sheet:nth-of-type(${n + 1}) .primary').focus()`,
+    );
+    await press("Enter");
+    try {
+      await browser("wait", "--fn", `qa.learningWrites.length===${index + 1}`);
+    } catch (error) {
+      throw new Error(
+        JSON.stringify(
+          await evaluate(
+            "({writes:qa.learningWrites,forms:[...document.querySelectorAll('form.exercise-sheet')].map(f=>({text:f.textContent,input:f.querySelector('input')?.value,disabled:f.querySelector('.primary')?.disabled})),messages:[...document.querySelectorAll('[role=alert]')].map(e=>e.textContent)})",
+          ),
+        ),
+        { cause: error },
+      );
+    }
+    assert.equal(
+      await evaluate(`qa.learningPaths[${index}].path`),
+      "/api/v2/learning-sessions/qa-session/attempts",
+    );
+    assert.deepEqual(
+      await evaluate(`qa.learningWrites[${index}].answer`),
+      answers[n],
+    );
+    const result = { correct: true, feedbackZh: "合成协议反馈。" };
+    const attempt = {
+      id: `attempt-${exerciseId}`,
+      exerciseId,
+      answer: answers[n],
+      result,
+      hintUsed: exerciseId === "text",
+      attemptIndex: 1,
+    };
+    state = {
+      ...state,
+      version: state.version + 1,
+      attempts: [...state.attempts, attempt],
+    };
+    await evaluate(
+      `qa.learningRelease[${index++}](${JSON.stringify({ progress: state, result })})`,
+    );
+    await browser(
+      "wait",
+      "--fn",
+      `document.querySelectorAll('.practice-feedback').length===${n + 1}`,
+    );
+  }
+  await confirm("step-practice");
+  await confirm("step-recap");
+  await browser("click", ".learning-actions .primary");
+  await browser("wait", "--fn", `qa.learningWrites.length===${index + 1}`);
+  assert.equal(
+    await evaluate(`qa.learningPaths[${index}].path`),
+    "/api/v2/learning-sessions/qa-session/complete",
+  );
+  state = {
+    ...state,
+    version: state.version + 1,
+    completedAt: "2026-10-08T00:00:00Z",
+    firstCompletedAt: "2026-10-08T00:00:00Z",
+  };
+  await evaluate(`qa.learningRelease[${index}](${JSON.stringify(state)})`);
+  await browser(
+    "wait",
+    "--fn",
+    "document.activeElement.textContent==='本课已完成'",
+  );
+  assert.equal(
+    await evaluate("document.documentElement.scrollWidth>innerWidth"),
+    false,
+  );
+});
+
+test("a restored v1 step keeps its original endpoint and advances in the v2 client", async () => {
+  await open("session-multi");
+  await evaluate("qa.navigate('/login')");
+  await browser("wait", "--fn", "qa.route==='/login'");
+  const job = {
+    path: "/api/v1/learning-sessions/qa-session/steps/read",
+    method: "PUT",
+    body: { version: 1, idempotencyKey: "legacy-fixed-step-operation" },
+  };
+  await evaluate(
+    `sessionStorage.setItem('brioche.learning.v1:qa-account:qa-session:1:pending',${JSON.stringify(JSON.stringify(job))});qa.navigate('/')`,
+  );
+  await browser("wait", "--text", "重试保存");
+  await evaluate(
+    "document.querySelector('.learning-actions .primary').focus()",
+  );
+  await press("Enter");
+  try {
+    await browser("wait", "--fn", "qa.learningWrites.length===1");
+  } catch (error) {
+    throw new Error(
+      JSON.stringify(
+        await evaluate(
+          "({writes:qa.learningWrites,paths:qa.learningPaths,body:document.querySelector('.learning-actions')?.textContent,storage:sessionStorage.getItem('brioche.learning.v1:qa-account:qa-session:1:pending'),bootstrap:qa.authBootstraps.length})",
+        ),
+      ),
+      { cause: error },
+    );
+  }
+  assert.deepEqual(await evaluate("qa.learningPaths[0]"), {
+    path: job.path,
+    method: job.method,
+  });
+  assert.deepEqual(await evaluate("qa.learningWrites[0]"), job.body);
+  await evaluate(
+    "qa.learningRelease[0]({id:'qa-session',lessonId:'reading-protocol',revision:1,version:2,lastStepId:'read',confirmedStepIds:['read'],hintedExerciseIds:[],attempts:[],completedAt:null,firstCompletedAt:null})",
+  );
+  await browser("wait", "--fn", "document.activeElement.textContent==='回顾'");
+  assert.equal(await evaluate("qa.learningWrites.length"), 1);
+  assert.equal(
+    await evaluate(
+      "sessionStorage.getItem('brioche.learning.v1:qa-account:qa-session:1:pending')",
+    ),
+    null,
+  );
 });
 
 test("a replaced lesson ignores its late response while current retries keep their exact body", async () => {
@@ -1133,7 +1343,7 @@ test("learning step and completion preserve waiting focus and retry their exact 
     const body = await evaluate(`qa.learningWrites[${offset}]`);
     const target = {
       path:
-        "/api/v1/learning-sessions/qa-session/" +
+        "/api/v2/learning-sessions/qa-session/" +
         (offset === 0 ? "steps/read" : "complete"),
       method: offset === 0 ? "PUT" : "POST",
     };
@@ -1209,7 +1419,7 @@ test("completion survives navigation with its exact request and respects remote 
     await browser("wait", "--fn", "qa.learningWrites.length===2");
     const original = await evaluate("qa.learningWrites[1]");
     assert.deepEqual(await evaluate("qa.learningPaths[1]"), {
-      path: "/api/v1/learning-sessions/qa-session/complete",
+      path: "/api/v2/learning-sessions/qa-session/complete",
       method: "POST",
     });
     if (outcome === "remote-completion") {
@@ -1395,7 +1605,7 @@ test("learning conflict rereads progress without advancing and removes withdrawn
   await browser("wait", "--fn", "qa.learningWrites.length===3");
   assert.equal(
     await evaluate("qa.learningPaths[2].path"),
-    "/api/v1/learning-sessions/qa-session/steps/recap",
+    "/api/v2/learning-sessions/qa-session/steps/recap",
   );
   await evaluate("qa.learningRelease[2](409)");
   await browser("wait", "--fn", "qa.learningReads.length===3");

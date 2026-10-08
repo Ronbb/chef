@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { MAX_TEXT_ANSWER_UTF16_UNITS } from "@brioche/contracts/answer-limits";
 import { readDraft, saveDraft, validAnswer } from "../lib/learning-draft";
 import type { Block } from "@brioche/contracts/Block";
+import type { NeutralBlock } from "@brioche/contracts/NeutralBlock";
 import type { AttemptRecord } from "@brioche/contracts/AttemptRecord";
 import type { ExerciseAnswer } from "@brioche/contracts/ExerciseAnswer";
 import { OrderEditor } from "./order-editor";
@@ -17,8 +18,10 @@ export function ExerciseEditor({
   hint,
   draftKey,
   confirmedSubmission,
+  language = "fr-FR",
 }: {
-  block: Extract<Block, { type: "exercise" }>;
+  block: Extract<Block | NeutralBlock, { type: "exercise" }>;
+  language?: string;
   latest?: Pick<AttemptRecord, "id" | "answer" | "result">;
   hinted: boolean;
   blocked: boolean;
@@ -179,8 +182,10 @@ export function ExerciseEditor({
         )}
         {block.exerciseType === "fill-blank" && (
           <>
-            <p className="practice-sentence" lang="fr">
-              {block.templateFr}
+            <p className="practice-sentence" lang={language}>
+              {"templateTarget" in block
+                ? block.templateTarget
+                : block.templateFr}
             </p>
             <label className="answer-label" htmlFor={answerId}>
               你的答案
@@ -188,7 +193,7 @@ export function ExerciseEditor({
             <input
               className="practice-input"
               id={answerId}
-              lang="fr"
+              lang={language}
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
@@ -203,6 +208,7 @@ export function ExerciseEditor({
         )}
         {block.exerciseType === "order" && (
           <OrderEditor
+            language={language}
             tokens={block.tokens}
             order={shownOrder}
             onChange={(next) => {
