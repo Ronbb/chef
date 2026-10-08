@@ -61,6 +61,40 @@ fn reading(text: &str, mut fixed: Vec<TextRange>) -> Result<ReadingText, String>
     Ok(reading)
 }
 
+impl From<&LessonSummary> for NeutralLessonSummary {
+    fn from(l: &LessonSummary) -> Self {
+        Self {
+            id: l.id.clone(),
+            revision: l.revision,
+            level_id: l.level_id.clone(),
+            unit_id: l.unit_id.clone(),
+            title: NeutralTitle {
+                target: l.title.fr.clone(),
+                zh: l.title.zh.clone(),
+            },
+            target_language: TargetLanguage::French,
+            explanation_language: ExplanationLanguage::SimplifiedChinese,
+            summary_zh: l.summary_zh.clone(),
+            estimated_minutes: l.estimated_minutes,
+        }
+    }
+}
+
+impl TryFrom<&Vocabulary> for NeutralVocabulary {
+    type Error = String;
+    fn try_from(v: &Vocabulary) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: v.id.clone(),
+            lemma: reading(&v.lemma, vec![])?,
+            part_of_speech: v.part_of_speech.clone(),
+            gender: v.gender.clone(),
+            meaning_zh: v.meaning_zh.clone(),
+            note_zh: v.note_zh.clone(),
+            recording: v.recording.clone(),
+        })
+    }
+}
+
 impl TryFrom<&PublicLesson> for NeutralLesson {
     type Error = String;
     fn try_from(legacy: &PublicLesson) -> Result<Self, Self::Error> {

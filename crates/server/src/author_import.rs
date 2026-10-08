@@ -855,6 +855,43 @@ mod neutral_tests {
             .0,
             410
         );
+        let (status, overview) = crate::neutral_learning_tests::request(
+            &learning_app,
+            "GET",
+            "/api/v2/me/learning",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(overview["items"].as_array().unwrap().is_empty());
+        let (status, saved) = crate::neutral_learning_tests::request(
+            &learning_app,
+            "GET",
+            "/api/v2/me/saved-items/expr-greeting",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(saved["withdrawn"], true);
+        assert!(saved["vocabulary"].is_null());
+        let (status, history) = crate::neutral_learning_tests::request(
+            &learning_app,
+            "GET",
+            "/api/v2/me/review-history",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(history["items"][0]["vocabulary"].is_null());
+        let (status, cards) = crate::neutral_learning_tests::request(
+            &learning_app,
+            "GET",
+            "/api/v2/me/review-cards",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(cards["items"].as_array().unwrap().is_empty());
         drop(learning_app);
         drop(hargow_app);
         drop(brioche_app);

@@ -126,6 +126,31 @@ dto!(NeutralLearningSession {
     lesson: NeutralLesson,
     progress: LearningState
 });
+dto!(NeutralLearningOverviewItem { session_id:String,lesson_id:String,revision:u32,title:NeutralTitle,last_step_id:Option<String>,completed_at:Option<String>,first_completed_at:Option<String>,updated_at:String });
+dto!(NeutralLearningOverview { items:Vec<NeutralLearningOverviewItem>,next_cursor:Option<String>,completed_lessons:u32 });
+dto!(NeutralStudyDashboard { local_date:String,time_zone:String,week_start:String,days:Vec<StudyDay>,active_days:u8,weekly_goal_days:u8,daily_goal_minutes:u8,due_reviews:u32,next_review_at:Option<String>,completed_lessons:u32,resume:Option<NeutralLearningOverviewItem>,recommended_lesson:Option<NeutralLessonSummary>,all_available_completed:bool,course_states:Vec<NeutralLearningOverviewItem>,catalog:NeutralCatalog });
+dto!(NeutralReviewCard {
+    id: String,
+    knowledge_id: String,
+    source_lesson_id: String,
+    source_revision: u32,
+    vocabulary: NeutralVocabulary,
+    stage: i16,
+    due_at: String,
+    version: u32,
+    suspended: bool
+});
+dto!(NeutralReviewQueue { items:Vec<NeutralReviewCard>,due_count:u32,next_due_at:Option<String>,local_date:String,time_zone:String });
+dto!(NeutralReviewCardsPage { items:Vec<NeutralReviewCard>,next_cursor:Option<String> });
+dto!(NeutralReviewAttemptResult {
+    card: NeutralReviewCard,
+    reviewed_at: String,
+    time_zone: String
+});
+dto!(NeutralSavedItem { id:String,knowledge_id:String,source_lesson_id:String,source_revision:u32,vocabulary:Option<NeutralVocabulary>,saved:bool,withdrawn:bool,version:u32,created_at:String });
+dto!(NeutralSavedPage { items:Vec<NeutralSavedItem>,next_cursor:Option<String> });
+dto!(NeutralReviewHistoryItem { id:String,card_id:String,vocabulary:Option<NeutralVocabulary>,withdrawn:bool,rating:ReviewRating,old_stage:i16,new_stage:i16,reviewed_at:String,due_at:String,time_zone:String,algorithm_version:String });
+dto!(NeutralReviewHistoryPage { items:Vec<NeutralReviewHistoryItem>,next_cursor:Option<String> });
 impl NeutralLesson {
     pub fn summary(&self) -> NeutralLessonSummary {
         NeutralLessonSummary {

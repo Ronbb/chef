@@ -921,9 +921,10 @@ struct Page {
 }
 async fn overview(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<crate::knowledge_snapshot::KnowledgeWire>,
     State(backend): State<LearningStore>,
     Query(page): Query<Page>,
-) -> Result<Json<LearningOverview>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let user = owner(&auth)?;
     let (stamp, id) = if let Some(cursor) = page.cursor {
         let (stamp, id) = cursor.split_once('@').ok_or(AppError::InvalidInput)?;
@@ -939,7 +940,7 @@ async fn overview(
         (None, None)
     };
     let sql = format!(
-        "SELECT s.id,s.lesson_id,s.revision,s.last_step_id,r.public_document->'title' AS title,to_char(s.completed_at AT TIME ZONE 'UTC','{STAMP}') AS completed,to_char(p.first_completed_at AT TIME ZONE 'UTC','{STAMP}') AS first_completed,to_char(s.updated_at AT TIME ZONE 'UTC','{STAMP}') AS updated FROM lesson_progress p JOIN learning_sessions s ON s.id=p.last_session_id AND s.user_id=p.user_id{} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.lesson_id,s.revision) WHERE p.user_id=$1 AND r.published=true{} AND ($2::timestamptz IS NULL OR (s.updated_at,s.id)<($2::timestamptz,$3::text)) ORDER BY s.updated_at DESC,s.id DESC LIMIT 21",
+        "SELECT s.id,s.lesson_id,s.revision,s.last_step_id,r.public_document->'title' AS title,r.public_document->>'schemaVersion' AS course_schema,to_char(s.completed_at AT TIME ZONE 'UTC','{STAMP}') AS completed,to_char(p.first_completed_at AT TIME ZONE 'UTC','{STAMP}') AS first_completed,to_char(s.updated_at AT TIME ZONE 'UTC','{STAMP}') AS updated FROM lesson_progress p JOIN learning_sessions s ON s.id=p.last_session_id AND s.user_id=p.user_id{} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.lesson_id,s.revision) WHERE p.user_id=$1 AND r.published=true{} AND ($2::timestamptz IS NULL OR (s.updated_at,s.id)<($2::timestamptz,$3::text)) ORDER BY s.updated_at DESC,s.id DESC LIMIT 21",
         if backend.product.is_some() {
             " AND p.product_id=s.product_id"
         } else {
@@ -960,20 +961,7 @@ async fn overview(
     let items = rows
         .iter()
         .take(20)
-        .map(|r| {
-            Ok(LearningOverviewItem {
-                session_id: field(r, "id")?,
-                lesson_id: field(r, "lesson_id")?,
-                revision: u32::try_from(field::<i32>(r, "revision")?)
-                    .map_err(|_| AppError::Unavailable)?,
-                title: serde_json::from_value(field(r, "title")?)
-                    .map_err(|_| AppError::Unavailable)?,
-                last_step_id: field(r, "last_step_id")?,
-                completed_at: field(r, "completed")?,
-                first_completed_at: field(r, "first_completed")?,
-                updated_at: field(r, "updated")?,
-            })
-        })
+        .map(|r| crate::knowledge_snapshot::overview_item(r, wire))
         .collect::<Result<Vec<_>, AppError>>()?;
     let next_cursor = if more {
         items
@@ -983,12 +971,10 @@ async fn overview(
         None
     };
     let count = one(&backend.db,&format!("SELECT count(*)::bigint AS completed FROM lesson_progress WHERE user_id=$1 AND first_completed_at IS NOT NULL{}",product_filter(backend.product,"product_id")),vec![user.into()]).await?.ok_or(AppError::Unavailable)?;
-    Ok(Json(LearningOverview {
-        items,
-        next_cursor,
-        completed_lessons: u32::try_from(field::<i64>(&count, "completed")?)
-            .map_err(|_| AppError::Unavailable)?,
-    }))
+    let result = serde_json::json!({"items":items,"nextCursor":next_cursor,"completedLessons":u32::try_from(field::<i64>(&count,"completed")?).map_err(|_|AppError::Unavailable)?});
+    Ok(Json(
+        wire.response::<LearningOverview, neutral::NeutralLearningOverview>(&result)?,
+    ))
 }
 fn session_routes(prefix: &str, wire: LearningWire) -> Router<LearningStore> {
     Router::new()
@@ -1013,5 +999,18 @@ pub fn router() -> Router<LearningStore> {
             "/api/v2/learning-sessions",
             LearningWire::Neutral,
         ))
-        .route("/api/v1/me/learning", get(overview))
+        .merge(
+            Router::new()
+                .route("/api/v1/me/learning", get(overview))
+                .layer(axum::Extension(
+                    crate::knowledge_snapshot::KnowledgeWire::Legacy,
+                )),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v2/me/learning", get(overview))
+                .layer(axum::Extension(
+                    crate::knowledge_snapshot::KnowledgeWire::Neutral,
+                )),
+        )
 }

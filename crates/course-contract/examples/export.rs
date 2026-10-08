@@ -34,6 +34,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     brioche_course_contract::neutral::NeutralLesson::export_all(&config)?;
     brioche_course_contract::neutral::NeutralCatalog::export_all(&config)?;
     brioche_course_contract::neutral::NeutralLearningSession::export_all(&config)?;
+    brioche_course_contract::neutral::NeutralLearningOverview::export_all(&config)?;
+    brioche_course_contract::neutral::NeutralStudyDashboard::export_all(&config)?;
+    brioche_course_contract::neutral::NeutralReviewQueue::export_all(&config)?;
+    brioche_course_contract::neutral::NeutralReviewCardsPage::export_all(&config)?;
+    brioche_course_contract::neutral::NeutralReviewAttemptResult::export_all(&config)?;
+    brioche_course_contract::neutral::NeutralSavedPage::export_all(&config)?;
+    brioche_course_contract::neutral::NeutralReviewHistoryPage::export_all(&config)?;
     brioche_course_contract::neutral::Exercise::export_all(&config)?;
     brioche_course_contract::TargetLanguage::export_all(&config)?;
     Catalog::export_all(&config)?;

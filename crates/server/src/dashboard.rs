@@ -1,4 +1,5 @@
 //! Read-only study facts. Goal minutes are a preference, never fabricated measured duration.
+use crate::knowledge_snapshot::KnowledgeWire;
 use crate::{
     AppError,
     learning::{field, one, owner, product_filter, product_source_filter},
@@ -14,7 +15,17 @@ use sea_orm::{
     Value,
 };
 pub fn router() -> Router<LearningStore> {
-    Router::new().route("/api/v1/me/dashboard", get(dashboard))
+    Router::new()
+        .merge(
+            Router::new()
+                .route("/api/v1/me/dashboard", get(dashboard))
+                .layer(axum::Extension(KnowledgeWire::Legacy)),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v2/me/dashboard", get(dashboard))
+                .layer(axum::Extension(KnowledgeWire::Neutral)),
+        )
 }
 fn week_dates(now: Timestamp, zone: &str) -> Result<(Date, Vec<Date>), AppError> {
     let today = now.in_tz(zone).map_err(|_| AppError::Unavailable)?.date();
@@ -114,8 +125,9 @@ async fn days(
 }
 async fn dashboard(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
-) -> Result<Json<StudyDashboard>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let user = owner(&auth)?;
     let tx = backend
         .db
@@ -134,7 +146,7 @@ async fn dashboard(
     let now = Timestamp::now();
     let (today, days) = days(&tx, backend.product, user, now, &settings.time_zone).await?;
     let sql = format!(
-        "SELECT s.id,s.lesson_id,s.revision,s.last_step_id,r.public_document->'title' AS title,to_char(s.completed_at AT TIME ZONE 'UTC','{STAMP}') AS completed,to_char(p.first_completed_at AT TIME ZONE 'UTC','{STAMP}') AS first_completed,to_char(s.updated_at AT TIME ZONE 'UTC','{STAMP}') AS updated FROM lesson_progress p JOIN learning_sessions s ON s.id=p.last_session_id AND s.user_id=p.user_id{} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.lesson_id,s.revision) WHERE p.user_id=$1{} AND r.published ORDER BY s.updated_at DESC,s.id DESC",
+        "SELECT s.id,s.lesson_id,s.revision,s.last_step_id,r.public_document->'title' AS title,r.public_document->>'schemaVersion' AS course_schema,to_char(s.completed_at AT TIME ZONE 'UTC','{STAMP}') AS completed,to_char(p.first_completed_at AT TIME ZONE 'UTC','{STAMP}') AS first_completed,to_char(s.updated_at AT TIME ZONE 'UTC','{STAMP}') AS updated FROM lesson_progress p JOIN learning_sessions s ON s.id=p.last_session_id AND s.user_id=p.user_id{} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.lesson_id,s.revision) WHERE p.user_id=$1{} AND r.published ORDER BY s.updated_at DESC,s.id DESC",
         if backend.product.is_some() {
             " AND s.product_id=p.product_id"
         } else {
@@ -152,20 +164,7 @@ async fn dashboard(
         .map_err(|_| AppError::Unavailable)?;
     let course_states = rows
         .iter()
-        .map(|row| {
-            Ok(LearningOverviewItem {
-                session_id: field(row, "id")?,
-                lesson_id: field(row, "lesson_id")?,
-                revision: u32::try_from(field::<i32>(row, "revision")?)
-                    .map_err(|_| AppError::Unavailable)?,
-                title: serde_json::from_value(field(row, "title")?)
-                    .map_err(|_| AppError::Unavailable)?,
-                last_step_id: field(row, "last_step_id")?,
-                completed_at: field(row, "completed")?,
-                first_completed_at: field(row, "first_completed")?,
-                updated_at: field(row, "updated")?,
-            })
-        })
+        .map(|row| crate::knowledge_snapshot::overview_item(row, wire))
         .collect::<Result<Vec<_>, AppError>>()?;
     let resume = course_states
         .iter()
@@ -176,34 +175,30 @@ async fn dashboard(
     // Prefer unfinished courses in the active release's explicit editorial order.
     let recommendation=one(&tx,&format!("SELECT r.public_document,EXISTS(SELECT 1 FROM lesson_progress p WHERE p.user_id=$1 AND p.lesson_id=r.lesson_id{} AND p.first_completed_at IS NOT NULL) AS learned FROM content_state s JOIN release_entries e ON e.release_id=s.active_release{} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision){} WHERE {} AND r.published AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) ORDER BY learned,e.position LIMIT 1",product_filter(backend.product,"p.product_id"),if backend.product.is_some(){" AND e.product_id=s.product_id"}else{""},if backend.product.is_some(){" AND r.product_id=e.product_id"}else{""},backend.product.map_or_else(||"s.singleton".to_owned(),|p|format!("s.product_id='{}'",p.as_str())),if backend.product.is_some(){" AND w.product_id=r.product_id"}else{""}),vec![user.into()]).await?;
     let (recommended_lesson, all_available_completed) = if let Some(row) = recommendation {
-        let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
-            .map_err(|_| AppError::Unavailable)?;
-        lesson.validate().map_err(|_| AppError::Unavailable)?;
-        (Some(lesson.summary()), field(&row, "learned")?)
+        let lesson = crate::author_source::CheckedLesson::from_public_document(field(
+            &row,
+            "public_document",
+        )?)
+        .map_err(|_| AppError::Unavailable)?;
+        (
+            Some(lesson.summary_document(wire.is_neutral())?),
+            field(&row, "learned")?,
+        )
     } else {
         (None, false)
     };
-    let result = StudyDashboard {
-        catalog: crate::content::catalog_matching_for_product(&tx, backend.product, &[]).await?,
-        local_date: today.to_string(),
-        time_zone: settings.time_zone,
-        week_start: days
-            .first()
-            .ok_or(AppError::Unavailable)?
-            .local_date
-            .clone(),
-        active_days: days.iter().filter(|day| day.active).count() as u8,
-        days,
-        weekly_goal_days: settings.weekly_days,
-        daily_goal_minutes: settings.daily_minutes,
-        due_reviews: count(field(&totals, "due")?)?,
-        next_review_at: field(&totals, "next")?,
-        completed_lessons: count(field(&completed, "n")?)?,
-        resume,
-        recommended_lesson,
-        all_available_completed,
-        course_states,
-    };
+    let catalog = if wire.is_neutral() {
+        serde_json::to_value(
+            crate::content::neutral_catalog_matching_for_product(&tx, backend.product, &[]).await?,
+        )
+    } else {
+        serde_json::to_value(
+            crate::content::catalog_matching_for_product(&tx, backend.product, &[]).await?,
+        )
+    }
+    .map_err(|_| AppError::Unavailable)?;
+    let result = serde_json::json!({"catalog":catalog,"localDate":today.to_string(),"timeZone":settings.time_zone,"weekStart":days.first().ok_or(AppError::Unavailable)?.local_date,"activeDays":days.iter().filter(|d|d.active).count() as u8,"days":days,"weeklyGoalDays":settings.weekly_days,"dailyGoalMinutes":settings.daily_minutes,"dueReviews":count(field(&totals,"due")?)?,"nextReviewAt":field::<Option<String>>(&totals,"next")?,"completedLessons":count(field(&completed,"n")?)?,"resume":resume,"recommendedLesson":recommended_lesson,"allAvailableCompleted":all_available_completed,"courseStates":course_states});
+    let result = wire.response::<StudyDashboard, neutral::NeutralStudyDashboard>(&result)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }

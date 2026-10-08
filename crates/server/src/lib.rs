@@ -20,6 +20,7 @@ pub mod identity;
 pub mod identity_cleanup;
 pub mod identity_command;
 pub mod identity_service;
+mod knowledge_snapshot;
 pub mod learning;
 pub mod learning_identity;
 pub mod learning_store;

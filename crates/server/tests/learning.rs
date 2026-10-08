@@ -127,6 +127,46 @@ async fn count(db: &DatabaseConnection, table: &str) -> i64 {
     .try_get("", "n")
     .unwrap()
 }
+fn legacy_display(mut value: Value) -> Value {
+    fn visit(value: &mut Value) {
+        match value {
+            Value::Object(fields) => {
+                if let Some(lemma) = fields.get_mut("lemma")
+                    && lemma.is_object()
+                {
+                    let reading: brioche_course_contract::ReadingText =
+                        serde_json::from_value(lemma.clone()).unwrap();
+                    reading
+                        .validate(brioche_course_contract::TargetLanguage::French)
+                        .unwrap();
+                    *lemma = json!(reading.text);
+                }
+                if let Some(title) = fields.get_mut("title")
+                    && let Some(target) = title.as_object_mut().unwrap().remove("target")
+                {
+                    title["fr"] = target;
+                }
+                if let Some(language) = fields.remove("targetLanguage") {
+                    assert_eq!(language, "fr-FR");
+                }
+                if let Some(language) = fields.remove("explanationLanguage") {
+                    assert_eq!(language, "zh-CN");
+                }
+                for child in fields.values_mut() {
+                    visit(child);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    visit(child);
+                }
+            }
+            _ => {}
+        }
+    }
+    visit(&mut value);
+    value
+}
 fn start_body(lesson: &str, key: &str) -> Value {
     json!({"lessonId":lesson,"schemaVersion":"1.0","idempotencyKey":key})
 }
@@ -1890,6 +1930,17 @@ async fn learning_revision_ownership_idempotency_and_completion() {
     assert_eq!(reviewed["card"]["stage"], 1);
     assert_eq!(reviewed["card"]["version"], 2);
     assert_eq!(reviewed["timeZone"], "Asia/Shanghai");
+    let (status, neutral_replayed) = a
+        .send(
+            "POST",
+            &review_path.replace("/api/v1/", "/api/v2/"),
+            Some(review_body.clone()),
+            true,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(legacy_display(neutral_replayed), reviewed);
+
     let (_, dashboard_before_retry) = a.send("GET", "/api/v1/me/dashboard", None, true).await;
     assert_eq!(count(&db, "review_attempts").await, 1);
     assert_eq!(
@@ -1972,6 +2023,28 @@ async fn learning_revision_ownership_idempotency_and_completion() {
     assert_eq!(status, 200);
     assert_eq!(saved["version"], 1);
     assert_eq!(saved["saved"], true);
+    assert_eq!(
+        a.send(
+            "PUT",
+            &saved_path.replace("/api/v1/", "/api/v2/"),
+            Some(save_body.clone()),
+            false
+        )
+        .await
+        .0,
+        403
+    );
+    let (status, neutral_saved) = a
+        .send(
+            "PUT",
+            &saved_path.replace("/api/v1/", "/api/v2/"),
+            Some(save_body.clone()),
+            true,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(legacy_display(neutral_saved), saved);
+
     assert_eq!(
         count(&db, "review_cards").await,
         3,
@@ -2099,6 +2172,24 @@ async fn learning_revision_ownership_idempotency_and_completion() {
     assert_eq!(history.1["items"].as_array().unwrap().len(), 1);
     assert_eq!(history.1["items"][0]["algorithmVersion"], "fixed-v1");
     assert_eq!(history.1["items"][0]["timeZone"], "Asia/Shanghai");
+    for path in [
+        "/api/v1/me/learning",
+        "/api/v1/me/dashboard",
+        "/api/v1/me/reviews",
+        "/api/v1/me/review-cards",
+        "/api/v1/me/review-history",
+        "/api/v1/me/saved-items",
+        saved_path,
+    ] {
+        let (old_status, old) = a.send("GET", path, None, true).await;
+        let (new_status, new) = a
+            .send("GET", &path.replace("/api/v1/", "/api/v2/"), None, true)
+            .await;
+        assert_eq!(old_status, 200);
+        assert_eq!(new_status, 200, "{path}");
+        assert_eq!(legacy_display(new), old, "{path}");
+    }
+
     assert_eq!(
         b.send("GET", "/api/v1/me/review-history", None, true)
             .await

@@ -11,6 +11,21 @@ pub enum CheckedLesson {
     Neutral(NeutralLesson),
 }
 impl CheckedLesson {
+    pub(crate) fn summary_document(
+        &self,
+        neutral: bool,
+    ) -> std::result::Result<serde_json::Value, crate::AppError> {
+        let value = match (self, neutral) {
+            (Self::Legacy(l), false) => serde_json::to_value(l.summary()),
+            (Self::Legacy(l), true) => serde_json::to_value(
+                brioche_course_contract::neutral::NeutralLessonSummary::from(&l.summary()),
+            ),
+            (Self::Neutral(l), true) => serde_json::to_value(l.summary()),
+            _ => return Err(crate::AppError::Conflict),
+        };
+        value.map_err(|_| crate::AppError::Unavailable)
+    }
+
     pub(crate) fn from_public_document(value: serde_json::Value) -> Result<Self> {
         let lesson = match value
             .get("schemaVersion")

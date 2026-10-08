@@ -1,4 +1,5 @@
 //! Owned review queue and atomic fixed-interval scheduling.
+use crate::knowledge_snapshot::{KnowledgeWire, Snapshot, StoredReviewCard};
 use crate::{
     AppError,
     learning::{
@@ -21,16 +22,15 @@ use sea_orm::{
 };
 use serde::Deserialize;
 const STAMP: &str = "YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"";
-const COLUMNS: &str = "c.id,c.knowledge_id,c.source_lesson_id,c.source_revision,c.snapshot,c.stage,c.version,c.suspended,r.published";
-fn card(row: &QueryResult) -> Result<ReviewCard, AppError> {
-    Ok(ReviewCard {
+const COLUMNS: &str = "c.id,c.knowledge_id,c.source_lesson_id,c.source_revision,c.snapshot,c.stage,c.version,c.suspended,r.published,r.public_document->>'schemaVersion' AS source_schema,r.public_document->>'targetLanguage' AS target_language";
+fn card(row: &QueryResult) -> Result<StoredReviewCard, AppError> {
+    Ok(StoredReviewCard {
         id: field(row, "id")?,
         knowledge_id: field(row, "knowledge_id")?,
         source_lesson_id: field(row, "source_lesson_id")?,
         source_revision: u32::try_from(field::<i32>(row, "source_revision")?)
             .map_err(|_| AppError::Unavailable)?,
-        vocabulary: serde_json::from_value(field(row, "snapshot")?)
-            .map_err(|_| AppError::Unavailable)?,
+        vocabulary: Snapshot::from_row(row)?,
         stage: field(row, "stage")?,
         suspended: field(row, "suspended")?,
         due_at: field(row, "due")?,
@@ -42,7 +42,7 @@ pub(crate) async fn load(
     product: Option<crate::product::ProductId>,
     user: i64,
     id: &str,
-) -> Result<ReviewCard, AppError> {
+) -> Result<StoredReviewCard, AppError> {
     let reference = one(
         tx,
         &format!("SELECT source_lesson_id,source_revision FROM review_cards WHERE user_id=$1 AND id=$2{}",product_filter(product,"product_id")),
@@ -111,19 +111,29 @@ async fn zone(
 struct QueueQuery {
     date: Option<String>,
 }
+fn routes(prefix: &str, wire: KnowledgeWire) -> Router<LearningStore> {
+    Router::new()
+        .route(&format!("{prefix}/reviews"), get(queue))
+        .route(&format!("{prefix}/reviews/{{id}}"), get(detail))
+        .route(&format!("{prefix}/reviews/{{id}}/attempts"), post(attempt))
+        .route(
+            &format!("{prefix}/reviews/{{id}}/preferences"),
+            put(preferences),
+        )
+        .route(&format!("{prefix}/review-cards"), get(cards))
+        .layer(axum::Extension(wire))
+}
 pub fn router() -> Router<LearningStore> {
     Router::new()
-        .route("/api/v1/me/reviews", get(queue))
-        .route("/api/v1/me/reviews/{id}", get(detail))
-        .route("/api/v1/me/reviews/{id}/attempts", post(attempt))
-        .route("/api/v1/me/reviews/{id}/preferences", put(preferences))
-        .route("/api/v1/me/review-cards", get(cards))
+        .merge(routes("/api/v1/me", KnowledgeWire::Legacy))
+        .merge(routes("/api/v2/me", KnowledgeWire::Neutral))
 }
 async fn queue(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
     Query(query): Query<QueueQuery>,
-) -> Result<Json<ReviewQueue>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let user = owner(&auth)?;
     let tx = backend
         .db
@@ -156,37 +166,34 @@ async fn queue(
     };
     let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND NOT c.suspended AND r.published AND c.due_at < $2::timestamptz ORDER BY c.due_at,c.id LIMIT 10",product_source_filter(backend.product,"c.product_id")),[user.into(),cutoff.to_string().into()])).await.map_err(|_|AppError::Unavailable)?;
     let totals=one(&tx,&format!("SELECT count(*) FILTER (WHERE c.due_at < $2::timestamptz)::bigint AS count,to_char(min(c.due_at) FILTER (WHERE c.due_at >= $2::timestamptz) AT TIME ZONE 'UTC','{STAMP}') AS next FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND NOT c.suspended AND r.published",product_source_filter(backend.product,"c.product_id")),vec![user.into(),cutoff.to_string().into()]).await?.ok_or(AppError::Unavailable)?;
-    let result = ReviewQueue {
-        items: rows.iter().map(card).collect::<Result<_, _>>()?,
-        due_count: u32::try_from(field::<i64>(&totals, "count")?)
-            .map_err(|_| AppError::Unavailable)?,
-        next_due_at: field(&totals, "next")?,
-        local_date: date.to_string(),
-        time_zone,
-    };
+    let result = serde_json::json!({"items":rows.iter().map(card).collect::<Result<Vec<_>,_>>()?,"dueCount":u32::try_from(field::<i64>(&totals,"count")?).map_err(|_|AppError::Unavailable)?,"nextDueAt":field::<Option<String>>(&totals,"next")?,"localDate":date.to_string(),"timeZone":time_zone});
+    let result = wire.response::<ReviewQueue, neutral::NeutralReviewQueue>(&result)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
 async fn detail(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
     Path(id): Path<String>,
-) -> Result<Json<ReviewCard>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let tx = backend
         .db
         .begin()
         .await
         .map_err(|_| AppError::Unavailable)?;
     let result = load(&tx, backend.product, owner(&auth)?, &id).await?;
+    let result = wire.response::<ReviewCard, neutral::NeutralReviewCard>(&result)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
 async fn attempt(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
     Path(id): Path<String>,
     Json(request): Json<ReviewAttemptRequest>,
-) -> Result<Json<ReviewAttemptResult>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let user = owner(&auth)?;
     validate_key(&request.idempotency_key)?;
     let tx = backend
@@ -197,9 +204,10 @@ async fn attempt(
     // Settings first: a concurrent timezone edit and this schedule have a defined order.
     let time_zone = zone(&tx, backend.product, user).await?;
     let old = load(&tx, backend.product, user, &id).await?;
+    wire.check(&old.vocabulary)?;
     let scope = format!("review:{id}:attempt");
     let fingerprint = hash(&request)?;
-    if let Some(cached) = replay(
+    if let Some(cached) = replay::<serde_json::Value>(
         &tx,
         backend.product,
         user,
@@ -209,7 +217,9 @@ async fn attempt(
     )
     .await?
     {
-        return Ok(Json(cached));
+        return Ok(Json(
+            wire.response::<ReviewAttemptResult, neutral::NeutralReviewAttemptResult>(&cached)?,
+        ));
     }
     if old.suspended {
         return Err(AppError::Conflict);
@@ -256,11 +266,7 @@ async fn attempt(
     }
     exec(&tx,&format!("INSERT INTO review_attempts (id,card_id,user_id,rating,old_stage,new_stage,old_version,new_version,due_at,reviewed_at,time_zone{columns}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::timestamptz,$10::timestamptz,$11{extra})"),values).await?;
     exec(&tx,&format!("UPDATE review_cards SET stage=$3,due_at=$4::timestamptz,version=version+1 WHERE id=$1 AND user_id=$2{}",product_filter(backend.product,"product_id")),vec![id.clone().into(),user.into(),stage.into(),due.to_string().into()]).await?;
-    let result = ReviewAttemptResult {
-        card: load(&tx, backend.product, user, &id).await?,
-        reviewed_at: now.to_string(),
-        time_zone,
-    };
+    let result = serde_json::json!({"card":load(&tx,backend.product,user,&id).await?,"reviewedAt":now.to_string(),"timeZone":time_zone});
     record(
         &tx,
         backend.product,
@@ -271,15 +277,18 @@ async fn attempt(
         &result,
     )
     .await?;
+    let result =
+        wire.response::<ReviewAttemptResult, neutral::NeutralReviewAttemptResult>(&result)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
 async fn preferences(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
     Path(id): Path<String>,
     Json(request): Json<ReviewPreferenceRequest>,
-) -> Result<Json<ReviewCard>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let user = owner(&auth)?;
     validate_key(&request.idempotency_key)?;
     let tx = backend
@@ -288,9 +297,10 @@ async fn preferences(
         .await
         .map_err(|_| AppError::Unavailable)?;
     let old = load(&tx, backend.product, user, &id).await?;
+    wire.check(&old.vocabulary)?;
     let scope = format!("review:{id}:preferences");
     let fingerprint = hash(&request)?;
-    if let Some(cached) = replay(
+    if let Some(cached) = replay::<serde_json::Value>(
         &tx,
         backend.product,
         user,
@@ -300,7 +310,9 @@ async fn preferences(
     )
     .await?
     {
-        return Ok(Json(cached));
+        return Ok(Json(
+            wire.response::<ReviewCard, neutral::NeutralReviewCard>(&cached)?,
+        ));
     }
     if old.version != request.card_version || old.version >= i32::MAX as u32 {
         return Err(AppError::Conflict);
@@ -324,14 +336,16 @@ async fn preferences(
         &result,
     )
     .await?;
+    let result = wire.response::<ReviewCard, neutral::NeutralReviewCard>(&result)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
 async fn cards(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
     Query(page): Query<crate::library::Page>,
-) -> Result<Json<ReviewCardsPage>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let (stamp, id) = crate::library::cursor(page.cursor)?;
     let sql = format!(
         "SELECT {COLUMNS},to_char(c.due_at AT TIME ZONE 'UTC','{STAMP}') AS due,to_char(c.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM review_cards c JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE c.user_id=$1{} AND r.published AND ($2::timestamptz IS NULL OR (c.created_at,c.id)<($2::timestamptz,$3::text)) ORDER BY c.created_at DESC,c.id DESC LIMIT 21",
@@ -361,7 +375,11 @@ async fn cards(
     } else {
         None
     };
-    Ok(Json(ReviewCardsPage { items, next_cursor }))
+    Ok(Json(
+        wire.response::<ReviewCardsPage, neutral::NeutralReviewCardsPage>(
+            &serde_json::json!({"items":items,"nextCursor":next_cursor}),
+        )?,
+    ))
 }
 
 #[cfg(test)]

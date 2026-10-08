@@ -8,6 +8,10 @@ use crate::{
     learning_identity::LearningAuth as AuthSession,
     learning_store::LearningStore,
 };
+use crate::{
+    author_source::CheckedLesson,
+    knowledge_snapshot::{KnowledgeWire, Snapshot, StoredHistoryItem, StoredSavedItem},
+};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -44,7 +48,7 @@ pub(crate) async fn source(
     lesson: &str,
     revision: u32,
     knowledge: &str,
-) -> Result<Vocabulary, AppError> {
+) -> Result<Snapshot, AppError> {
     let revision = i32::try_from(revision).map_err(|_| AppError::InvalidInput)?;
     crate::learning_store::lock_lesson(tx, product, lesson, revision).await?;
     let row = one(
@@ -57,29 +61,25 @@ pub(crate) async fn source(
     if !field::<bool>(&row, "published")? {
         return Err(AppError::Gone);
     }
-    let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
+    let lesson = CheckedLesson::from_public_document(field(&row, "public_document")?)
         .map_err(|_| AppError::Unavailable)?;
-    lesson.validate().map_err(|_| AppError::Unavailable)?;
-    lesson
-        .knowledge
-        .vocabulary
-        .into_iter()
-        .find(|v| v.id == knowledge)
-        .ok_or(AppError::NotFound)
+    serde_json::from_value(
+        lesson
+            .vocabulary_snapshot(knowledge)
+            .map_err(|_| AppError::NotFound)?,
+    )
+    .map_err(|_| AppError::Unavailable)
 }
-fn saved(row: &QueryResult) -> Result<SavedItem, AppError> {
+fn saved(row: &QueryResult) -> Result<StoredSavedItem, AppError> {
     let published = field::<bool>(row, "published")?;
-    Ok(SavedItem {
+    Ok(StoredSavedItem {
         id: field(row, "id")?,
         knowledge_id: field(row, "knowledge_id")?,
         source_lesson_id: field(row, "source_lesson_id")?,
         source_revision: u32::try_from(field::<i32>(row, "source_revision")?)
             .map_err(|_| AppError::Unavailable)?,
         vocabulary: if published {
-            Some(
-                serde_json::from_value(field(row, "snapshot")?)
-                    .map_err(|_| AppError::Unavailable)?,
-            )
+            Some(Snapshot::from_row(row)?)
         } else {
             None
         },
@@ -95,12 +95,12 @@ async fn load(
     user: i64,
     knowledge: &str,
     lock: bool,
-) -> Result<Option<SavedItem>, AppError> {
+) -> Result<Option<StoredSavedItem>, AppError> {
     if lock && let Some(reference)=one(tx,&format!("SELECT source_lesson_id,source_revision FROM saved_items WHERE user_id=$1 AND knowledge_id=$2{}",product_filter(product,"product_id")),vec![user.into(),knowledge.into()]).await? {
         crate::learning_store::lock_lesson(tx,product,&field::<String>(&reference,"source_lesson_id")?,field(&reference,"source_revision")?).await?;
     }
     let sql = format!(
-        "SELECT s.*,r.published,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1 AND s.knowledge_id=$2{} {}",
+        "SELECT s.*,r.published,r.public_document->>'schemaVersion' AS source_schema,r.public_document->>'targetLanguage' AS target_language,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1 AND s.knowledge_id=$2{} {}",
         product_source_filter(product, "s.product_id"),
         if lock { "FOR UPDATE OF s" } else { "" }
     );
@@ -109,18 +109,28 @@ async fn load(
         .map(|row| saved(&row))
         .transpose()
 }
+fn routes(prefix: &str, wire: KnowledgeWire) -> Router<LearningStore> {
+    Router::new()
+        .route(&format!("{prefix}/saved-items"), get(list))
+        .route(
+            &format!("{prefix}/saved-items/{{knowledge}}"),
+            get(detail).put(write),
+        )
+        .route(&format!("{prefix}/review-history"), get(history))
+        .route(&format!("{prefix}/review-enrollments"), post(enroll))
+        .layer(axum::Extension(wire))
+}
 pub fn router() -> Router<LearningStore> {
     Router::new()
-        .route("/api/v1/me/saved-items", get(list))
-        .route("/api/v1/me/saved-items/{knowledge}", get(detail).put(write))
-        .route("/api/v1/me/review-history", get(history))
-        .route("/api/v1/me/review-enrollments", post(enroll))
+        .merge(routes("/api/v1/me", KnowledgeWire::Legacy))
+        .merge(routes("/api/v2/me", KnowledgeWire::Neutral))
 }
 async fn detail(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
     Path(knowledge): Path<String>,
-) -> Result<Json<SavedItem>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let tx = backend
         .db
         .begin()
@@ -129,15 +139,17 @@ async fn detail(
     let item = load(&tx, backend.product, owner(&auth)?, &knowledge, false)
         .await?
         .ok_or(AppError::NotFound)?;
+    let result = wire.response::<SavedItem, neutral::NeutralSavedItem>(&item)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
-    Ok(Json(item))
+    Ok(Json(result))
 }
 async fn write(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
     Path(knowledge): Path<String>,
     Json(request): Json<SavedWriteRequest>,
-) -> Result<Json<SavedItem>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let user = owner(&auth)?;
     validate_key(&request.idempotency_key)?;
     if knowledge.is_empty() || knowledge.len() > 256 {
@@ -165,10 +177,13 @@ async fn write(
     )
     .await?;
     let old = load(&tx, backend.product, user, &knowledge, true).await?;
+    if let Some(snapshot) = old.as_ref().and_then(|old| old.vocabulary.as_ref()) {
+        wire.check(snapshot)?;
+    }
     if request.saved && old.as_ref().is_some_and(|old| old.withdrawn) {
         return Err(AppError::Gone);
     }
-    if let Some(mut cached) = replay::<SavedItem>(
+    if let Some(mut cached) = replay::<StoredSavedItem>(
         &tx,
         backend.product,
         user,
@@ -182,7 +197,9 @@ async fn write(
             cached.vocabulary = None;
             cached.withdrawn = true;
         }
-        return Ok(Json(cached));
+        return Ok(Json(
+            wire.response::<SavedItem, neutral::NeutralSavedItem>(&cached)?,
+        ));
     }
     if request.version != old.as_ref().map_or(0, |item| item.version) {
         return Err(AppError::Conflict);
@@ -203,6 +220,7 @@ async fn write(
             &knowledge,
         )
         .await?;
+        wire.check(&vocabulary)?;
         insert_fact(
             &tx,
             backend.product,
@@ -236,17 +254,19 @@ async fn write(
         &result,
     )
     .await?;
+    let result = wire.response::<SavedItem, neutral::NeutralSavedItem>(&result)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
 async fn list(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
     Query(page): Query<Page>,
-) -> Result<Json<SavedPage>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let (stamp, id) = cursor(page.cursor)?;
     let sql = format!(
-        "SELECT s.*,r.published,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1{} AND s.saved AND ($2::timestamptz IS NULL OR (s.created_at,s.id)<($2::timestamptz,$3::text)) ORDER BY s.created_at DESC,s.id DESC LIMIT 21",
+        "SELECT s.*,r.published,r.public_document->>'schemaVersion' AS source_schema,r.public_document->>'targetLanguage' AS target_language,to_char(s.created_at AT TIME ZONE 'UTC','{STAMP}') AS created FROM saved_items s JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(s.source_lesson_id,s.source_revision) WHERE s.user_id=$1{} AND s.saved AND ($2::timestamptz IS NULL OR (s.created_at,s.id)<($2::timestamptz,$3::text)) ORDER BY s.created_at DESC,s.id DESC LIMIT 21",
         product_source_filter(backend.product, "s.product_id"),
     );
     let rows = backend
@@ -271,13 +291,18 @@ async fn list(
     } else {
         None
     };
-    Ok(Json(SavedPage { items, next_cursor }))
+    Ok(Json(
+        wire.response::<SavedPage, neutral::NeutralSavedPage>(
+            &serde_json::json!({"items":items,"nextCursor":next_cursor}),
+        )?,
+    ))
 }
 async fn enroll(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
     Json(request): Json<ReviewEnrollmentRequest>,
-) -> Result<Json<ReviewCard>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let user = owner(&auth)?;
     validate_key(&request.idempotency_key)?;
     let tx = backend
@@ -293,6 +318,7 @@ async fn enroll(
         &request.knowledge_id,
     )
     .await?;
+    wire.check(&vocabulary)?;
     let scope = format!("enroll:{}", request.knowledge_id);
     let fingerprint = hash(&request)?;
     insert_fact(
@@ -325,7 +351,7 @@ async fn enroll(
     .ok_or(AppError::Unavailable)?;
     let id: String = field(&row, "id")?;
     let current = crate::reviews::load(&tx, backend.product, user, &id).await?;
-    if let Some(cached) = replay(
+    if let Some(cached) = replay::<serde_json::Value>(
         &tx,
         backend.product,
         user,
@@ -335,7 +361,9 @@ async fn enroll(
     )
     .await?
     {
-        return Ok(Json(cached));
+        return Ok(Json(
+            wire.response::<ReviewCard, neutral::NeutralReviewCard>(&cached)?,
+        ));
     }
     record(
         &tx,
@@ -347,17 +375,19 @@ async fn enroll(
         &current,
     )
     .await?;
+    let current = wire.response::<ReviewCard, neutral::NeutralReviewCard>(&current)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(current))
 }
 async fn history(
     auth: AuthSession,
+    axum::Extension(wire): axum::Extension<KnowledgeWire>,
     State(backend): State<LearningStore>,
     Query(page): Query<Page>,
-) -> Result<Json<ReviewHistoryPage>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let (stamp, id) = cursor(page.cursor)?;
     let sql = format!(
-        "SELECT a.*,c.snapshot,r.published,to_char(a.reviewed_at AT TIME ZONE 'UTC','{STAMP}') AS reviewed,to_char(a.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_attempts a JOIN review_cards c ON (c.id,c.user_id)=(a.card_id,a.user_id){} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE a.user_id=$1{} AND ($2::timestamptz IS NULL OR (a.reviewed_at,a.id)<($2::timestamptz,$3::text)) ORDER BY a.reviewed_at DESC,a.id DESC LIMIT 21",
+        "SELECT a.*,c.snapshot,r.published,r.public_document->>'schemaVersion' AS source_schema,r.public_document->>'targetLanguage' AS target_language,to_char(a.reviewed_at AT TIME ZONE 'UTC','{STAMP}') AS reviewed,to_char(a.due_at AT TIME ZONE 'UTC','{STAMP}') AS due FROM review_attempts a JOIN review_cards c ON (c.id,c.user_id)=(a.card_id,a.user_id){} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(c.source_lesson_id,c.source_revision) WHERE a.user_id=$1{} AND ($2::timestamptz IS NULL OR (a.reviewed_at,a.id)<($2::timestamptz,$3::text)) ORDER BY a.reviewed_at DESC,a.id DESC LIMIT 21",
         if backend.product.is_some() {
             " AND c.product_id=a.product_id"
         } else {
@@ -379,14 +409,11 @@ async fn history(
         .take(20)
         .map(|row| {
             let published = field::<bool>(row, "published")?;
-            Ok(ReviewHistoryItem {
+            Ok(StoredHistoryItem {
                 id: field(row, "id")?,
                 card_id: field(row, "card_id")?,
                 vocabulary: if published {
-                    Some(
-                        serde_json::from_value(field(row, "snapshot")?)
-                            .map_err(|_| AppError::Unavailable)?,
-                    )
+                    Some(Snapshot::from_row(row)?)
                 } else {
                     None
                 },
@@ -409,5 +436,9 @@ async fn history(
     } else {
         None
     };
-    Ok(Json(ReviewHistoryPage { items, next_cursor }))
+    Ok(Json(
+        wire.response::<ReviewHistoryPage, neutral::NeutralReviewHistoryPage>(
+            &serde_json::json!({"items":items,"nextCursor":next_cursor}),
+        )?,
+    ))
 }
