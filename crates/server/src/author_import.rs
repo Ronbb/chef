@@ -667,6 +667,45 @@ mod neutral_tests {
             },
             ProductId::Brioche,
         );
+        for (query, expected) in [
+            ("", 1),
+            ("?q=nei5%20hou2", 1),
+            ("?q=%E4%BD%A0%E5%A5%BD", 1),
+            ("?q=NEI5%20%E4%BD%A0%E5%A5%BD", 1),
+            ("?q=absent", 0),
+        ] {
+            let (status, wire) =
+                public_request(hargow_app.clone(), &format!("/api/v2/catalog{query}")).await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            let catalog: brioche_course_contract::neutral::NeutralCatalog =
+                serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(
+                catalog
+                    .levels
+                    .iter()
+                    .flat_map(|l| &l.units)
+                    .flat_map(|u| &u.lessons)
+                    .count(),
+                expected
+            );
+            assert!(!catalog.development_fixture);
+            if expected == 1 {
+                let lesson = &wire["levels"][0]["units"][0]["lessons"][0];
+                assert_eq!(lesson["id"], "neutral-publish");
+                assert_eq!(lesson["targetLanguage"], "yue-Hant-HK");
+                assert_eq!(lesson["title"], private["title"]);
+                assert!(lesson.get("knowledge").is_none() && lesson.get("blocks").is_none());
+            }
+            let (status, wire) =
+                public_request(brioche_app.clone(), &format!("/api/v2/catalog{query}")).await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            assert!(wire["levels"].as_array().unwrap().is_empty());
+        }
+        for query in ["?product=brioche", "?q=%00"] {
+            let (status, _) =
+                public_request(hargow_app.clone(), &format!("/api/v2/catalog{query}")).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        }
         for suffix in ["", "?revision=1"] {
             let path = format!("/api/v2/lessons/neutral-publish{suffix}");
             let (status, public) = public_request(hargow_app.clone(), &path).await;
@@ -789,6 +828,9 @@ mod neutral_tests {
             .await;
             assert_eq!(status, expected);
         }
+        let (status, wire) = public_request(hargow_app.clone(), "/api/v2/catalog").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(wire["levels"].as_array().unwrap().is_empty());
         drop(hargow_app);
         drop(brioche_app);
         db.close().await.unwrap();

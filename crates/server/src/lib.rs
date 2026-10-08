@@ -181,6 +181,7 @@ fn build_router(
             get(ready).layer(axum::Extension(independent_identity)),
         )
         .route("/api/catalog", get(catalog))
+        .route("/api/v2/catalog", get(catalog_v2))
         .route("/api/lessons/{id}", get(lesson))
         .route("/api/v2/lessons/{id}", get(lesson_v2))
         .route("/api/demo/lessons/{id}/grade", post(demo_grade))
@@ -286,6 +287,72 @@ async fn catalog(
     Ok(Json(content::search_catalog_with_vocabulary(
         catalog,
         &query,
+        &vocabulary,
+    )))
+}
+async fn catalog_v2(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(product): axum::Extension<ContentProduct>,
+    Query(query): Query<CatalogQuery>,
+) -> Result<Json<brioche_course_contract::neutral::NeutralCatalog>, AppError> {
+    use brioche_course_contract::neutral::{
+        NeutralCatalog, NeutralLesson, NeutralLevel, NeutralUnit,
+    };
+    let terms = content::search_terms(query.q.as_deref().unwrap_or(""))?;
+    if let Some(db) = &state.db {
+        return content::neutral_catalog_matching_for_product(db, product.0, &terms)
+            .await
+            .map(Json);
+    }
+    if product.0 == Some(product::ProductId::Hargow) {
+        return Err(AppError::NotFound);
+    }
+    let vocabulary = state
+        .fixture
+        .as_ref()
+        .map(|lesson| {
+            BTreeMap::from([(lesson.id.clone(), content::vocabulary_search_text(lesson))])
+        })
+        .unwrap_or_default();
+    let Json(old) = catalog_all(State(state.clone())).await?;
+    let lesson = state
+        .fixture
+        .as_ref()
+        .map(NeutralLesson::try_from)
+        .transpose()
+        .map_err(|_| AppError::Unavailable)?;
+    let catalog = NeutralCatalog {
+        development_fixture: old.development_fixture,
+        levels: old
+            .levels
+            .into_iter()
+            .map(|level| NeutralLevel {
+                id: level.id,
+                label: level.label,
+                units: level
+                    .units
+                    .into_iter()
+                    .map(|unit| NeutralUnit {
+                        id: unit.id,
+                        title_zh: unit.title_zh,
+                        lessons: unit
+                            .lessons
+                            .into_iter()
+                            .filter_map(|old| {
+                                lesson
+                                    .as_ref()
+                                    .filter(|l| l.id == old.id)
+                                    .map(NeutralLesson::summary)
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    };
+    Ok(Json(content::search_neutral_catalog_with_vocabulary(
+        catalog,
+        &terms,
         &vocabulary,
     )))
 }
@@ -489,32 +556,56 @@ mod tests {
             ("?q=bonjour%20introuvable", StatusCode::OK, 0),
             ("?q=%00", StatusCode::BAD_REQUEST, 0),
         ] {
-            let response = app
-                .clone()
-                .oneshot(
-                    axum::http::Request::builder()
-                        .uri(format!("/api/catalog{query}"))
-                        .body(axum::body::Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), status);
-            if status == StatusCode::OK {
-                let catalog: Catalog = serde_json::from_slice(
-                    &response.into_body().collect().await.unwrap().to_bytes(),
-                )
-                .unwrap();
-                assert_eq!(
-                    catalog
-                        .levels
-                        .iter()
-                        .flat_map(|l| &l.units)
-                        .flat_map(|u| &u.lessons)
-                        .count(),
-                    count
-                );
-                assert!(catalog.development_fixture);
+            for prefix in ["/api/catalog", "/api/v2/catalog"] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .uri(format!("{prefix}{query}"))
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), status);
+                if status == StatusCode::OK {
+                    let mut wire: serde_json::Value = serde_json::from_slice(
+                        &response.into_body().collect().await.unwrap().to_bytes(),
+                    )
+                    .unwrap();
+                    if prefix == "/api/v2/catalog" {
+                        for level in wire["levels"].as_array_mut().unwrap() {
+                            for unit in level["units"].as_array_mut().unwrap() {
+                                for lesson in unit["lessons"].as_array_mut().unwrap() {
+                                    assert_eq!(lesson["targetLanguage"], "fr-FR");
+                                    assert!(lesson["title"].get("fr").is_none());
+                                    let target = lesson["title"]
+                                        .as_object_mut()
+                                        .unwrap()
+                                        .remove("target")
+                                        .unwrap();
+                                    lesson["title"]["fr"] = target;
+                                    lesson.as_object_mut().unwrap().remove("targetLanguage");
+                                    lesson
+                                        .as_object_mut()
+                                        .unwrap()
+                                        .remove("explanationLanguage");
+                                }
+                            }
+                        }
+                    }
+                    let catalog: Catalog = serde_json::from_value(wire).unwrap();
+                    assert_eq!(
+                        catalog
+                            .levels
+                            .iter()
+                            .flat_map(|l| &l.units)
+                            .flat_map(|u| &u.lessons)
+                            .count(),
+                        count
+                    );
+                    assert!(catalog.development_fixture);
+                }
             }
         }
         assert!(content::search_terms(&"a".repeat(121)).is_err());

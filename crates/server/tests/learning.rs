@@ -408,6 +408,42 @@ async fn releases_atomic_switch_rollback_and_hard_withdrawal() {
         1
     );
     let catalog = content::catalog(&db).await.unwrap();
+    let neutral = content::neutral_catalog_matching_for_product(&db, None, &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        neutral.levels[0].units[0]
+            .lessons
+            .iter()
+            .map(|l| l.id.as_str())
+            .collect::<Vec<_>>(),
+        catalog.levels[0].units[0]
+            .lessons
+            .iter()
+            .map(|l| l.id.as_str())
+            .collect::<Vec<_>>()
+    );
+    for (new, old) in neutral.levels[0].units[0]
+        .lessons
+        .iter()
+        .zip(&catalog.levels[0].units[0].lessons)
+    {
+        assert_eq!(new.title.target, old.title.fr);
+        assert_eq!(new.revision, old.revision);
+        assert_eq!(
+            new.target_language,
+            brioche_course_contract::TargetLanguage::French
+        );
+    }
+    let found = content::neutral_catalog_matching_for_product(
+        &db,
+        None,
+        &content::search_terms("BONJOUR 面包店").unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(found.levels[0].units[0].lessons.len(), 2);
+
     let searched =
         content::catalog_matching(&db, &content::search_terms("BONJOUR 面包店").unwrap())
             .await

@@ -26,6 +26,10 @@ pub fn search_terms(query: &str) -> Result<Vec<String>, AppError> {
         .map(str::to_owned)
         .collect())
 }
+fn matches_catalog_terms(terms: &[String], fields: [&str; 6]) -> bool {
+    let text = search_text(&fields.join(" "));
+    terms.iter().all(|term| text.contains(term))
+}
 pub fn search_catalog(catalog: Catalog, terms: &[String]) -> Catalog {
     search_catalog_with_vocabulary(catalog, terms, &BTreeMap::new())
 }
@@ -49,16 +53,17 @@ pub fn search_catalog_with_vocabulary(
     for level in &mut catalog.levels {
         for unit in &mut level.units {
             unit.lessons.retain(|lesson| {
-                let text = search_text(&format!(
-                    "{} {} {} {} {} {}",
-                    level.label,
-                    unit.title_zh,
-                    lesson.title.zh,
-                    lesson.title.fr,
-                    lesson.summary_zh,
-                    vocabulary.get(&lesson.id).map(String::as_str).unwrap_or("")
-                ));
-                terms.iter().all(|term| text.contains(term))
+                matches_catalog_terms(
+                    terms,
+                    [
+                        &level.label,
+                        &unit.title_zh,
+                        &lesson.title.zh,
+                        &lesson.title.fr,
+                        &lesson.summary_zh,
+                        vocabulary.get(&lesson.id).map(String::as_str).unwrap_or(""),
+                    ],
+                )
             });
         }
         level.units.retain(|unit| !unit.lessons.is_empty());
@@ -66,6 +71,36 @@ pub fn search_catalog_with_vocabulary(
     catalog.levels.retain(|level| !level.units.is_empty());
     catalog
 }
+pub fn search_neutral_catalog_with_vocabulary(
+    mut catalog: brioche_course_contract::neutral::NeutralCatalog,
+    terms: &[String],
+    vocabulary: &BTreeMap<String, String>,
+) -> brioche_course_contract::neutral::NeutralCatalog {
+    if terms.is_empty() {
+        return catalog;
+    }
+    for level in &mut catalog.levels {
+        for unit in &mut level.units {
+            unit.lessons.retain(|lesson| {
+                matches_catalog_terms(
+                    terms,
+                    [
+                        &level.label,
+                        &unit.title_zh,
+                        &lesson.title.zh,
+                        &lesson.title.target,
+                        &lesson.summary_zh,
+                        vocabulary.get(&lesson.id).map(String::as_str).unwrap_or(""),
+                    ],
+                )
+            });
+        }
+        level.units.retain(|unit| !unit.lessons.is_empty());
+    }
+    catalog.levels.retain(|level| !level.units.is_empty());
+    catalog
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReleaseManifest {
@@ -930,11 +965,20 @@ pub async fn catalog_matching<C: ConnectionTrait>(
 ) -> Result<Catalog, AppError> {
     catalog_matching_for_product(db, None, terms).await
 }
-pub async fn catalog_matching_for_product<C: ConnectionTrait>(
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SearchableSummary {
+    schema_version: String,
+    target_language: Option<brioche_course_contract::TargetLanguage>,
+    explanation_language: Option<brioche_course_contract::neutral::ExplanationLanguage>,
+    summary: serde_json::Value,
+    search_text: String,
+}
+async fn catalog_documents<C: ConnectionTrait>(
     db: &C,
     product: Option<crate::product::ProductId>,
     terms: &[String],
-) -> Result<Catalog, AppError> {
+) -> Result<Option<(ReleaseManifest, Vec<SearchableSummary>)>, AppError> {
     // One statement observes the pointer, immutable manifest and availability together.
     // Import/publication validate full immutable documents; catalog reads need only
     // the public summary, not every dialogue, answer-free exercise and audio timeline.
@@ -943,11 +987,12 @@ pub async fn catalog_matching_for_product<C: ConnectionTrait>(
     let scoped = product.is_some();
     let rows = db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, format!(r#"
         SELECT cr.manifest, COALESCE(jsonb_agg(jsonb_build_object(
+            'schemaVersion',p."schemaVersion",'targetLanguage',p."targetLanguage",'explanationLanguage',p."explanationLanguage",
             'summary', jsonb_build_object(
                 'id',p.id,'revision',p.revision,'levelId',p."levelId",'unitId',p."unitId",
                 'title',p.title,'summaryZh',p."summaryZh",'estimatedMinutes',p."estimatedMinutes"),
             'searchText', CASE WHEN $1 THEN COALESCE((
-                SELECT string_agg(concat_ws(' ',v->>'lemma',v->>'meaningZh'),' ')
+                SELECT string_agg(concat_ws(' ', CASE WHEN jsonb_typeof(v->'lemma')='object' THEN v->'lemma'->>'text' ELSE v->>'lemma' END,v->>'meaningZh', CASE WHEN jsonb_typeof(v->'lemma')='object' THEN (SELECT string_agg(pn->>'text',' ') FROM jsonb_array_elements(COALESCE(v->'lemma'->'pronunciations','[]'::jsonb)) pn) ELSE '' END),' ')
                 FROM jsonb_array_elements(COALESCE(p.knowledge->'vocabulary','[]'::jsonb)) v
             ),'') ELSE '' END
         ) ORDER BY e.position) FILTER(WHERE r.lesson_id IS NOT NULL),'[]'::jsonb) AS summaries
@@ -957,6 +1002,7 @@ pub async fn catalog_matching_for_product<C: ConnectionTrait>(
             AND r.published AND NOT EXISTS(
                 SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){})
         LEFT JOIN LATERAL jsonb_to_record(r.public_document) AS p(
+            "schemaVersion" text,"targetLanguage" text,"explanationLanguage" text,
             id text,revision integer,"levelId" text,"unitId" text,title jsonb,
             "summaryZh" text,"estimatedMinutes" integer,knowledge jsonb) ON true
         WHERE {} GROUP BY cr.id{}
@@ -969,26 +1015,35 @@ pub async fn catalog_matching_for_product<C: ConnectionTrait>(
         if scoped{",cr.product_id"}else{",cr.manifest"},
     ),[(!terms.is_empty()).into()])).await.map_err(|_|AppError::Unavailable)?;
     let Some(first) = rows.first() else {
+        return Ok(None);
+    };
+    let manifest =
+        serde_json::from_value(field(first, "manifest")?).map_err(|_| AppError::Unavailable)?;
+    let summaries =
+        serde_json::from_value(field(first, "summaries")?).map_err(|_| AppError::Unavailable)?;
+    Ok(Some((manifest, summaries)))
+}
+pub async fn catalog_matching_for_product<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    terms: &[String],
+) -> Result<Catalog, AppError> {
+    let Some((manifest, summaries)) = catalog_documents(db, product, terms).await? else {
         return Ok(Catalog {
             levels: vec![],
             development_fixture: false,
         });
     };
-    let manifest: ReleaseManifest =
-        serde_json::from_value(field(first, "manifest")?).map_err(|_| AppError::Unavailable)?;
     let mut lessons = BTreeMap::new();
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct SearchableSummary {
-        summary: LessonSummary,
-        search_text: String,
-    }
     let mut vocabulary = BTreeMap::new();
-    let summaries: Vec<SearchableSummary> =
-        serde_json::from_value(field(first, "summaries")?).map_err(|_| AppError::Unavailable)?;
     for row in summaries {
-        vocabulary.insert(row.summary.id.clone(), row.search_text);
-        lessons.insert(row.summary.id.clone(), row.summary);
+        if row.schema_version != "1.0" {
+            return Err(AppError::Unavailable);
+        }
+        let summary: LessonSummary =
+            serde_json::from_value(row.summary).map_err(|_| AppError::Unavailable)?;
+        vocabulary.insert(summary.id.clone(), row.search_text);
+        lessons.insert(summary.id.clone(), summary);
     }
     let catalog = Catalog {
         development_fixture: false,
@@ -1021,6 +1076,95 @@ pub async fn catalog_matching_for_product<C: ConnectionTrait>(
             .collect(),
     };
     Ok(search_catalog_with_vocabulary(catalog, terms, &vocabulary))
+}
+
+pub async fn neutral_catalog_matching_for_product<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    terms: &[String],
+) -> Result<brioche_course_contract::neutral::NeutralCatalog, AppError> {
+    use brioche_course_contract::neutral::{
+        ExplanationLanguage, NeutralCatalog, NeutralLessonSummary, NeutralLevel, NeutralTitle,
+        NeutralUnit,
+    };
+    let Some((manifest, summaries)) = catalog_documents(db, product, terms).await? else {
+        return Ok(NeutralCatalog {
+            levels: vec![],
+            development_fixture: false,
+        });
+    };
+    let mut lessons = BTreeMap::new();
+    let mut vocabulary = BTreeMap::new();
+    for row in summaries {
+        let summary: NeutralLessonSummary = match row.schema_version.as_str() {
+            "1.0" => {
+                let old: LessonSummary =
+                    serde_json::from_value(row.summary).map_err(|_| AppError::Unavailable)?;
+                NeutralLessonSummary {
+                    id: old.id,
+                    revision: old.revision,
+                    level_id: old.level_id,
+                    unit_id: old.unit_id,
+                    title: NeutralTitle {
+                        target: old.title.fr,
+                        zh: old.title.zh,
+                    },
+                    target_language: brioche_course_contract::TargetLanguage::French,
+                    explanation_language: ExplanationLanguage::SimplifiedChinese,
+                    summary_zh: old.summary_zh,
+                    estimated_minutes: old.estimated_minutes,
+                }
+            }
+            "2.0" => {
+                let mut value = row.summary;
+                value["targetLanguage"] =
+                    serde_json::to_value(row.target_language.ok_or(AppError::Unavailable)?)
+                        .map_err(|_| AppError::Unavailable)?;
+                value["explanationLanguage"] =
+                    serde_json::to_value(row.explanation_language.ok_or(AppError::Unavailable)?)
+                        .map_err(|_| AppError::Unavailable)?;
+                serde_json::from_value(value).map_err(|_| AppError::Unavailable)?
+            }
+            _ => return Err(AppError::Unavailable),
+        };
+        vocabulary.insert(summary.id.clone(), row.search_text);
+        lessons.insert(summary.id.clone(), summary);
+    }
+    let catalog = NeutralCatalog {
+        development_fixture: false,
+        levels: manifest
+            .levels
+            .into_iter()
+            .filter_map(|level| {
+                let units: Vec<_> = level
+                    .units
+                    .into_iter()
+                    .filter_map(|unit| {
+                        let entries: Vec<_> = unit
+                            .lessons
+                            .into_iter()
+                            .filter_map(|entry| lessons.remove(&entry.lesson_id))
+                            .collect();
+                        (!entries.is_empty()).then_some(NeutralUnit {
+                            id: unit.id,
+                            title_zh: unit.title_zh,
+                            lessons: entries,
+                        })
+                    })
+                    .collect();
+                (!units.is_empty()).then_some(NeutralLevel {
+                    id: level.id,
+                    label: level.label,
+                    units,
+                })
+            })
+            .collect(),
+    };
+    Ok(search_neutral_catalog_with_vocabulary(
+        catalog,
+        terms,
+        &vocabulary,
+    ))
 }
 
 #[cfg(test)]

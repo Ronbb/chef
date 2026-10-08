@@ -108,6 +108,36 @@ dto!(NeutralLesson {
     #[serde(default,skip_serializing_if="Vec::is_empty")] audio_tracks:Vec<AudioTrack>
 });
 
+dto!(NeutralLessonSummary {
+    id: String,
+    revision: u32,
+    level_id: String,
+    unit_id: String,
+    title: NeutralTitle,
+    target_language: TargetLanguage,
+    explanation_language: ExplanationLanguage,
+    summary_zh: String,
+    estimated_minutes: u32
+});
+dto!(NeutralUnit { id:String,title_zh:String,lessons:Vec<NeutralLessonSummary> });
+dto!(NeutralLevel { id:String,label:String,units:Vec<NeutralUnit> });
+dto!(NeutralCatalog { levels:Vec<NeutralLevel>,development_fixture:bool });
+impl NeutralLesson {
+    pub fn summary(&self) -> NeutralLessonSummary {
+        NeutralLessonSummary {
+            id: self.id.clone(),
+            revision: self.revision,
+            level_id: self.level_id.clone(),
+            unit_id: self.unit_id.clone(),
+            title: self.title.clone(),
+            target_language: self.target_language,
+            explanation_language: self.explanation_language,
+            summary_zh: self.summary_zh.clone(),
+            estimated_minutes: self.estimated_minutes,
+        }
+    }
+}
+
 /// Read a public document without private author fields or an implicit v2-to-v1 downgrade.
 pub fn decode_public(value: serde_json::Value) -> Result<NeutralLesson, String> {
     match value
