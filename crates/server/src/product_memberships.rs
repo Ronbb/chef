@@ -83,6 +83,37 @@ pub(crate) async fn lock_operator<C: ConnectionTrait>(
         .map_err(|_| AppError::Unavailable)?;
     require_operator(tx, product, actor).await
 }
+/// Called only after password authentication; adds the configured product as a learner.
+pub(crate) async fn enroll_authenticated(
+    db: &sea_orm::DatabaseConnection,
+    product: ProductId,
+    user: i64,
+    authenticated_password_hash: &str,
+) -> Result<(), AppError> {
+    let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
+    tx.execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
+        .await
+        .map_err(|_| AppError::Unavailable)?;
+    // Password reset or account removal while authentication ran must not enroll a stale identity.
+    tx.query_one_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT id FROM users WHERE id=$1 AND password_hash=$2 FOR UPDATE",
+        [user.into(), authenticated_password_hash.into()],
+    ))
+    .await
+    .map_err(|_| AppError::Unavailable)?
+    .ok_or(AppError::Unauthorized)?;
+    let inserted = tx.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        "INSERT INTO product_memberships(product_id,user_id,role,version) VALUES($1,$2,'learner',1) ON CONFLICT(product_id,user_id) DO NOTHING RETURNING user_id",
+        [product.as_str().into(), user.into()])).await.map_err(|_| AppError::Unavailable)?;
+    if inserted.is_some() {
+        tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+            "INSERT INTO product_membership_audit(product_id,actor_id,target_id,old_role,new_role,old_version,new_version,reason) VALUES($1,$2,$2,NULL,'learner',0,1,'First authenticated product login')",
+            [product.as_str().into(), user.into()])).await.map_err(|_| AppError::Unavailable)?;
+    }
+    tx.commit().await.map_err(|_| AppError::Unavailable)?;
+    Ok(())
+}
 /// Owner-only first product grant for an existing shared account. Never an HTTP route.
 pub(crate) async fn bootstrap_owner(
     db: &sea_orm::DatabaseConnection,
@@ -267,6 +298,74 @@ mod tests {
     use super::*;
     use sea_orm::{ConnectOptions, Database};
     use sea_orm_migration::MigratorTrait;
+    #[tokio::test]
+    #[ignore = "set TEST_DATABASE_URL to a dedicated PostgreSQL database"]
+    async fn enrollment_rechecks_credentials_serializes_and_preserves_existing_grants() {
+        let url = std::env::var("TEST_DATABASE_URL").unwrap();
+        let admin = Database::connect(&url).await.unwrap();
+        let schema = format!(
+            "enrollment_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        admin
+            .execute_unprepared(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let mut options = ConnectOptions::new(url);
+        options.set_schema_search_path(&schema).sqlx_logging(false);
+        let db = Database::connect(options).await.unwrap();
+        brioche_migration::Migrator::up(&db, None).await.unwrap();
+        db.execute_unprepared("INSERT INTO users(id,email,password_hash,display_name,role) VALUES(1,'shared@example.test','current-credential','Shared','operator'); INSERT INTO product_memberships(product_id,user_id,role,version) VALUES('brioche',1,'operator',7)").await.unwrap();
+        for (id, hash) in [(1, "stale-credential"), (999, "current-credential")] {
+            assert!(matches!(
+                enroll_authenticated(&db, ProductId::Hargow, id, hash).await,
+                Err(AppError::Unauthorized)
+            ));
+        }
+        assert_eq!(read(&db, ProductId::Hargow, 1).await.unwrap().version, 0);
+        let (first, second) = tokio::join!(
+            enroll_authenticated(&db, ProductId::Hargow, 1, "current-credential"),
+            enroll_authenticated(&db, ProductId::Hargow, 1, "current-credential")
+        );
+        first.unwrap();
+        second.unwrap();
+        assert_eq!(
+            read(&db, ProductId::Hargow, 1).await.unwrap().role,
+            "learner"
+        );
+        assert_eq!(read(&db, ProductId::Hargow, 1).await.unwrap().version, 1);
+        enroll_authenticated(&db, ProductId::Brioche, 1, "current-credential")
+            .await
+            .unwrap();
+        assert_eq!(
+            read(&db, ProductId::Brioche, 1).await.unwrap().role,
+            "operator"
+        );
+        assert_eq!(read(&db, ProductId::Brioche, 1).await.unwrap().version, 7);
+        db.execute_unprepared("UPDATE product_memberships SET role='operator',version=2 WHERE product_id='hargow' AND user_id=1").await.unwrap();
+        enroll_authenticated(&db, ProductId::Hargow, 1, "current-credential")
+            .await
+            .unwrap();
+        assert_eq!(
+            read(&db, ProductId::Hargow, 1).await.unwrap().role,
+            "operator"
+        );
+        assert_eq!(read(&db, ProductId::Hargow, 1).await.unwrap().version, 2);
+        let row=db.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM product_membership_audit)::bigint AS audits,(SELECT count(*) FROM product_user_settings)::bigint AS settings,(SELECT count(*) FROM learning_sessions)::bigint AS sessions,(SELECT role FROM users WHERE id=1) AS role,(SELECT password_hash FROM users WHERE id=1) AS credential")).await.unwrap().unwrap();
+        assert_eq!(row.try_get::<i64>("", "audits").unwrap(), 1);
+        assert_eq!(row.try_get::<i64>("", "settings").unwrap(), 0);
+        assert_eq!(row.try_get::<i64>("", "sessions").unwrap(), 0);
+        assert_eq!(row.try_get::<String>("", "role").unwrap(), "operator");
+        assert!(row.try_get::<String>("", "credential").unwrap() == "current-credential");
+        db.close().await.unwrap();
+        admin
+            .execute_unprepared(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
     #[tokio::test]
     #[ignore = "set TEST_DATABASE_URL to a dedicated PostgreSQL database"]
     async fn scoped_grants_recheck_actor_cas_last_operator_and_audit() {

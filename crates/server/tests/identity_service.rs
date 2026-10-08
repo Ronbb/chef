@@ -150,7 +150,7 @@ async fn identity_admin_tokens_roles_and_sessions_are_product_scoped() {
     // Explicit synthetic bootstrap, never implicitly inherited from the global account role.
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "INSERT INTO product_memberships(product_id,user_id,role) VALUES('hargow',$1,'operator')",
+        "INSERT INTO product_memberships(product_id,user_id,role) VALUES('hargow',$1,'operator') ON CONFLICT(product_id,user_id) DO UPDATE SET role='operator',version=product_memberships.version+1",
         [actor.parse::<i64>().unwrap().into()],
     ))
     .await
@@ -688,6 +688,42 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     assert!(created["user"].get("settings").is_none());
     assert!(created["user"].get("passwordHash").is_none());
     let account = created["user"]["id"].as_str().unwrap().to_owned();
+    let user_id: i64 = account.parse().unwrap();
+    assert_eq!(cantonese.request("POST","/api/v1/auth/login",Some(serde_json::json!({"email":"shared@example.test","password":"Incorrect synthetic password"})),None).await.0,401);
+    let count = || {
+        Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT (SELECT count(*) FROM product_memberships WHERE product_id='hargow' AND user_id=$1)::bigint AS members,(SELECT count(*) FROM product_membership_audit WHERE product_id='hargow' AND target_id=$1)::bigint AS audits",
+            [user_id.into()],
+        )
+    };
+    let row = db.query_one_raw(count()).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "members").unwrap(), 0);
+    assert_eq!(row.try_get::<i64>("", "audits").unwrap(), 0);
+    db.execute_unprepared("CREATE FUNCTION reject_enrollment_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic membership audit failure'; END $$; CREATE TRIGGER reject_enrollment_test BEFORE INSERT ON product_membership_audit FOR EACH ROW EXECUTE FUNCTION reject_enrollment_test()").await.unwrap();
+    assert_eq!(
+        cantonese
+            .request(
+                "POST",
+                "/api/v1/auth/login",
+                Some(serde_json::json!({"email":"shared@example.test","password":password})),
+                None
+            )
+            .await
+            .0,
+        503
+    );
+    let row = db.query_one_raw(count()).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "members").unwrap(), 0);
+    assert_eq!(row.try_get::<i64>("", "audits").unwrap(), 0);
+    assert_eq!(
+        cantonese
+            .request("GET", "/api/v1/account", None, None)
+            .await
+            .0,
+        401
+    );
+    db.execute_unprepared("DROP TRIGGER reject_enrollment_test ON product_membership_audit; DROP FUNCTION reject_enrollment_test()").await.unwrap();
     assert_eq!(
         cantonese
             .request(
@@ -699,6 +735,43 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
             .await
             .0,
         200
+    );
+    // A repeated authenticated login preserves product role/version and does not audit twice.
+    assert_eq!(
+        cantonese
+            .request(
+                "POST",
+                "/api/v1/auth/login",
+                Some(serde_json::json!({"email":"shared@example.test","password":password})),
+                None
+            )
+            .await
+            .0,
+        200
+    );
+    let row = db.query_one_raw(count()).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "members").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "audits").unwrap(), 1);
+    let row=db.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT actor_id,target_id,old_role,new_role,old_version,new_version FROM product_membership_audit WHERE product_id='hargow' AND target_id=$1",[user_id.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "actor_id").unwrap(), user_id);
+    assert_eq!(row.try_get::<i64>("", "target_id").unwrap(), user_id);
+    assert_eq!(row.try_get::<Option<String>>("", "old_role").unwrap(), None);
+    assert_eq!(row.try_get::<String>("", "new_role").unwrap(), "learner");
+    assert_eq!(row.try_get::<i32>("", "old_version").unwrap(), 0);
+    assert_eq!(row.try_get::<i32>("", "new_version").unwrap(), 1);
+    assert_eq!(
+        chef_engine::product_memberships::read(&db, ProductId::Brioche, user_id)
+            .await
+            .unwrap()
+            .role,
+        "operator"
+    );
+    assert_eq!(
+        chef_engine::product_memberships::read(&db, ProductId::Brioche, user_id)
+            .await
+            .unwrap()
+            .version,
+        1
     );
     let (status, hargow) = cantonese
         .request("GET", "/internal/v1/session", None, Some((KEY, "hargow")))
@@ -780,6 +853,7 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         1
     );
     assert_eq!(hargow["membership"]["role"], "learner");
+    assert_eq!(hargow["membership"]["version"], 1);
     let (_, scoped) = french
         .request("GET", "/internal/v1/session", None, Some((KEY, "brioche")))
         .await;
@@ -1463,15 +1537,15 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         "{audit_downgrade}"
     );
     audit_tx.rollback().await.unwrap();
-    // Product-local character keys replace the old audition FK. Unsupported legacy
-    // rollback now stops at that earlier boundary; the audit guard remains separately tested.
+    // First-product-login membership audit must prevent a legacy downgrade from deleting it.
+    // The immutable account audit guard is checked independently above.
     let downgrade = brioche_migration::Migrator::down(&db, None)
         .await
         .unwrap_err();
     assert!(
-        downgrade.to_string().contains(
-            "constraint \"audition_character\" of relation \"voice_auditions\" does not exist"
-        ),
+        downgrade
+            .to_string()
+            .contains("Product membership rollback requires preserving scoped grants and audit"),
         "{downgrade}"
     );
     let audit = db.query_one_raw(Statement::from_string(DbBackend::Postgres,

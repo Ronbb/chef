@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+已有账号跨产品加入补充：独立identity account_login在真实密码认证后，以固定服务器product调用enroll_authenticated；account-admin锁→共享用户行核对认证密码摘要→缺失产品learner/version1与本人加入成员审计同事务→再建立会话。重复/并发加入不改现有role/version、不重复审计，不复制全局/别产品operator；旧密码/不存在账号/错误密码/审计错误失败关闭。身份不创建学习设置/数据，兼容组合登录保持。实际非所有者HTTP与PG核心验证仅Chef；成员与会话保存不是原子提交，不声明会话失败一定无成员。新增H成员审计使legacy29降级明确拒绝保留历史，原测试改为验证此真实门槛；普通成员加入身份环节已完成，H内容serve/完整装配、配音CLI/语言中立/生产继续待完成，pin保持。
+
 首位产品管理员维护补充：chef-identity bootstrap-operator <existing-email> <reason> 仅独立身份schema、四张身份表实际所有者可执行，运行非所有者明确拒绝；不需要服务密钥/公开URL，不创建账号/密码。account-admin锁内检查本产品无现任/历史管理员，再锁共享账号，成员版本+成员审计+账号role历史同事务；history标记bootstrap/identity-table-owner，不冒充浏览器actor证明。并发至多一次、审计末步失败全部回滚、历史管理员不允许重复bootstrap，users与B成员指纹保持。真实CLI隔离验证属于Chef，普通已有账号加入产品仍待完成，H内容serve关闭；生产初始化/产品pin不推进。
 
 独立身份维护 CLI 补充：chef-identity invite/reset-password 使用必填独立身份 schema 与专用非所有者身份连接，PUBLIC_APP_URL/产品只取可信配置；不得借用全局role、学习连接或HTTP证明。发行复用后台issue_operator_token事务的本产品管理员复核/邮箱锁/审计；链接只写create_new私有文件，Unix0600，文件与DB不能宣称原子，失败须检查待用令牌而不自动重发。隔离实际CLI/HTTP回归覆盖组合拒绝、最小权限、同邮箱双产品发行/审计、输出不覆盖、跨入口拒绝、H邀请仅H权限及共享重置全产品失效。首位管理员初始化/已有账号加入产品仍待完成；不更新生产或产品pin，实现与测试只Chef。

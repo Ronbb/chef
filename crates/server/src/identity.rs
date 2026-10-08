@@ -663,6 +663,7 @@ pub fn account_router(
 
 async fn account_login(
     mut auth: AuthSession,
+    axum::Extension(product): axum::Extension<crate::product::ProductId>,
     Json(request): Json<LoginRequest>,
 ) -> Result<Json<crate::identity_service::AccountAuthResult>, AppError> {
     let user = auth
@@ -673,6 +674,13 @@ async fn account_login(
             _ => AppError::Unavailable,
         })?
         .ok_or(AppError::Unauthorized)?;
+    crate::product_memberships::enroll_authenticated(
+        &auth.backend.db,
+        product,
+        user.id,
+        &user.password_hash,
+    )
+    .await?;
     let csrf_token = establish_session(&mut auth, &user).await?;
     Ok(Json(crate::identity_service::AccountAuthResult {
         user: user.account(),
