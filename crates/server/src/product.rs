@@ -37,6 +37,28 @@ impl ProductId {
                         | "assets-check"
                         | "audio-bundle-check"
                         | "speech-plan"
+                        | "speech-package-local"
+                        | "import"
+                        | "release-stage"
+                        | "release-activate"
+                        | "release-status"
+                        | "content-withdraw"
+                        | "assets-import"
+                        | "audio-import"
+                        | "speech-plan-export"
+                        | "speech-plan-export-direct"
+                        | "speech-package-automatic"
+                        | "speech-plan-preview"
+                        | "speech-plan-save"
+                        | "speech-clip-generate"
+                        | "voice-audition-generate"
+                        | "voice-audition-review"
+                        | "speech-clip-review"
+                        | "character-voice-import"
+                        | "speech-alignment-import"
+                        | "speech-package-import"
+                        | "lesson-direct-publication"
+                        | "lesson-direct-publication-owner"
                 ),
             "Product-scoped command migration incomplete"
         );
@@ -88,15 +110,22 @@ mod tests {
                 "Invalid configured product"
             );
         }
-        for command in ["serve", "check", "asset-check", "speech-plan"] {
+        for command in [
+            "serve",
+            "check",
+            "asset-check",
+            "speech-plan",
+            "import",
+            "speech-clip-generate",
+            "release-activate",
+        ] {
             ProductId::Hargow.validate_command(command).unwrap();
         }
         for command in [
-            "import",
             "migrate",
             "invite",
-            "speech-clip-generate",
-            "release-activate",
+            "split-identity-schema",
+            "migrate-layout",
         ] {
             assert!(ProductId::Hargow.validate_command(command).is_err());
             ProductId::Brioche.validate_command(command).unwrap();

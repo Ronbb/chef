@@ -366,12 +366,8 @@ async fn settings(
         crate::product_settings::Preferences { settings, version },
     )))
 }
-/// Until full product facts isolation is migrated, remote business routes are Brioche-only.
+/// Product comes from trusted service assembly; every learning store shares that scope.
 pub fn router(db: sea_orm::DatabaseConnection, client: Client) -> anyhow::Result<Router> {
-    anyhow::ensure!(
-        client.product == ProductId::Brioche,
-        "Product learning data migration incomplete"
-    );
     Ok(Router::new()
         .route("/api/v1/me", axum::routing::get(profile))
         .route("/api/v1/me/settings", axum::routing::patch(settings))

@@ -80,10 +80,29 @@ fn words(segments: &[Segment]) -> Vec<Word> {
     }
     result
 }
-pub fn compile(lesson: &PublicLesson, source: &Value, config: &Config) -> Result<Plan> {
-    lesson
-        .validate()
-        .map_err(|e| anyhow!("invalid lesson: {e}"))?;
+struct Inputs {
+    id: String,
+    revision: u32,
+    cast: Vec<brioche_course_contract::Character>,
+    version: &'static str,
+    entries: Vec<Input>,
+}
+pub(crate) struct Input {
+    pub(crate) pointer: String,
+    pub(crate) block_id: Option<String>,
+    pub(crate) entry_id: String,
+    pub(crate) text: String,
+    character_id: Option<String>,
+    words: Vec<Word>,
+}
+fn compile_inputs(inputs: Inputs, source: &Value, config: &Config) -> Result<Plan> {
+    let Inputs {
+        id,
+        revision,
+        cast,
+        version,
+        entries: inputs,
+    } = inputs;
     ensure!(
         !config.items.is_empty() && config.items.len() <= 100,
         "items: expected 1–100 fixed voices"
@@ -100,7 +119,7 @@ pub fn compile(lesson: &PublicLesson, source: &Value, config: &Config) -> Result
             "items: voice revision must be positive"
         );
         ensure!(
-            lesson.cast.iter().any(
+            cast.iter().any(
                 |c| serde_json::to_value(c).ok() == serde_json::to_value(&voice.character).ok()
             ),
             "items: character snapshot must match the fixed lesson cast"
@@ -121,9 +140,9 @@ pub fn compile(lesson: &PublicLesson, source: &Value, config: &Config) -> Result
         "knowledgeNarrator: fixed voice not selected"
     );
     let mut plan = Plan {
-        compiler_version: VERSION,
-        lesson_id: lesson.id.clone(),
-        lesson_revision: lesson.revision,
+        compiler_version: version,
+        lesson_id: id,
+        lesson_revision: revision,
         source_hash: hash(source)?,
         plan_hash: String::new(),
         targets: Vec::new(),
@@ -139,7 +158,7 @@ pub fn compile(lesson: &PublicLesson, source: &Value, config: &Config) -> Result
                    voice_key: VoiceKey,
                    word_targets: Vec<Word>|
      -> Result<()> {
-        if block_id.is_some() {
+        if version == VERSION && block_id.is_some() {
             let whole_words: Vec<_> = text
                 .unicode_word_indices()
                 .map(|(byte, word)| {
@@ -169,7 +188,17 @@ pub fn compile(lesson: &PublicLesson, source: &Value, config: &Config) -> Result
             used_overrides.insert(pointer.clone());
         }
         let parameters = crate::qwen::SpeechRequest { profile: profile.clone(), text: text.clone(), emotion: emotion.clone() }.parameters().map_err(|_| anyhow!("{pointer}: invalid synthesis text/profile/emotion (maximum 600 Unicode characters per entry)"))?;
-        let request = json!({"compilerVersion":VERSION,"voice":voice_key,"profile":profile,"parameters":parameters});
+        let mut request = json!({"compilerVersion":version,"voice":voice_key,"profile":profile,"parameters":parameters});
+        if version == NEUTRAL_VERSION {
+            // Different authored boundaries require distinct alignment work, even
+            // when the spoken text and voice happen to match another target.
+            request["wordUnits"] = json!(
+                word_targets
+                    .iter()
+                    .map(|w| { json!({"text":w.text,"start":w.entry_start,"end":w.entry_end}) })
+                    .collect::<Vec<_>>()
+            );
+        }
         let generation_key = hash(&request)?;
         if !plan.requests.contains_key(&generation_key) {
             plan.total_request_characters += text.chars().count();
@@ -199,6 +228,35 @@ pub fn compile(lesson: &PublicLesson, source: &Value, config: &Config) -> Result
         );
         Ok(candidates[0].clone())
     };
+    for input in inputs {
+        let voice = match input.character_id {
+            Some(character) => resolve(&character, &input.pointer)?,
+            None => config.knowledge_narrator.clone(),
+        };
+        add(
+            input.pointer,
+            input.block_id,
+            input.entry_id,
+            input.text,
+            voice,
+            input.words,
+        )?;
+    }
+    ensure!(!plan.targets.is_empty(), "lesson: no speech targets");
+    ensure!(used.len() == voices.len(), "items: unused selected voice");
+    ensure!(
+        used_overrides.len() == config.emotions.len(),
+        "emotions: unknown target pointer"
+    );
+    plan.plan_hash = hash(&plan)?;
+    Ok(plan)
+}
+
+fn legacy_inputs(lesson: &PublicLesson) -> Result<Inputs> {
+    lesson
+        .validate()
+        .map_err(|e| anyhow!("invalid lesson: {e}"))?;
+    let mut entries = Vec::new();
     for (bi, block) in lesson.blocks.iter().enumerate() {
         match block {
             Block::Dialogue {
@@ -213,14 +271,14 @@ pub fn compile(lesson: &PublicLesson, source: &Value, config: &Config) -> Result
                         .iter()
                         .find(|s| s.id == turn.speaker_id)
                         .ok_or_else(|| anyhow!("{pointer}: speaker missing"))?;
-                    add(
-                        pointer.clone(),
-                        Some(id.clone()),
-                        turn.id.clone(),
-                        turn.segments.iter().map(|s| s.text.as_str()).collect(),
-                        resolve(&speaker.character_id, &pointer)?,
-                        words(&turn.segments),
-                    )?;
+                    entries.push(Input {
+                        pointer,
+                        block_id: Some(id.clone()),
+                        entry_id: turn.id.clone(),
+                        text: turn.segments.iter().map(|s| s.text.as_str()).collect(),
+                        character_id: Some(speaker.character_id.clone()),
+                        words: words(&turn.segments),
+                    });
                 }
             }
             Block::Article {
@@ -230,50 +288,198 @@ pub fn compile(lesson: &PublicLesson, source: &Value, config: &Config) -> Result
                 ..
             } => {
                 for (pi, paragraph) in paragraphs.iter().enumerate() {
-                    let pointer = format!("/blocks/{bi}/paragraphs/{pi}");
-                    add(
-                        pointer.clone(),
-                        Some(id.clone()),
-                        paragraph.id.clone(),
-                        paragraph.segments.iter().map(|s| s.text.as_str()).collect(),
-                        resolve(narrator_id, &pointer)?,
-                        words(&paragraph.segments),
-                    )?;
+                    entries.push(Input {
+                        pointer: format!("/blocks/{bi}/paragraphs/{pi}"),
+                        block_id: Some(id.clone()),
+                        entry_id: paragraph.id.clone(),
+                        text: paragraph.segments.iter().map(|s| s.text.as_str()).collect(),
+                        character_id: Some(narrator_id.clone()),
+                        words: words(&paragraph.segments),
+                    });
                 }
             }
             _ => {}
         }
     }
     for (vi, vocabulary) in lesson.knowledge.vocabulary.iter().enumerate() {
-        add(
-            format!("/knowledge/vocabulary/{vi}/lemma"),
-            None,
-            vocabulary.id.clone(),
-            vocabulary.lemma.clone(),
-            config.knowledge_narrator.clone(),
-            Vec::new(),
-        )?;
+        entries.push(Input {
+            pointer: format!("/knowledge/vocabulary/{vi}/lemma"),
+            block_id: None,
+            entry_id: vocabulary.id.clone(),
+            text: vocabulary.lemma.clone(),
+            character_id: None,
+            words: Vec::new(),
+        });
     }
     for (gi, grammar) in lesson.knowledge.grammar.iter().enumerate() {
         for (ei, example) in grammar.examples.iter().enumerate() {
-            add(
-                format!("/knowledge/grammar/{gi}/examples/{ei}/fr"),
-                None,
-                grammar.id.clone(),
-                example.fr.clone(),
-                config.knowledge_narrator.clone(),
-                Vec::new(),
-            )?;
+            entries.push(Input {
+                pointer: format!("/knowledge/grammar/{gi}/examples/{ei}/fr"),
+                block_id: None,
+                entry_id: grammar.id.clone(),
+                text: example.fr.clone(),
+                character_id: None,
+                words: Vec::new(),
+            });
         }
     }
-    ensure!(!plan.targets.is_empty(), "lesson: no speech targets");
-    ensure!(used.len() == voices.len(), "items: unused selected voice");
-    ensure!(
-        used_overrides.len() == config.emotions.len(),
-        "emotions: unknown target pointer"
-    );
-    plan.plan_hash = hash(&plan)?;
-    Ok(plan)
+    Ok(Inputs {
+        id: lesson.id.clone(),
+        revision: lesson.revision,
+        cast: lesson.cast.clone(),
+        version: VERSION,
+        entries,
+    })
+}
+
+pub(crate) const NEUTRAL_VERSION: &str = "speech-plan-2/author-scalar-1";
+fn knowledge_words(id: &str, reading: &brioche_course_contract::ReadingText) -> Vec<Word> {
+    authored_words(&[brioche_course_contract::neutral::NeutralSegment {
+        id: id.into(),
+        reading: reading.clone(),
+        vocabulary_id: None,
+        grammar_id: None,
+    }])
+}
+fn authored_words(segments: &[brioche_course_contract::neutral::NeutralSegment]) -> Vec<Word> {
+    let mut words = Vec::new();
+    let mut offset = 0;
+    for segment in segments {
+        for range in &segment.reading.words {
+            // The complete lesson is validated first; preserve the author's exact word/phrase.
+            let text = segment
+                .reading
+                .word_text(range)
+                .expect("validated authored word");
+            words.push(Word {
+                segment_id: segment.id.clone(),
+                text,
+                segment_start: range.start as usize,
+                segment_end: range.end as usize,
+                entry_start: offset + range.start as usize,
+                entry_end: offset + range.end as usize,
+            });
+        }
+        offset += segment.reading.text.chars().count();
+    }
+    words
+}
+fn neutral_inputs(lesson: &brioche_course_contract::neutral::NeutralLesson) -> Result<Inputs> {
+    use brioche_course_contract::neutral::Block;
+    lesson
+        .validate()
+        .map_err(|e| anyhow!("invalid lesson: {e}"))?;
+    let mut entries = Vec::new();
+    for (bi, block) in lesson.blocks.iter().enumerate() {
+        match block {
+            Block::Dialogue {
+                id,
+                speakers,
+                turns,
+                ..
+            } => {
+                for (ti, turn) in turns.iter().enumerate() {
+                    let pointer = format!("/blocks/{bi}/turns/{ti}");
+                    let speaker = speakers
+                        .iter()
+                        .find(|s| s.id == turn.speaker_id)
+                        .ok_or_else(|| anyhow!("{pointer}: speaker missing"))?;
+                    entries.push(Input {
+                        pointer,
+                        block_id: Some(id.clone()),
+                        entry_id: turn.id.clone(),
+                        text: turn
+                            .segments
+                            .iter()
+                            .map(|s| s.reading.text.as_str())
+                            .collect(),
+                        character_id: Some(speaker.character_id.clone()),
+                        words: authored_words(&turn.segments),
+                    });
+                }
+            }
+            Block::Article {
+                id,
+                narrator_id,
+                paragraphs,
+                ..
+            } => {
+                for (pi, paragraph) in paragraphs.iter().enumerate() {
+                    entries.push(Input {
+                        pointer: format!("/blocks/{bi}/paragraphs/{pi}"),
+                        block_id: Some(id.clone()),
+                        entry_id: paragraph.id.clone(),
+                        text: paragraph
+                            .segments
+                            .iter()
+                            .map(|s| s.reading.text.as_str())
+                            .collect(),
+                        character_id: Some(narrator_id.clone()),
+                        words: authored_words(&paragraph.segments),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    for (vi, vocabulary) in lesson.knowledge.vocabulary.iter().enumerate() {
+        entries.push(Input {
+            pointer: format!("/knowledge/vocabulary/{vi}/lemma"),
+            block_id: None,
+            entry_id: vocabulary.id.clone(),
+            text: vocabulary.lemma.text.clone(),
+            character_id: None,
+            words: knowledge_words(&vocabulary.id, &vocabulary.lemma),
+        });
+    }
+    for (gi, grammar) in lesson.knowledge.grammar.iter().enumerate() {
+        for (ei, example) in grammar.examples.iter().enumerate() {
+            entries.push(Input {
+                pointer: format!("/knowledge/grammar/{gi}/examples/{ei}/target"),
+                block_id: None,
+                entry_id: grammar.id.clone(),
+                text: example.target.text.clone(),
+                character_id: None,
+                words: knowledge_words(&grammar.id, &example.target),
+            });
+        }
+    }
+    Ok(Inputs {
+        id: lesson.id.clone(),
+        revision: lesson.revision,
+        cast: lesson.cast.clone(),
+        version: NEUTRAL_VERSION,
+        entries,
+    })
+}
+pub fn compile(lesson: &PublicLesson, source: &Value, config: &Config) -> Result<Plan> {
+    compile_inputs(legacy_inputs(lesson)?, source, config)
+}
+pub fn compile_neutral(
+    lesson: &brioche_course_contract::neutral::NeutralLesson,
+    source: &Value,
+    config: &Config,
+) -> Result<Plan> {
+    compile_inputs(neutral_inputs(lesson)?, source, config)
+}
+pub(crate) fn source_inputs(lesson: &crate::author_source::CheckedLesson) -> Result<Vec<Input>> {
+    Ok(match lesson {
+        crate::author_source::CheckedLesson::Legacy(l) => legacy_inputs(l)?,
+        crate::author_source::CheckedLesson::Neutral(l) => neutral_inputs(l)?,
+    }
+    .entries)
+}
+pub(crate) fn compile_checked(
+    lesson: &crate::author_source::CheckedLesson,
+    source: &Value,
+    config: &Config,
+) -> Result<Plan> {
+    match lesson {
+        crate::author_source::CheckedLesson::Legacy(lesson) => compile(lesson, source, config),
+        crate::author_source::CheckedLesson::Neutral(lesson) => {
+            compile_neutral(lesson, source, config)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -295,6 +501,71 @@ mod tests {
             .clone();
         config.items.push(narrator);
         (lesson, doc.value, config)
+    }
+    #[test]
+    fn neutral_compiler_preserves_author_phrases_and_never_downgrades_source() {
+        use brioche_course_contract::{ReadingText, TargetLanguage, TextRange, neutral};
+        let (legacy, _, mut config) = fixture();
+        let mut lesson = neutral::NeutralLesson::try_from(&legacy).unwrap();
+        lesson.target_language = TargetLanguage::Cantonese;
+        for character in &mut lesson.cast {
+            character.speech_locale = "yue-Hant-HK".into();
+        }
+        for voice in &mut config.items {
+            voice.character.speech_locale = "yue-Hant-HK".into();
+            let profile = voice.profile.as_mut().unwrap();
+            profile.locale = "yue-Hant-HK".into();
+            profile.speaking_style = "自然的香港粤语".into();
+        }
+        let neutral::Block::Dialogue { turns, .. } = lesson
+            .blocks
+            .iter_mut()
+            .find(|b| matches!(b, neutral::Block::Dialogue { .. }))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let first = &mut turns[0];
+        first.segments.truncate(1);
+        first.segments[0].reading = ReadingText {
+            text: "兩位，唔該！".into(),
+            words: vec![
+                TextRange { start: 0, end: 2 },
+                TextRange { start: 3, end: 5 },
+            ],
+            pronunciations: vec![],
+        };
+        let source = serde_json::to_value(&lesson).unwrap();
+        let unchanged = source.clone();
+        let plan = compile_neutral(&lesson, &source, &config).unwrap();
+        assert_eq!(source, unchanged);
+        assert_eq!(plan.compiler_version, NEUTRAL_VERSION);
+        assert_eq!(plan.targets[0].text, "兩位，唔該！");
+        assert_eq!(
+            plan.targets[0]
+                .words
+                .iter()
+                .map(|w| (w.text.as_str(), w.entry_start, w.entry_end))
+                .collect::<Vec<_>>(),
+            vec![("兩位", 0, 2), ("唔該", 3, 5)]
+        );
+        assert!(plan.targets.iter().any(|t| t.pointer.ends_with("/target")));
+        assert!(!plan.targets.iter().any(|t| t.pointer.ends_with("/fr")));
+        assert_eq!(
+            plan.plan_hash,
+            compile_neutral(&lesson, &source, &config)
+                .unwrap()
+                .plan_hash
+        );
+        let dispatched = compile_checked(
+            &crate::author_source::CheckedLesson::Neutral(lesson.clone()),
+            &source,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(plan.plan_hash, dispatched.plan_hash);
+        config.items[0].profile.as_mut().unwrap().locale = "fr-FR".into();
+        assert!(compile_neutral(&lesson, &source, &config).is_err());
     }
     #[test]
     fn covers_all_readings_and_knowledge_with_fixed_narrator_and_stable_hashes() {

@@ -1,0 +1,13 @@
+entryPoints:
+  web:
+    address: :8080
+  health:
+    address: :8081
+providers:
+  file:
+    filename: /etc/traefik/product.yaml
+    watch: true
+ping:
+  entryPoint: health
+log:
+  level: WARN

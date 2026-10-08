@@ -1,0 +1,17 @@
+FROM rust:1.99.0-bookworm@sha256:59037199c44290f2befcdd58dcc540164763fc296950255aaefeef096a1866b0 AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY docs/examples ./docs/examples
+COPY scripts/alignment/model.json scripts/alignment/runtime.json scripts/alignment/transcript-aliases.json ./scripts/alignment/
+RUN cargo build --locked --release -p chef-engine --bins
+
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home chef
+COPY --from=build /src/target/release/chef-server /usr/local/bin/chef-server
+COPY --from=build /src/target/release/chef-identity /usr/local/bin/chef-identity
+RUN mkdir -p /var/lib/chef/media && chown chef:chef /var/lib/chef/media
+USER chef
+EXPOSE 3001
+ENTRYPOINT ["chef-server"]
+CMD ["serve"]

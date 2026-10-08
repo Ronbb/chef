@@ -156,7 +156,10 @@ fn check_aliases(
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, AppError> {
     value[key].as_str().ok_or(AppError::InvalidInput)
 }
-fn check_report(report: &Value, request: &AdminSpeechPackageRequest) -> Result<(), AppError> {
+pub(crate) fn check_report(
+    report: &Value,
+    request: &AdminSpeechPackageRequest,
+) -> Result<(), AppError> {
     crate::speech_package::settings(request)?;
     let model: Value = serde_json::from_str(include_str!("../../../scripts/alignment/model.json"))
         .map_err(|_| AppError::Unavailable)?;
@@ -238,7 +241,7 @@ async fn snapshot(
     }
     Ok(json!({"input":input,"source":source}))
 }
-fn manifest(snapshot: &Value, report: &Value) -> Result<Value, AppError> {
+pub(crate) fn manifest(snapshot: &Value, report: &Value) -> Result<Value, AppError> {
     let input = &snapshot["input"];
     let originals = input["clips"].as_array().ok_or(AppError::Unavailable)?;
     let predictions = report["clips"].as_array().ok_or(AppError::InvalidInput)?;
@@ -272,6 +275,25 @@ fn manifest(snapshot: &Value, report: &Value) -> Result<Value, AppError> {
             .ok_or(AppError::InvalidInput)?;
         crate::speech_alignments::validate_words(&words, &expected, duration, true)?;
         check_aliases(report, prediction, &expected, &words)?;
+        if input["plan"]["compilerVersion"] == crate::speech_plan::NEUTRAL_VERSION {
+            if prediction.get("transcriptAliases").is_some() {
+                return Err(AppError::InvalidInput);
+            }
+            let raw = prediction["rawPredictions"]
+                .as_array()
+                .ok_or(AppError::InvalidInput)?;
+            if raw.len() != expected.len() {
+                return Err(AppError::InvalidInput);
+            }
+            for ((prediction, unit), word) in raw.iter().zip(&expected).zip(&words) {
+                if prediction["text"] != model_token(&unit.text)
+                    || Some(raw_class_ms(&prediction["startSeconds"])?) != word.start_ms
+                    || Some(raw_class_ms(&prediction["endSeconds"])?) != word.end_ms
+                {
+                    return Err(AppError::InvalidInput);
+                }
+            }
+        }
         let targets = prediction["targets"]
             .as_array()
             .ok_or(AppError::InvalidInput)?;

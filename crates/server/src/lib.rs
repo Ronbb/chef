@@ -47,6 +47,7 @@ pub mod speech_alignments;
 pub mod speech_automatic;
 pub mod speech_clips;
 pub mod speech_export;
+mod speech_local;
 mod speech_media;
 mod speech_package;
 pub mod speech_plan;

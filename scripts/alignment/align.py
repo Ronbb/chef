@@ -26,6 +26,7 @@ MAX_ARCHIVE = 128 * 1024 * 1024
 MAX_MEDIA = 16 * 1024 * 1024
 MAX_JSON = 4 * 1024 * 1024
 COMPILER = "speech-plan-1/uax29-1.13.3"
+NEUTRAL_COMPILER = "speech-plan-2/author-scalar-1"
 
 
 def require(condition, message):
@@ -179,7 +180,7 @@ def read_export(path, direct=False):
                 manifest.get("humanListeningAsserted") is False, "unsupported direct input policy")
     require(set(manifest) == fields and manifest["schemaVersion"] == "1.0" and hex_id(manifest["planId"], 32), "unsupported manifest")
     plan = manifest["plan"]
-    require(plan["compilerVersion"] == COMPILER and hex_id(plan["planHash"], 64) and
+    require(plan["compilerVersion"] in (COMPILER, NEUTRAL_COMPILER) and hex_id(plan["planHash"], 64) and
             hex_id(plan["sourceHash"], 64) and integer(plan["lessonRevision"], 1), "unsupported fixed plan")
     require(isinstance(plan["requests"], dict) and 0 < len(plan["requests"]) <= 1000 and
             isinstance(plan["targets"], list) and 0 < len(plan["targets"]) <= 1000, "invalid plan size")
@@ -197,8 +198,11 @@ def read_export(path, direct=False):
         request = plan["requests"][key]
         require(digest(json_bytes(request, sort=True)) == key, "generation key mismatch")
         text = request["parameters"]["input"]["text"]
-        require(request["compilerVersion"] == COMPILER and request["parameters"]["model"] == "qwen-audio-3.1-tts-flash" and
-                request["profile"]["locale"] == "fr-FR" and request["parameters"]["input"]["voice"] == request["profile"]["voiceId"], "unsupported/mismatched speech request")
+        require(request["compilerVersion"] == plan["compilerVersion"] and request["parameters"]["model"] == "qwen-audio-3.1-tts-flash" and
+                request["profile"]["locale"] in (("fr-FR",) if plan["compilerVersion"] == COMPILER else ("fr-FR", "yue-Hant-HK")) and
+                request["parameters"]["input"]["voice"] == request["profile"]["voiceId"], "unsupported/mismatched speech request")
+        if plan["compilerVersion"] == NEUTRAL_COMPILER:
+            require(request.get("wordUnits") == clip["words"], "authored word units differ from fixed request")
         words_valid(text, clip["words"])
         review = clip["review"]
         if direct:
@@ -320,7 +324,12 @@ def align_export(manifest, members, archive_hash, model, versions, direct=False,
         aliases = transcript_aliases(clip["words"]) if spoken_cardinals else []
         tokens = model_tokens(clip["words"], aliases)
         require(all(tokens), "empty model token")
-        raw = model.predict(payload, tokens)
+        if manifest["plan"]["compilerVersion"] == NEUTRAL_COMPILER:
+            require(not spoken_cardinals, "French cardinal aliases are unavailable for native author units")
+            request = manifest["plan"]["requests"][clip["generationKey"]]
+            raw = model.predict(payload, tokens, locale=request["profile"]["locale"], authored_units=True)
+        else:
+            raw = model.predict(payload, tokens)
         words, issues = predictions(clip["words"], raw, duration, aliases)
         targets = []
         for target in manifest["plan"]["targets"]:

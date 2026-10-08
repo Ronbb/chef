@@ -90,6 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     brioche_course_contract::AdminAlignments::export_all(&config)?;
     brioche_course_contract::AdminAlignmentReview::export_all(&config)?;
     brioche_course_contract::AdminSpeechOptions::export_all(&config)?;
+    brioche_course_contract::AdminNeutralSpeechOptions::export_all(&config)?;
     brioche_course_contract::AdminSpeechPackageRequest::export_all(&config)?;
     brioche_course_contract::AdminAutomaticSpeechPackageRequest::export_all(&config)?;
     brioche_course_contract::AdminSpeechPackageImport::export_all(&config)?;

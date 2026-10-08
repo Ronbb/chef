@@ -172,12 +172,87 @@ async fn authorize_for_operator(
     id: &str,
     revision: u32,
     root: &std::path::Path,
-    mut request: DirectPublication,
+    request: DirectPublication,
 ) -> Result<AdminLessonAudioStatus, AppError> {
     if b.product.is_some_and(|product| product != operator.product) {
         return Err(AppError::Forbidden);
     }
     let actor = operator.actor;
+    let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
+    operator.lock_content(&tx).await?;
+    authorize_in(b, tx, actor, id, revision, root, request).await
+}
+
+/// Explicit table-owner maintenance, separate from session-authorized runtime operations.
+/// Never available to an HTTP request or the restricted content login.
+pub(crate) async fn authorize_owner(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    email: &str,
+    id: &str,
+    revision: u32,
+    root: &std::path::Path,
+    mut request: DirectPublication,
+) -> Result<AdminLessonAudioStatus, AppError> {
+    let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
+    exec(
+        &tx,
+        "SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))",
+        vec![],
+    )
+    .await?;
+    let layout = one(
+        &tx,
+        "SELECT learning_schema,identity_schema FROM chef_schema_layout WHERE singleton",
+        vec![],
+    )
+    .await?
+    .ok_or(AppError::Forbidden)?;
+    let learning: String = field(&layout, "learning_schema")?;
+    let identity: String = field(&layout, "identity_schema")?;
+    crate::database_scope::validate(&learning).map_err(|_| AppError::Forbidden)?;
+    crate::database_scope::validate(&identity).map_err(|_| AppError::Forbidden)?;
+    brioche_migration::layout::verify_complete(&tx, &learning, &identity)
+        .await
+        .map_err(|_| AppError::Forbidden)?;
+    let owner = one(&tx, "SELECT count(*)::bigint AS n FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE ((n.nspname=$1 AND c.relname IN ('lesson_revisions','lesson_direct_publications')) OR (n.nspname=$2 AND c.relname IN ('users','product_memberships'))) AND c.relkind='r' AND c.relowner=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname=current_user)", vec![learning.into(),identity.clone().into()]).await?.ok_or(AppError::Forbidden)?;
+    if field::<i64>(&owner, "n")? != 4 {
+        return Err(AppError::Forbidden);
+    }
+    let email = crate::identity::normalize_email(email)?;
+    let actor = one(&tx, &format!("SELECT u.id FROM \"{identity}\".users u JOIN \"{identity}\".product_memberships m ON m.user_id=u.id WHERE u.email=$1 AND m.product_id=$2 AND m.role='operator'"), vec![email.into(),product.as_str().into()]).await?.ok_or(AppError::Forbidden)?;
+    request
+        .evidence
+        .as_object_mut()
+        .ok_or(AppError::InvalidInput)?
+        .insert(
+            "maintenanceAuthority".into(),
+            serde_json::json!("database-table-owner; no browser session asserted"),
+        );
+    authorize_in(
+        &Store {
+            db: db.clone(),
+            product: Some(product),
+        },
+        tx,
+        field(&actor, "id")?,
+        id,
+        revision,
+        root,
+        request,
+    )
+    .await
+}
+
+async fn authorize_in(
+    b: &Store,
+    tx: sea_orm::DatabaseTransaction,
+    actor: i64,
+    id: &str,
+    revision: u32,
+    root: &std::path::Path,
+    mut request: DirectPublication,
+) -> Result<AdminLessonAudioStatus, AppError> {
     crate::admin::revision(id, revision)?;
     crate::admin::reason(&request.reason)?;
     if !crate::voice_references::hex(&request.expected_lesson_hash, 64)
@@ -192,11 +267,6 @@ async fn authorize_for_operator(
     request.reason = format!("[owner-direct-publish] {}", request.reason);
     crate::admin::reason(&request.reason)?;
     let request_json = serde_json::to_value(&request).map_err(|_| AppError::InvalidInput)?;
-    let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
-    if b.product.is_some_and(|product| product != operator.product) {
-        return Err(AppError::Forbidden);
-    }
-    operator.lock_content(&tx).await?;
     one(
         &tx,
         &format!(

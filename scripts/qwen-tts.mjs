@@ -184,6 +184,21 @@ export async function synthesize(
 ) {
   const request = requestFor(line, env, library);
   const profile = characterFor(line, library).profile;
+  return synthesizeRequest(request, profile, env, fetcher);
+}
+
+// Reused by private fixed-course plan generation; callers validate their authored plan.
+export async function synthesizeRequest(
+  request,
+  profile,
+  env,
+  fetcher = fetch,
+) {
+  if (
+    request.endpoint !==
+    `${qwenBase(env)}/api/v1/services/audio/tts/SpeechSynthesizer`
+  )
+    throw new Error("Untrusted synthesis endpoint.");
   const voiceVerification =
     profile.voiceKind === "cloned"
       ? await verifyClonedVoice(profile, env, fetcher)

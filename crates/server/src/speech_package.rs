@@ -15,7 +15,7 @@ use axum::{
 };
 use brioche_course_contract::{
     AdminSpeechPackageImport, AdminSpeechPackageRequest, AdminSpeechPackageResult,
-    AdminSpeechPackageResults, AudioAsset, AudioCue, AudioTrack, AudioWordRange, Block,
+    AdminSpeechPackageResults, AudioAsset, AudioCue, AudioTrack, AudioWordRange,
 };
 use sea_orm::{ConnectionTrait, DbBackend, IsolationLevel, Statement, TransactionTrait};
 use serde_json::{Value, json};
@@ -585,8 +585,11 @@ fn assemble(
 ) -> Result<Assembled, AppError> {
     settings(r)?;
     let mut source = manifest["source"].clone();
-    let lesson = crate::project_source(source.clone()).map_err(|_| AppError::Unavailable)?;
-    if r.lesson_revision <= lesson.revision {
+    let lesson =
+        crate::author_source::check_any_source(&source).map_err(|_| AppError::Unavailable)?;
+    let source_inputs =
+        crate::speech_plan::source_inputs(&lesson).map_err(|_| AppError::Unavailable)?;
+    if r.lesson_revision <= lesson.revision() {
         return Err(AppError::Conflict);
     }
     let mut files = BTreeMap::new();
@@ -625,24 +628,28 @@ fn assemble(
     let mut assets = BTreeMap::new();
     let mut descriptors = BTreeMap::new();
     let mut tracks = Vec::new();
-    for block in &lesson.blocks {
-        let (id, entries): (&String, Vec<_>) = match block {
-            Block::Dialogue { id, turns, .. } => {
-                (id, turns.iter().map(|t| (&t.id, &t.segments)).collect())
-            }
-            Block::Article { id, paragraphs, .. } => (
-                id,
-                paragraphs.iter().map(|p| (&p.id, &p.segments)).collect(),
-            ),
-            _ => continue,
+    let mut groups: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    for input in &source_inputs {
+        let Some(block) = &input.block_id else {
+            continue;
         };
+        if let Some((_, entries)) = groups.iter_mut().find(|(id, _)| id == block) {
+            entries.push((input.entry_id.clone(), input.text.clone()));
+        } else {
+            groups.push((
+                block.clone(),
+                vec![(input.entry_id.clone(), input.text.clone())],
+            ));
+        }
+    }
+    for (id, entries) in &groups {
         let mut data = Vec::new();
         let mut cues = Vec::new();
         let mut provenance = Vec::new();
-        for (index, (entry, segments)) in entries.iter().enumerate() {
+        for (index, (entry, expected_text)) in entries.iter().enumerate() {
             let candidates: Vec<_> = targets
                 .iter()
-                .filter(|t| t["blockId"] == *id && t["entryId"] == **entry)
+                .filter(|t| t["blockId"] == *id && t["entryId"] == *entry)
                 .collect();
             if candidates.len() != 1 {
                 return Err(AppError::Conflict);
@@ -652,8 +659,7 @@ fn assemble(
             if !used.insert(pointer.to_owned()) {
                 return Err(AppError::Conflict);
             }
-            let expected_text: String = segments.iter().map(|s| s.text.as_str()).collect();
-            if t["text"] != expected_text {
+            if t["text"] != *expected_text {
                 return Err(AppError::Conflict);
             }
             let key = text(t, "generationKey")?;
@@ -674,7 +680,7 @@ fn assemble(
             data.extend(payload);
             data.resize(data.len().div_ceil(48) * 48, 0);
             cues.push(AudioCue {
-                entry_id: (**entry).clone(),
+                entry_id: entry.clone(),
                 segment_id: None,
                 word_range: None,
                 start_ms: offset,
@@ -698,7 +704,7 @@ fn assemble(
                 }
                 let segment = text(word, "segmentId")?.to_owned();
                 groups.entry(segment.clone()).or_default().push(AudioCue {
-                    entry_id: (**entry).clone(),
+                    entry_id: entry.clone(),
                     segment_id: Some(segment),
                     word_range: Some(AudioWordRange {
                         start: number(word, "segmentStart")?,
@@ -710,7 +716,7 @@ fn assemble(
             }
             for (segment, words) in groups {
                 cues.push(AudioCue {
-                    entry_id: (**entry).clone(),
+                    entry_id: entry.clone(),
                     segment_id: Some(segment),
                     word_range: None,
                     start_ms: words.first().ok_or(AppError::Unavailable)?.start_ms,
@@ -739,7 +745,7 @@ fn assemble(
         }
         let original = source
             .pointer(pointer)
-            .and_then(Value::as_str)
+            .and_then(|v| v.as_str().or_else(|| v.get("text").and_then(Value::as_str)))
             .ok_or(AppError::Conflict)?;
         if t["text"] != original {
             return Err(AppError::Conflict);
@@ -762,22 +768,7 @@ fn assemble(
         );
         descriptors.insert(audio.asset_id.clone(), audio);
     }
-    let expected = lesson
-        .blocks
-        .iter()
-        .map(|b| match b {
-            Block::Dialogue { turns, .. } => turns.len(),
-            Block::Article { paragraphs, .. } => paragraphs.len(),
-            _ => 0,
-        })
-        .sum::<usize>()
-        + lesson.knowledge.vocabulary.len()
-        + lesson
-            .knowledge
-            .grammar
-            .iter()
-            .map(|g| g.examples.len())
-            .sum::<usize>();
+    let expected = source_inputs.len();
     if used.len() != targets.len() || targets.len() != expected {
         return Err(AppError::Conflict);
     }
@@ -793,9 +784,7 @@ fn assemble(
             .collect::<Vec<_>>()
     );
     source["audioTracks"] = serde_json::to_value(tracks).map_err(|_| AppError::Unavailable)?;
-    let public = crate::project_source(source.clone()).map_err(|_| AppError::Unavailable)?;
-    public.validate().map_err(|_| AppError::Conflict)?;
-    crate::grading::Grader::from_author_source(&public, &source).map_err(|_| AppError::Conflict)?;
+    crate::author_source::check_any_source(&source).map_err(|_| AppError::Conflict)?;
     let bundle = json!({"schemaVersion":"1.0","assets":assets.values().collect::<Vec<_>>()});
     let typed: crate::recording::AudioBundle =
         serde_json::from_value(bundle.clone()).map_err(|_| AppError::Unavailable)?;
@@ -842,7 +831,31 @@ pub(crate) fn pack_automatic(
     request: &AdminSpeechPackageRequest,
     actor: i64,
 ) -> Result<Vec<u8>, AppError> {
-    let mut assembled = assemble(root, manifest, request, actor)?;
+    pack_with_policy(root, manifest, request, Some(actor))
+}
+/// Local author files, without a database identity or speech-task registration claim.
+pub(crate) fn pack_local(
+    root: &FilePath,
+    manifest: Value,
+    request: &AdminSpeechPackageRequest,
+) -> Result<Vec<u8>, AppError> {
+    pack_with_policy(root, manifest, request, None)
+}
+fn pack_with_policy(
+    root: &FilePath,
+    manifest: Value,
+    request: &AdminSpeechPackageRequest,
+    actor: Option<i64>,
+) -> Result<Vec<u8>, AppError> {
+    let mut assembled = assemble(root, manifest, request, actor.unwrap_or(0))?;
+    if actor.is_none() {
+        assembled.manifest["assembly"]
+            .as_object_mut()
+            .ok_or(AppError::Unavailable)?
+            .remove("actorId");
+        assembled.manifest["assembly"]["authority"] = json!("local-author-files");
+        assembled.manifest["assembly"]["speechTasksRegistered"] = json!(false);
+    }
     assembled.source["editorial"] = json!({"status":"reviewed","note":format!("所有者授权直接发布；未声明人工试听或独立专家审校。{}",request.reason)});
     crate::author_source::editorial(&assembled.source).map_err(|_| AppError::InvalidInput)?;
     assembled.manifest["assembly"]["finalListeningRequired"] = json!(false);
@@ -884,6 +897,149 @@ fn archive_files(files: BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, AppError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_package_keeps_reading_objects_author_words_and_private_grading() {
+        use brioche_course_contract::{ReadingText, TargetLanguage, TextRange, neutral};
+        let docs = FilePath::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+        let original =
+            crate::author_json::Document::load(docs.join("examples/a1-bakery.lesson.json"))
+                .unwrap();
+        let legacy = crate::author_source::check_lesson(&original).unwrap();
+        let mut lesson = neutral::NeutralLesson::try_from(&legacy).unwrap();
+        lesson.target_language = TargetLanguage::Cantonese;
+        for c in &mut lesson.cast {
+            c.speech_locale = "yue-Hant-HK".into();
+        }
+        let neutral::Block::Dialogue { turns, .. } = lesson
+            .blocks
+            .iter_mut()
+            .find(|b| matches!(b, neutral::Block::Dialogue { .. }))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        turns[0].segments.truncate(1);
+        turns[0].segments[0].reading = ReadingText {
+            text: "兩位，唔該！".into(),
+            words: vec![
+                TextRange { start: 0, end: 2 },
+                TextRange { start: 3, end: 5 },
+            ],
+            pronunciations: vec![],
+        };
+        let mut source = serde_json::to_value(&lesson).unwrap();
+        source["serverOnly"] = original.value["serverOnly"].clone();
+        source["editorial"] = original.value["editorial"].clone();
+        let profile = json!({"personality":"Synthetic fixture", "speakingStyle":"Synthetic Cantonese fixture", "defaultEmotion":"Calm",
+            "provider":"qwen","model":"qwen-audio-3.1-tts-flash","voiceId":"longanhuan_v3.1","voiceKind":"system","locale":"yue-Hant-HK","rate":1.0,"referenceAudio":null});
+        let config = crate::speech_plan::Config {
+            items: lesson
+                .cast
+                .iter()
+                .map(|c| brioche_course_contract::AdminCharacterVoice {
+                    character: c.clone(),
+                    avatar_revision: 1,
+                    voice_revision: 1,
+                    profile: Some(serde_json::from_value(profile.clone()).unwrap()),
+                })
+                .collect(),
+            knowledge_narrator: brioche_course_contract::AdminSpeechVoice {
+                character_id: lesson.cast[0].character_id.clone(),
+                character_revision: 1,
+                voice_revision: 1,
+            },
+            emotions: BTreeMap::new(),
+        };
+        let plan = serde_json::to_value(
+            crate::speech_plan::compile_neutral(&lesson, &source, &config).unwrap(),
+        )
+        .unwrap();
+        struct Directory(PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                std::fs::remove_dir_all(&self.0).unwrap();
+            }
+        }
+        let dir = Directory(std::env::temp_dir().join(format!(
+                "chef-native-package-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            )));
+        std::fs::create_dir(&dir.0).unwrap();
+        let mut clips = Vec::new();
+        for (index, key) in plan["requests"].as_object().unwrap().keys().enumerate() {
+            let mut words = crate::speech_alignments::request_words(&plan, key).unwrap();
+            for (i, w) in words.iter_mut().enumerate() {
+                w.start_ms = Some(i as u32 * 160);
+                w.end_ms = Some(i as u32 * 160 + 80);
+            }
+            let duration = words.len() as u32 * 160 + 500;
+            let wav = wave(
+                &vec![0; duration as usize * 48],
+                json!({"syntheticFixture":true}),
+            )
+            .unwrap();
+            let info = crate::audio::inspect(&wav, "audio/wav").unwrap();
+            let result = crate::speech_media::store(
+                &dir.0,
+                crate::qwen::Speech {
+                    provider_wav: wav.clone(),
+                    wav,
+                    info,
+                    request_id: format!("synthetic-{index}"),
+                    verification: None,
+                    input_tokens: None,
+                    output_tokens: None,
+                },
+                false,
+            )
+            .unwrap();
+            clips.push(json!({"id":format!("{index:032x}"),"generationKey":key,"result":result,"words":words}));
+        }
+        let manifest =
+            json!({"source":source,"plan":plan,"clips":clips,"alignmentId":"synthetic-alignment"});
+        let request = AdminSpeechPackageRequest {
+            expected_report_hash: "0".repeat(64),
+            lesson_revision: 2,
+            gap_ms: 250,
+            rights_confirmed: true,
+            source: "Synthetic fixture only".into(),
+            license: "Test fixture".into(),
+            creator: "user:1".into(),
+            credit_zh: "合成测试音频".into(),
+            reason: "Native package test".into(),
+        };
+        let result = assemble(&dir.0, manifest.clone(), &request, 1).unwrap();
+        assert_eq!(result.source["schemaVersion"], "2.0");
+        assert_eq!(result.source["targetLanguage"], "yue-Hant-HK");
+        assert_eq!(result.source["serverOnly"], source["serverOnly"]);
+        assert_eq!(
+            result.source["knowledge"]["vocabulary"][0]["lemma"],
+            source["knowledge"]["vocabulary"][0]["lemma"]
+        );
+        assert!(result.source["knowledge"]["vocabulary"][0]["recording"].is_object());
+        assert!(result.source["knowledge"]["grammar"][0]["examples"][0]["recording"].is_object());
+        assert_eq!(
+            result.source["blocks"][1]["turns"][0]["segments"][0]["reading"],
+            source["blocks"][1]["turns"][0]["segments"][0]["reading"]
+        );
+        let checked = crate::author_source::check_any_source(&result.source).unwrap();
+        assert_eq!(checked.revision(), 2);
+        let cues = result.source["audioTracks"][0]["cues"].as_array().unwrap();
+        assert!(
+            cues.iter()
+                .any(|c| c["wordRange"] == json!({"start":0,"end":2}))
+        );
+        let mut bad = manifest;
+        bad["plan"]["targets"][0]["text"] = json!("different source");
+        assert!(matches!(
+            assemble(&dir.0, bad, &request, 1),
+            Err(AppError::Conflict)
+        ));
+    }
     #[test]
     fn derived_pcm_keeps_samples_and_original_ai_metadata() {
         let data: Vec<_> = (0..240)

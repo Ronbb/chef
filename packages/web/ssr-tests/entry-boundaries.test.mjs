@@ -92,8 +92,8 @@ const server = createServer((request, response) => {
   ) {
     response.end(
       JSON.stringify({
-        lesson,
-        voices: lesson.cast.map((character) => ({
+        lesson: neutralPublicLesson ?? lesson,
+        voices: (neutralPublicLesson ?? lesson).cast.map((character) => ({
           character,
           avatarRevision: 1,
           voiceRevision: 0,
@@ -1339,6 +1339,28 @@ test("public reading exposes every body, including multiple dialogues", async ()
     lesson.blocks = originalBlocks;
     lesson.steps = originalSteps;
     fixture = false;
+  }
+});
+
+test("native Cantonese speech options SSR preserves cast and uses the v2 endpoint", async () => {
+  const native = JSON.parse(await readFile(new URL("../../../crates/server/tests/fixtures/neutral-cantonese.lesson.json", import.meta.url), "utf8"));
+  neutralPublicLesson = Object.fromEntries([...fields, "targetLanguage", "explanationLanguage"].map((key) => [key, native[key]]));
+  neutralPublicLesson.media = [];
+  authenticated = true;
+  profile.role = "operator";
+  requests.length = 0;
+  try {
+    const response = await request(`/admin/speech-plans?lessonId=${native.id}&revision=1`);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.ok(html.includes(native.cast[0].displayName));
+    assert.ok(!html.includes("[object Object]"));
+    assert.ok(requests.some((r) => r.path === `/api/v2/operator/lessons/${native.id}/revisions/1/speech-options`));
+    assert.ok(requests.every((r) => r.method === "GET"));
+  } finally {
+    neutralPublicLesson = null;
+    authenticated = false;
+    profile.role = "learner";
   }
 });
 

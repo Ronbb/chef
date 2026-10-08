@@ -15,15 +15,21 @@ pub async fn run() -> Result<()> {
     let command = std::env::args().nth(1).unwrap_or_else(|| "serve".into());
     let product = crate::product::ProductId::configured("CHEF_PRODUCT")?;
     product.validate_command(&command)?;
+    if command == "speech-package-local" {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        crate::speech_local::run(&args)?;
+        println!("Local course audio package saved; not registered or published.");
+        return Ok(());
+    }
     if command == "speech-plan" {
         let args: Vec<String> = std::env::args().skip(2).collect();
         if args.len() != 2 {
             bail!("usage: brioche-server speech-plan <lesson.json> <voice-plan.json>");
         }
         let document = crate::author_json::Document::load(&args[0])?;
-        let lesson = crate::author_source::check_lesson(&document)?;
+        let lesson = crate::author_source::check_any_lesson(&document)?;
         let config: crate::speech_plan::Config = crate::author_json::load(&args[1])?;
-        let plan = crate::speech_plan::compile(&lesson, &document.value, &config)?;
+        let plan = crate::speech_plan::compile_checked(&lesson, &document.value, &config)?;
         println!("{}", serde_json::to_string_pretty(&plan)?);
         return Ok(());
     }
@@ -199,10 +205,8 @@ pub async fn run() -> Result<()> {
     if fixture && production {
         bail!("fixture content is only permitted with APP_ENV=development");
     }
-    if product == crate::product::ProductId::Hargow && command == "serve" {
-        // Keep the startup boundary closed until local keys and language contracts
-        // are verified. Never initialize the legacy Brioche backend or fixture.
-        bail!("Product learning data migration incomplete");
+    if product == crate::product::ProductId::Hargow && command == "serve" && fixture {
+        bail!("Hargow requires native database content, not a French fixture");
     }
     let db = if fixture && command == "serve" {
         None
@@ -248,6 +252,7 @@ pub async fn run() -> Result<()> {
             | "speech-alignment-import"
             | "speech-package-import"
             | "lesson-direct-publication"
+            | "lesson-direct-publication-owner"
     );
     let author_product = if author_command {
         crate::schema_split::author_scope(db.as_ref().unwrap(), product).await
@@ -263,6 +268,22 @@ pub async fn run() -> Result<()> {
     };
     if command == "speech-package-import" && author_product.is_none() {
         bail!("Speech package maintenance requires the complete split layout");
+    }
+    if command == "lesson-direct-publication-owner" {
+        let scope = author_product
+            .ok_or_else(|| anyhow::anyhow!("Owner publication requires complete split layout"))?;
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        anyhow::ensure!(
+            args.len() == 4,
+            "usage: lesson-direct-publication-owner <lesson-id> <revision> <existing-product-operator-email> <authorization.json>"
+        );
+        let request = crate::author_json::load(&args[3])?;
+        crate::lesson_audio_reviews::authorize_owner(db.as_ref().unwrap(),scope,&args[2],&args[0],args[1].parse()?,&crate::media::media_root(),request).await
+            .map_err(|_| anyhow::anyhow!("Owner authorization not confirmed; verify table ownership, product membership, fixed source and audio"))?;
+        println!(
+            "Table-owner direct publication authorized; no human listening or browser session asserted, directory not activated."
+        );
+        return Ok(());
     }
     if let Some(scope) = author_product
         && matches!(
@@ -1130,6 +1151,14 @@ pub async fn run() -> Result<()> {
     }
     if remote_identity && db.is_none() {
         bail!("Remote identity requires database mode");
+    }
+    if product == crate::product::ProductId::Hargow {
+        anyhow::ensure!(remote_identity, "Hargow requires independent identity mode");
+        anyhow::ensure!(
+            crate::schema_split::author_scope(db.as_ref().unwrap(), product).await?
+                == Some(product),
+            "Hargow requires the complete verified product layout"
+        );
     }
     let auth_router = if let Some(db) = &db {
         let public_url = std::env::var("PUBLIC_APP_URL")

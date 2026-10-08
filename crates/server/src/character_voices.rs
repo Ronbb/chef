@@ -73,7 +73,11 @@ async fn append_character(
         revision,
         display_name: request.display_name,
         avatar_id: request.avatar_id,
-        speech_locale: brioche_course_contract::CHARACTER_SPEECH_LOCALE.into(),
+        speech_locale: match backend.product {
+            Some(crate::product::ProductId::Hargow) => "yue-Hant-HK",
+            _ => brioche_course_contract::CHARACTER_SPEECH_LOCALE,
+        }
+        .into(),
     };
     crate::media::import_operator_character(
         &backend.db,

@@ -11,7 +11,8 @@ REVOKE ALL ON TABLE
     :"identity_schema".product_membership_audit, :"identity_schema".account_admin_audit
     FROM :"role";
 GRANT SELECT ON TABLE
-    :"schema".chef_schema_layout, :"schema".product_user_settings, :"schema".learning_sessions,
+    :"schema".chef_schema_layout, :"schema".chef_layout_migrations, :"schema".seaql_migrations,
+    :"schema".product_user_settings, :"schema".learning_sessions,
     :"schema".lesson_progress, :"schema".step_progress,
     :"schema".exercise_hints, :"schema".exercise_attempts,
     :"schema".learning_operations, :"schema".review_cards,

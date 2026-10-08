@@ -1,0 +1,34 @@
+http:
+  routers:
+    identity:
+      entryPoints: [web]
+      rule: "PathPrefix(`/api/v1/auth/`) || Path(`/api/v1/account`) || PathPrefix(`/api/v1/operator/accounts`)"
+      priority: 200
+      service: identity
+    learning:
+      entryPoints: [web]
+      rule: "Path(`/api`) || PathPrefix(`/api/`)"
+      priority: 100
+      service: learning
+    web:
+      entryPoints: [web]
+      rule: "PathPrefix(`/`)"
+      priority: 1
+      service: web
+      middlewares: [compress]
+  services:
+    identity:
+      loadBalancer:
+        servers:
+          - url: 'http://{{ env "CHEF_PRODUCT" }}-identity:3002'
+    learning:
+      loadBalancer:
+        servers:
+          - url: 'http://{{ env "CHEF_PRODUCT" }}-learning:3001'
+    web:
+      loadBalancer:
+        servers:
+          - url: 'http://{{ env "CHEF_PRODUCT" }}-web:3000'
+  middlewares:
+    compress:
+      compress: {}

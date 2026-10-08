@@ -1,6 +1,6 @@
 import { data, Link, useLocation, useRevalidator } from "react-router";
 import { useEffect, useRef, useState } from "react";
-import type { AdminSpeechOptions } from "@brioche/contracts/AdminSpeechOptions";
+import type { AdminNeutralSpeechOptions } from "@brioche/contracts/AdminNeutralSpeechOptions";
 import type { AdminSpeechPlan } from "@brioche/contracts/AdminSpeechPlan";
 import type { AdminSpeechPlans } from "@brioche/contracts/AdminSpeechPlans";
 import type { AdminSpeechPlanRequest } from "@brioche/contracts/AdminSpeechPlanRequest";
@@ -31,9 +31,9 @@ export async function loader({ request }: Route.LoaderArgs) {
     throw new Response("课程版本无效。", { status: 400 });
   const query = new URLSearchParams({ lessonId: id, lessonRevision: revision });
   if (after) query.set("afterId", after);
-  const options = await getPrivate<AdminSpeechOptions>(
+  const options = await getPrivate<AdminNeutralSpeechOptions>(
     request,
-    `/api/v1/operator/lessons/${id}/revisions/${revision}/speech-options`,
+    `/api/v2/operator/lessons/${id}/revisions/${revision}/speech-options`,
   );
   const plans = await getPrivate<AdminSpeechPlans>(
     request,
@@ -55,14 +55,14 @@ export async function loader({ request }: Route.LoaderArgs) {
 export function headers() {
   return { "Cache-Control": "private, no-store", Vary: "Cookie" };
 }
-function fixed(voice: AdminSpeechOptions["voices"][number]) {
+function fixed(voice: AdminNeutralSpeechOptions["voices"][number]) {
   return {
     characterId: voice.character.characterId,
     characterRevision: voice.character.revision,
     voiceRevision: voice.voiceRevision,
   };
 }
-function initial(options: AdminSpeechOptions): AdminSpeechSelection {
+function initial(options: AdminNeutralSpeechOptions): AdminSpeechSelection {
   const needed = new Set<string>();
   for (const block of options.lesson.blocks) {
     if (block.type === "article") needed.add(block.narratorId);

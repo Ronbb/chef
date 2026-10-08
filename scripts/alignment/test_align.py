@@ -9,7 +9,7 @@ import unittest
 import wave
 
 import align
-from native import raw_predictions
+from native import raw_predictions, authored_conversation
 
 
 def fixture():
@@ -53,6 +53,18 @@ def archive(path, manifest, members, extra=None):
 
 
 class ExportTests(unittest.TestCase):
+    def test_authored_cantonese_phrases_are_template_units_without_cjk_resplitting(self):
+        audio = object()
+        conversation = authored_conversation(audio, ["兩位", "唔該"], "yue-Hant-HK")
+        content = conversation[0]["content"]
+        self.assertIs(content[0]["audio"], audio)
+        self.assertEqual([c["text"] for c in content[1:]], ["兩位", "唔該"])
+        raw = raw_predictions(["兩位", "唔該"], [1, 5, 6, 9], 80)
+        words = [{"text":"兩位", "start":0, "end":2}, {"text":"唔該", "start":3, "end":5}]
+        result, issues = align.predictions(words, raw, 1000)
+        self.assertEqual(issues, [])
+        self.assertEqual([(w["startMs"],w["endMs"]) for w in result], [(80,400),(480,720)])
+        with self.assertRaises(ValueError): authored_conversation(audio,["兩位"],"zh-CN")
     def test_native_predictions_keep_overlap_and_missing_slots_without_correction(self):
         words = ["Bonjour", "Camille"]
         raw = raw_predictions(words, [0, 8, 7, 10], 80)

@@ -1,0 +1,104 @@
+name: ${CHEF_PRODUCT:?Set the trusted product}
+x-runtime: &runtime
+  restart: unless-stopped
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  logging:
+    driver: local
+    options: {max-size: "10m", max-file: "3"}
+services:
+  identity:
+    <<: *runtime
+    container_name: ${CHEF_PRODUCT}-identity
+    image: ${CHEF_IMAGE:?Set a fixed Chef service image}
+    entrypoint: [chef-identity]
+    command: [serve]
+    environment:
+      IDENTITY_PRODUCT: ${CHEF_PRODUCT}
+      IDENTITY_DATABASE_SCHEMA: ${IDENTITY_DATABASE_SCHEMA:?Set identity schema}
+      DATABASE_URL: ${IDENTITY_DATABASE_URL:?Set restricted identity connection}
+      IDENTITY_INTERNAL_KEY: ${IDENTITY_INTERNAL_KEY:?Set private internal credential}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:?Set HTTPS browser origin}
+      ADDITIONAL_APP_ORIGINS: ${ADDITIONAL_APP_ORIGINS:-}
+    networks: [app, database]
+    mem_limit: 256m
+    pids_limit: 128
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:3002/ready]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  learning:
+    <<: *runtime
+    container_name: ${CHEF_PRODUCT}-learning
+    image: ${CHEF_IMAGE}
+    environment:
+      CHEF_PRODUCT: ${CHEF_PRODUCT}
+      APP_ENV: production
+      CONTENT_MODE: database
+      DATABASE_URL: ${LEARNING_DATABASE_URL:?Set restricted learning connection}
+      DATABASE_SCHEMA: ${LEARNING_DATABASE_SCHEMA:?Set learning schema}
+      CONTENT_DATABASE_URL: ${CONTENT_DATABASE_URL:?Set restricted content connection}
+      CONTENT_DATABASE_SCHEMA: ${LEARNING_DATABASE_SCHEMA}
+      IDENTITY_INTERNAL_URL: http://${CHEF_PRODUCT}-identity:3002
+      IDENTITY_INTERNAL_KEY: ${IDENTITY_INTERNAL_KEY}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL}
+      ADDITIONAL_APP_ORIGINS: ${ADDITIONAL_APP_ORIGINS:-}
+      MEDIA_ROOT: /var/lib/chef/media
+    volumes: [media:/var/lib/chef/media]
+    networks: [app, database]
+    mem_limit: 512m
+    pids_limit: 256
+    depends_on:
+      identity: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:3001/api/ready]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  web:
+    <<: *runtime
+    container_name: ${CHEF_PRODUCT}-web
+    image: ${WEB_IMAGE:?Set the fixed product Web image}
+    environment:
+      INTERNAL_API_URL: http://${CHEF_PRODUCT}-router:8080
+    networks: [app]
+    mem_limit: 384m
+    pids_limit: 128
+    depends_on:
+      learning: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  router:
+    <<: *runtime
+    container_name: ${CHEF_PRODUCT}-router
+    image: traefik:v3.7.13@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0
+    command: [--configFile=/etc/traefik/static.yaml]
+    environment:
+      CHEF_PRODUCT: ${CHEF_PRODUCT}
+    volumes:
+      - ./traefik-product:/etc/traefik:ro
+    networks: [app]
+    mem_limit: 128m
+    pids_limit: 128
+    depends_on:
+      web: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, traefik, healthcheck, --configFile=/etc/traefik/static.yaml]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+networks:
+  app:
+    external: true
+    name: ${APP_NETWORK:-brioche_app}
+  database:
+    external: true
+    name: ${DATABASE_NETWORK:-brioche_database}
+volumes:
+  media:
+    external: true
+    name: ${MEDIA_VOLUME:-brioche_media_data}

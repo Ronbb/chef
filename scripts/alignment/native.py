@@ -2,6 +2,16 @@
 from decimal import Decimal
 
 
+def authored_conversation(audio, tokens, locale):
+    """Use the public chat-template API with explicit author units, not CJK splitting."""
+    if locale not in ("fr-FR", "yue-Hant-HK") or not tokens or len(tokens) > 600:
+        raise ValueError("unsupported authored alignment language or units")
+    if any(not isinstance(t, str) or not t.strip() or len(t) > 600 for t in tokens):
+        raise ValueError("invalid authored alignment unit")
+    return [{"role": "user", "content": [{"type": "audio", "audio": audio}] +
+             [{"type": "text", "text": token} for token in tokens]}]
+
+
 def raw_predictions(words, classes, quantum_ms):
     """Keep absent/extra timestamp slots visible to the prediction validator."""
     if quantum_ms != 80:
@@ -38,15 +48,23 @@ class NativeAligner:
                 self.processor.timestamp_segment_time != 80 or self.model.config.num_labels != 5000):
             raise ValueError("unexpected native aligner configuration")
 
-    def predict(self, payload, tokens):
+    def predict(self, payload, tokens, locale="fr-FR", authored_units=False):
         import numpy as np
         import librosa
         # Export PCM is fixed 24 kHz; the official feature extractor requires 16 kHz.
         audio = np.frombuffer(payload, dtype="<i2").astype(np.float32) / 32768
         audio = librosa.resample(audio, orig_sr=24000, target_sr=16000, res_type="soxr_hq")
-        inputs, word_lists = self.processor.prepare_forced_aligner_inputs(
-            audio=[audio], transcript=" ".join(tokens), language="French",
-            processor_kwargs={"return_tensors": "pt", "padding": True, "sampling_rate": 16000})
+        if authored_units:
+            inputs = self.processor.apply_chat_template(
+                authored_conversation(audio, tokens, locale), tokenize=True, return_dict=True,
+                processor_kwargs={"return_tensors": "pt", "padding": True, "sampling_rate": 16000})
+            word_lists = [tokens]
+        else:
+            if locale != "fr-FR":
+                raise ValueError("legacy alignment is French-only")
+            inputs, word_lists = self.processor.prepare_forced_aligner_inputs(
+                audio=[audio], transcript=" ".join(tokens), language="French",
+                processor_kwargs={"return_tensors": "pt", "padding": True, "sampling_rate": 16000})
         inputs = inputs.to(self.model.device, self.model.dtype)
         with self.torch.inference_mode():
             output = self.model(**inputs)

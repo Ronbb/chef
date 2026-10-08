@@ -178,6 +178,36 @@ fn source_words(text: &str) -> Vec<AdminAlignmentWord> {
         })
         .collect()
 }
+pub(crate) fn request_words(plan: &Value, key: &str) -> Result<Vec<AdminAlignmentWord>, AppError> {
+    let text = request_text(plan, key)?;
+    match plan["compilerVersion"].as_str() {
+        Some("speech-plan-1/uax29-1.13.3") => Ok(source_words(text)),
+        Some("speech-plan-2/author-scalar-1") => {
+            let words: Vec<AdminAlignmentWord> =
+                serde_json::from_value(plan["requests"][key]["wordUnits"].clone())
+                    .map_err(|_| AppError::Unavailable)?;
+            let chars: Vec<_> = text.chars().collect();
+            let mut previous = 0;
+            for word in &words {
+                if word.start < previous
+                    || word.start >= word.end
+                    || word.end as usize > chars.len()
+                    || word.start_ms.is_some()
+                    || word.end_ms.is_some()
+                    || chars[word.start as usize..word.end as usize]
+                        .iter()
+                        .collect::<String>()
+                        != word.text
+                {
+                    return Err(AppError::Unavailable);
+                }
+                previous = word.end;
+            }
+            Ok(words)
+        }
+        _ => Err(AppError::Unavailable),
+    }
+}
 pub(crate) fn validate_words(
     words: &[AdminAlignmentWord],
     expected: &[AdminAlignmentWord],
@@ -240,7 +270,7 @@ async fn sources(
         {
             return Err(AppError::Conflict);
         }
-        let expected = source_words(request_text(&plan, &clip.generation_key)?);
+        let expected = request_words(&plan, &clip.generation_key)?;
         if !clip.words.is_empty() {
             validate_words(&clip.words, &expected, clip.duration_ms, true)?;
         }
@@ -335,7 +365,7 @@ pub(crate) async fn package_snapshot_for_product(
             serde_json::from_value(field(&review, "words")?).map_err(|_| AppError::Unavailable)?;
         validate_words(
             &words,
-            &source_words(request_text(&plan, &clip.generation_key)?),
+            &request_words(&plan, &clip.generation_key)?,
             clip.duration_ms,
             true,
         )?;
@@ -368,7 +398,7 @@ async fn view(
     for c in report.clips {
         let text = request_text(&plan, &c.generation_key)?.to_owned();
         let mut words = if c.words.is_empty() {
-            source_words(&text)
+            request_words(&plan, &c.generation_key)?
         } else {
             c.words
         };
@@ -683,7 +713,7 @@ async fn review(
         .find(|c| c.clip_id == clip_id)
         .ok_or(AppError::InvalidInput)?;
     let (plan, results) = sources(&tx, b.product, &report).await?;
-    let expected = source_words(request_text(&plan, &clip.generation_key)?);
+    let expected = request_words(&plan, &clip.generation_key)?;
     if request.accepted || !request.words.is_empty() {
         validate_words(
             &request.words,

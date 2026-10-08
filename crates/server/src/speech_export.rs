@@ -17,7 +17,6 @@ use axum::{
 use sea_orm::{ConnectionTrait, IsolationLevel, TransactionTrait};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
-use unicode_segmentation::UnicodeSegmentation;
 const MAX_EXPORT: usize = 128 * 1024 * 1024;
 #[derive(Clone)]
 struct Store {
@@ -71,16 +70,10 @@ async fn snapshot_policy(
             return Err(AppError::Conflict);
         }
         let result: Value = field::<Option<Value>>(&row, "result")?.ok_or(AppError::Unavailable)?;
-        let text = requests[key]["parameters"]["input"]["text"]
-            .as_str()
-            .ok_or(AppError::Unavailable)?;
-        let words: Vec<_> = text
-            .unicode_word_indices()
-            .map(|(byte, word)| {
-                let start = text[..byte].chars().count();
-                json!({"text":word,"start":start,"end":start+word.chars().count()})
-            })
-            .collect();
+        let words = crate::speech_alignments::request_words(&plan, key)?
+            .iter()
+            .map(|w| json!({"text":w.text,"start":w.start,"end":w.end}))
+            .collect::<Vec<_>>();
         let review = if reviewed {
             json!({"actorId":field::<i64>(&row,"review_actor")?,"reason":field::<String>(&row,"review_reason")?})
         } else {

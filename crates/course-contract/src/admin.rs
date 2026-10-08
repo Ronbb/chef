@@ -299,6 +299,12 @@ pub struct AdminSpeechOptions {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdminNeutralSpeechOptions {
+    pub lesson: crate::neutral::NeutralLesson,
+    pub voices: Vec<AdminCharacterVoice>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdminCharacterVoiceRequest {
     pub character_id: String,
     pub character_revision: u32,

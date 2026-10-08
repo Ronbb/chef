@@ -37,6 +37,10 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
             "/api/v1/operator/lessons/{id}/revisions/{revision}/speech-options",
             get(options),
         )
+        .route(
+            "/api/v2/operator/lessons/{id}/revisions/{revision}/speech-options",
+            get(neutral_options),
+        )
         .with_state(Store { db, product })
 }
 fn lesson_key(id: &str, revision: u32) -> Result<(), AppError> {
@@ -76,19 +80,56 @@ async fn options(
     Query(_query): Query<ItemQuery>,
 ) -> Result<Json<AdminSpeechOptions>, AppError> {
     auth.require_operator().await?;
+    let (lesson, voices) = load_options(&b, &id, revision).await?;
+    let crate::author_source::CheckedLesson::Legacy(lesson) = lesson else {
+        return Err(AppError::Conflict);
+    };
+    Ok(Json(AdminSpeechOptions { lesson, voices }))
+}
+async fn neutral_options(
+    auth: AdminAuth,
+    State(b): State<Store>,
+    Path((id, revision)): Path<(String, u32)>,
+    Query(_query): Query<ItemQuery>,
+) -> Result<Json<brioche_course_contract::AdminNeutralSpeechOptions>, AppError> {
+    auth.require_operator().await?;
+    let (lesson, voices) = load_options(&b, &id, revision).await?;
+    let lesson = match lesson {
+        crate::author_source::CheckedLesson::Legacy(l) => {
+            brioche_course_contract::neutral::NeutralLesson::try_from(&l)
+                .map_err(|_| AppError::Unavailable)?
+        }
+        crate::author_source::CheckedLesson::Neutral(l) => l,
+    };
+    Ok(Json(brioche_course_contract::AdminNeutralSpeechOptions {
+        lesson,
+        voices,
+    }))
+}
+async fn load_options(
+    b: &Store,
+    id: &str,
+    revision: u32,
+) -> Result<
+    (
+        crate::author_source::CheckedLesson,
+        Vec<AdminCharacterVoice>,
+    ),
+    AppError,
+> {
     let tx =
         b.db.begin_with_config(Some(IsolationLevel::RepeatableRead), None)
             .await
             .map_err(|_| AppError::Unavailable)?;
-    let src = source(&tx, b.product, &id, revision).await?;
-    let lesson = crate::project_source(src).map_err(|_| AppError::Unavailable)?;
+    let src = source(&tx, b.product, id, revision).await?;
+    let lesson = crate::author_source::check_any_source(&src).map_err(|_| AppError::Unavailable)?;
     let mut voices = Vec::new();
-    for c in &lesson.cast {
+    for c in lesson.cast() {
         let row=one(&tx,&format!("SELECT c.snapshot,c.avatar_revision,COALESCE(v.revision,0) AS voice_revision,v.profile FROM character_revisions c LEFT JOIN LATERAL (SELECT revision,profile FROM character_voice_profiles WHERE character_id=c.character_id AND character_revision=c.revision{} ORDER BY revision DESC LIMIT 1) v ON true WHERE c.character_id=$1 AND c.revision=$2{}",if b.product.is_some(){" AND product_id=c.product_id"}else{""},product_filter(b.product,"c.product_id")),vec![c.character_id.clone().into(),(c.revision as i32).into()]).await?.ok_or(AppError::Unavailable)?;
         voices.push(voice(&row)?);
     }
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
-    Ok(Json(AdminSpeechOptions { lesson, voices }))
+    Ok((lesson, voices))
 }
 async fn compile(
     db: &impl ConnectionTrait,
@@ -99,7 +140,7 @@ async fn compile(
         return Err(AppError::InvalidInput);
     }
     let src = source(db, product, &request.lesson_id, request.lesson_revision).await?;
-    let lesson = crate::project_source(src.clone()).map_err(|_| AppError::Unavailable)?;
+    let lesson = crate::author_source::check_any_source(&src).map_err(|_| AppError::Unavailable)?;
     let mut items = Vec::new();
     for k in &request.selection.voices {
         lesson_key(&k.character_id, k.character_revision)?;
@@ -109,7 +150,7 @@ async fn compile(
         let row=one(db,&format!("SELECT c.snapshot,c.avatar_revision,v.revision AS voice_revision,v.profile FROM character_revisions c JOIN character_voice_profiles v ON v.character_id=c.character_id AND v.character_revision=c.revision{} WHERE c.character_id=$1 AND c.revision=$2 AND v.revision=$3{}",if product.is_some(){" AND v.product_id=c.product_id"}else{""},product_filter(product,"c.product_id")),vec![k.character_id.clone().into(),(k.character_revision as i32).into(),(k.voice_revision as i32).into()]).await?.ok_or(AppError::InvalidInput)?;
         items.push(voice(&row)?);
     }
-    let plan = crate::speech_plan::compile(
+    let plan = crate::speech_plan::compile_checked(
         &lesson,
         &src,
         &crate::speech_plan::Config {

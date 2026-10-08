@@ -39,10 +39,6 @@ impl Operator {
         &self,
         tx: &sea_orm::DatabaseTransaction,
     ) -> Result<(), AppError> {
-        // The content schema is still Brioche-only until the tenant migration.
-        if self.product != ProductId::Brioche {
-            return Err(AppError::Forbidden);
-        }
         if let Some(remote) = &self.remote {
             // Both services share one PostgreSQL database. Membership writers take
             // this same database-wide transaction lock before changing grants.
