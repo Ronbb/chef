@@ -25,6 +25,9 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter("chef_engine=info,tower_http=info")
         .init();
     let product = ProductId::configured("IDENTITY_PRODUCT")?;
+    if chef_engine::identity_command::run_if_requested(product).await? {
+        return Ok(());
+    }
     let config = ServiceConfig::new(
         product,
         &std::env::var("IDENTITY_INTERNAL_KEY")

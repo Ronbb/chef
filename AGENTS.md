@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立身份维护 CLI 补充：chef-identity invite/reset-password 使用必填独立身份 schema 与专用非所有者身份连接，PUBLIC_APP_URL/产品只取可信配置；不得借用全局role、学习连接或HTTP证明。发行复用后台issue_operator_token事务的本产品管理员复核/邮箱锁/审计；链接只写create_new私有文件，Unix0600，文件与DB不能宣称原子，失败须检查待用令牌而不自动重发。隔离实际CLI/HTTP回归覆盖组合拒绝、最小权限、同邮箱双产品发行/审计、输出不覆盖、跨入口拒绝、H邀请仅H权限及共享重置全产品失效。首位管理员初始化/已有账号加入产品仍待完成；不更新生产或产品pin，实现与测试只Chef。
+
 可信产品启动配置补充：共享ProductId::configured统一读取应用CHEF_PRODUCT与身份进程IDENTITY_PRODUCT，仅精确brioche/hargow，缺省B兼容既有部署；空值/空白/别名/未知/非Unicode失败且不回显内容。command在任何课源/私有文件/数据库工作前校验产品与命令，H只允许离线只读作者检查，未迁移写命令拒绝；H serve在连接DB之前明确拒绝，保留内容/身份边界原关闭门槛，不能把配置贯通当H上线。应用远端identity Client、公共课程router和图片/音频router都接同一可信product，删除启动装配固定B常量。身份进程复用解析器，非Unicode不再默默回退B。实际server/identity子进程验证非法配置不回显marker、不连接不可用DB；H serve/生成/邀请提前拒绝。26作者CLI、工作区lib20契约+64server通过（2原ignored保留）、workspace check/tests/clippy通过。本轮无PG布局/真实TTS/产品业务副本/生产改动；布局CLI、产品局部编号、真正H入口及语言中立仍待完成，产品pin和生产48课保持。
 
 独立自动配音打包产品范围补充：speech_automatic::Store由可信后台传产品，核对Operator产品，直接输入快照、固定课源/最新版本与打包后交付复核使用同一范围，交付锁对应product状态；snapshot_direct旧包装替换为snapshot_direct_for_product。本机assemble_for_actor仍None兼容legacy32，布局CLI继续待适配。actual split加入较新H ready片段共享B生成键后，以真实当前直接输入归档和原有效合成预测生成B自动包，选择B缓存回执而无H片段，课源ID/新版本/结构及humanListeningAsserted=false/approvalRequired=false保持；有效外计划404、外片段409，六类导入/录音/审听/直接发布记录零增量，模拟供应商三计数不增加。完整split模拟克隆试听配音发布链、独立身份两项、原legacy配音计划/归档/对齐/打包回归、workspace check/tests/clippy通过。新增用例初始变量与数据库schema名冲突已改唯一名称，未放宽检查；测试预测不证明真实对齐准确度或粤语质量，没有真实付费调用。实现和详细回归只Chef，产品仅短链接；局部编号、CLI/实际产品装配、语言中立/真实H及最终部署继续，产品pin和生产48课保持。

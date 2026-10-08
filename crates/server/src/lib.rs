@@ -18,6 +18,7 @@ pub mod entity;
 pub mod grading;
 pub mod identity;
 pub mod identity_cleanup;
+pub mod identity_command;
 pub mod identity_service;
 pub mod learning;
 pub mod learning_identity;

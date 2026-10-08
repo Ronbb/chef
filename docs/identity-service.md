@@ -233,3 +233,22 @@ identity_cleanup每分钟清理过期浏览器会话与节流记录，令牌过�
 账号审计另提供GET /api/v1/operator/accounts/history，按当前产品过滤，复用有界时间/事件游标分页与公开AdminHistory载荷；不读取内容历史，也不返回令牌或会话秘密。独立身份服务可以单独提供账号审计，旧Brioche综合历史保持兼容。
 
 验证：工作区常规测试与15项隔离PostgreSQL回归通过；增加账号审计接口后，6项相关真实数据库回归再次通过，最终全目标Clippy、fmt和diff检查通过。双产品回归包含真实29→30升级/Brioche-only安全回滚、Hargow范围回滚拒绝、跨产品邀请/重置/撤销拒绝、不继承管理员、共享账户角色独立、会话范围、产品审计/分页与撤销后权限失效；身份清理任务实际删除过期会话/节流与过久令牌，同时保留未来会话和近期过期令牌。既有登录/发布/参考录音/学习回归保持通过。未改共享Web公共DTO，未执行生产迁移。
+
+
+## 分离后的本机邀请与密码重置
+
+账号维护命令由 Chef 的 `chef-identity` 提供，产品仓库不复制实现。它使用专用非所有者身份连接，不需要内省密钥，也不读取课程或学习表。配置 `DATABASE_URL`、`IDENTITY_DATABASE_SCHEMA`、`IDENTITY_PRODUCT` 和 `PUBLIC_APP_URL`；数据库角色采用 `infra/database/identity-grants.sql`。身份 schema 必须独立且包含完整七张身份表；旧组合 schema 不接受此入口，旧组合维护命令仍属于兼容阶段。
+
+```powershell
+chef-identity invite learner@example.test .local/invite-link.txt operator@example.test 'Account invitation'
+chef-identity invite learner@example.test .local/operator-link.txt operator@example.test 'Product operator invitation' --operator
+chef-identity reset-password learner@example.test .local/reset-link.txt operator@example.test 'Requested password reset'
+```
+
+`IDENTITY_PRODUCT` 只能由可信进程配置选择 brioche 或 hargow。操作邮箱必须是该产品当前管理员；全局账号角色不授予产品权限。命令复用账号后台事务内的权限复核、邮箱锁、发行逻辑和不可变审计。本机操作者仍须保护数据库凭据；审计邮箱是受信维护操作的归属，不是浏览器登录证明。此命令不能初始化首位管理员，也不允许邀请已经存在的共享账号，成员加入与首位管理员初始化仍待完成。
+
+输出路径必须是尚不存在的私有文件，不覆盖已有文件。一次性链接包含敏感 fragment，只写文件，不写标准输出或日志；Unix 新文件权限为 0600，Windows 应使用受限的私有目录。邀请只建立发行产品的成员权限；Hargow 管理员邀请不创建 Brioche 成员，也不改变共享账号为全局管理员。密码重置只在发行产品入口接受，成功后变更共享密码并使所有产品的账号会话和重置令牌失效。
+
+数据库提交与文件写入不是同一事务。如果命令报告发行未确认，或发行完成但私有文件未保存，先通过账号后台检查待用令牌并撤销不需要的令牌，再重试；不要假定失败即未发行。命令不会自动重复发行。默认无参数或显式 `serve` 继续启动身份 HTTP 服务；服务配置与维护命令配置分开。
+
+隔离 PostgreSQL 回归使用实际非所有者授权模板、真实 CLI 子进程和身份 HTTP 路由，覆盖旧组合拒绝、无课程读取权限、全局管理员不能越权、两产品同邮箱独立发行/审计、文件不覆盖、跨产品令牌拒绝、Hargow 接受邀请不授予全局/Brioche 管理员以及共享密码重置。测试使用合成账号与私有临时输出，不访问生产。
