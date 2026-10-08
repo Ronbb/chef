@@ -209,3 +209,6 @@ SSR会话边界：Product.sessionNamespace是可信构建配置（brioche/hargow
 作者CLI布局补充：command对import/release-stage/release-activate/content-withdraw/release-status用固定CHEF_PRODUCT和author_scope，旧B组合布局None兼容；已登记split必须read-only verify_complete核对精确32边界、当前/登记schema和全部已知步骤定义/范围/数量，未完成/未知/漂移拒绝，不执行DDL或回退。产品author封装复用原导入与发布事务，保持重复导入拒绝、原校验与代数/撤回规则；其他未适配数据库CLI在split先require_combined（邀请拒绝先于输出文件创建），serve/显式维护保留各自门槛。author-grants复用content-grants，仅另加三张布局账本SELECT，专用非所有者维护登录无身份表/账本写权限；不是Web管理员证明。实际非所有者B同编号导入/暂存/激活/撤回与H完整哨兵指纹不变、外ID拒绝、缺失/未知/漂移零新增课源通过。H写CLI/serve仍关闭，余下配音/账号CLI、语言中立/真实H及完整上线继续，生产/pin不变；实现模板/测试仅Chef。
 
 素材/录音CLI布局补充：assets-import/audio-import进入同一author_scope完整账本检查，media/recording新增薄author封装传固定产品到原import_bundle_impl；图片/角色/录音的校验、物理hash存储、不可变登记和事务不复制或降级。实际非所有者CLI在H同头像/角色/录音编号存在下登记B自身描述和来源，重复导入拒绝、H独有头像拒绝且本批图片/角色全rollback、重复批次零成员/审计、错误hash拒绝、H五表完整指纹不变；缺失/未知/漂移账本也拒绝两个导入并零新增。只用合成SVG/MP3，不调用供应商、不证明粤语或真人音色；H写CLI/serve与配音工作/账号CLI仍待迁移，生产和产品pin不动，通用实现与回归仅Chef。
+
+2026-10-08 正式双产品部署：Hargow首课rev3实际登记/直接授权/激活，生产schema分离与24布局已完成；原2账号、B全课源/公开投影/发布指针逐项保持。两产品四服务健康，HTTPS网关切换成功，旧launch/combined应用停用，无HTTP宿主端口。恢复演练验证共用账号与角色/课程/收藏/复习隔离、六录音hash/Range/头像；线上390/678无溢出/粤拼/词卡通过。见Hargow docs/production-20261008.md，旧阶段门槛保留仅作历史。CI过期启动断言与identity夹具ledger已修复，最终CI仍需读取终态。
+
