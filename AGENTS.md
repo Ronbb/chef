@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+图片与角色归属准备补充：learning_000011_product_visuals为media_assets/character_revisions/asset_import_audit添加默认B的固定产品枚举与不可变归属触发器；图片/角色复合候选键和角色到同产品头像外键立即验证。全局编号及原不可变内容保护暂保留，运行登记/查询/hydrate/validate和声音关联仍待迁移，不能开放H后台或切生产。actual split维护账本12步，三张已填充旧字段指纹不变；最后角色约束冲突整批DDL/账本回滚、双向跨产品头像具体外键拒绝、H合成登记正例事务回滚及改归属拒绝。身份/独立后台全链路保持；SQL与回归只在Chef，产品无迁移副本。
+
 独立课音频发布门槛补充：lesson_audio_reviews::Store由可信装配接收产品，课程/撤回读取、状态锁、试听决定、直接授权/相同重试及后续拒绝覆盖均固定产品，新增决定与授权显式product_id。admin::approved与音频accepted核对同产品记录，目录检查/暂存/激活、概览及编辑审核传同一上下文。actual split外产品音频状态/试听写入/直接授权404且两表计数不变；B直接授权不伪造试听、后续拒绝覆盖、正向试听/CAS/重试/撤权与发布保持。旧CLI authorize_local仍None待迁移；录音validate/素材归属及配音交付/产品局部ID尚待，H后台/生产pin保持，产品无门槛副本。
 
 独立私有预览补充：preview::Store接收部署装配的固定产品；目录/条目/课源/撤回、课程详情与预览判分只读取同产品，图片与音频先走同产品课源门槛再访问文件。actual split跨产品私有目录、课源、真实图片引用、音频路径及判分404，原B草稿预览/私有字段移除/文件与Range/no-store/撤权回归保持。legacy None不访问新列；仍待媒体录音注册归属、审批音频下层、CLI/配音交付和产品局部ID，H后台/生产pin保持，实现只Chef。
