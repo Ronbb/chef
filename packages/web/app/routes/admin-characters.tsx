@@ -9,6 +9,8 @@ import { adminWrite } from "../lib/admin.client";
 import { CharacterEditor } from "../components/admin-character-editor";
 import { ReferenceRecordingPicker } from "../components/reference-recording-picker";
 import type { Route } from "./+types/admin-characters";
+import product from "@chef/product";
+import { speechAuthoring } from "../lib/speech-authoring";
 
 export async function loader({ request }: Route.LoaderArgs) {
   const { user } = await getIdentity(request);
@@ -49,21 +51,13 @@ export function headers() {
   return { "Cache-Control": "private, no-store", Vary: "Cookie" };
 }
 
-function defaults(characterId: string): CharacterVoiceProfile {
+function defaults(characterId: string, locale: string): CharacterVoiceProfile {
   return {
-    personality: "友善、自然、礼貌",
-    speakingStyle: "Clear natural French, conversational and unhurried.",
-    defaultEmotion: "Warm, relaxed and polite.",
-    provider: "qwen",
-    model: "qwen-audio-3.1-tts-flash",
+    ...speechAuthoring(locale).profile,
     voiceId:
       characterId === "character-luc"
         ? "xunanchuan_v3.1"
         : "longanlingxin_v3.1",
-    voiceKind: "system",
-    locale: "fr-FR",
-    rate: 1,
-    referenceAudio: null,
   };
 }
 function exportProfile(item: AdminCharacterVoice | AdminCharacterVoice[]) {
@@ -82,7 +76,9 @@ function exportProfile(item: AdminCharacterVoice | AdminCharacterVoice[]) {
 export default function Characters({ loaderData }: Route.ComponentProps) {
   const dialogTitleId = useId();
   const [target, setTarget] = useState<AdminCharacterVoice | null>(null);
-  const [profile, setProfile] = useState<CharacterVoiceProfile>(defaults(""));
+  const [profile, setProfile] = useState<CharacterVoiceProfile>(
+    defaults("", product.targetLanguage),
+  );
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -96,7 +92,10 @@ export default function Characters({ loaderData }: Route.ComponentProps) {
   function open(item: AdminCharacterVoice) {
     setTarget(item);
     setProfile(
-      structuredClone(item.profile ?? defaults(item.character.characterId)),
+      structuredClone(
+        item.profile ??
+          defaults(item.character.characterId, item.character.speechLocale),
+      ),
     );
     setReason("");
     setError("");

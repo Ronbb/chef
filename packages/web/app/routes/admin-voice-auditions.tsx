@@ -3,7 +3,8 @@ import { Link, data, useLocation, useRevalidator } from "react-router";
 import { useId, useEffect, useRef, useState } from "react";
 import type { AdminCharacterVoice } from "@brioche/contracts/AdminCharacterVoice";
 import type { CharacterVoiceProfile } from "@brioche/contracts/CharacterVoiceProfile";
-import { QWEN_FRENCH_SYSTEM_VOICES } from "@brioche/contracts/tts-voices";
+import product from "@chef/product";
+import { speechAuthoring } from "../lib/speech-authoring";
 import { ChoiceDialog } from "../components/choice-dialog";
 import type { AdminAudition } from "@brioche/contracts/AdminAudition";
 import type { AdminAuditions } from "@brioche/contracts/AdminAuditions";
@@ -81,24 +82,13 @@ const labels: Record<string, string> = {
   unknown: "生成结果未确认，请先核对提供方记录",
   failed: "提供方拒绝了这次请求",
 };
-const voiceChoices = QWEN_FRENCH_SYSTEM_VOICES.map(([value, label]) => ({
-  value,
-  label,
-  detail: "法语 · Flash 3.1",
-}));
-const defaultProfile: CharacterVoiceProfile = {
-  personality: "Friendly and thoughtful.",
-  speakingStyle: "Natural, clear French at a calm pace.",
-  defaultEmotion: "Warm and relaxed.",
-  provider: "qwen",
-  model: "qwen-audio-3.1-tts-flash",
-  voiceId: QWEN_FRENCH_SYSTEM_VOICES[0][0],
-  voiceKind: "system",
-  locale: "fr-FR",
-  rate: 1,
-  referenceAudio: null,
-};
 export default function Auditions({ loaderData }: Route.ComponentProps) {
+  const language = speechAuthoring(
+    loaderData.characterSource?.character.speechLocale ??
+      product.targetLanguage,
+  );
+  const defaultProfile = language.profile;
+  const voiceChoices = language.voices;
   const dialogTitleId = useId();
   const location = useLocation(),
     heading = usePageCursorFocus(location.search),
@@ -110,12 +100,8 @@ export default function Auditions({ loaderData }: Route.ComponentProps) {
     attempt = useRef<AdminAuditionRequest | null>(null);
   const openDialog = useCommittedDialog(dialog);
   const [mode, setMode] = useState<"create" | AdminAudition | null>(null),
-    [text, setText] = useState(
-      "Bonjour ! Je voudrais une baguette, s’il vous plaît. C’est combien ? Merci, au revoir !",
-    ),
-    [emotion, setEmotion] = useState(
-      "Warm greeting, polite request, curious question, then a pleased farewell.",
-    ),
+    [text, setText] = useState(language.sampleText),
+    [emotion, setEmotion] = useState(language.sampleEmotion),
     [reason, setReason] = useState(""),
     [consent, setConsent] = useState(false),
     [accepted, setAccepted] = useState(true),
@@ -180,6 +166,7 @@ export default function Auditions({ loaderData }: Route.ComponentProps) {
         ...previous,
         provider: defaultProfile.provider,
         model: defaultProfile.model,
+        locale: defaultProfile.locale,
         voiceKind: "system",
         referenceAudio: null,
         voiceId: voiceChoices.some((v) => v.value === previous?.voiceId)
@@ -353,7 +340,7 @@ export default function Auditions({ loaderData }: Route.ComponentProps) {
               </p>
             </div>
           </header>
-          <p>选择法语系统音色与角色语气，试听后再确认新声音。</p>
+          <p>选择{language.label}系统音色与角色语气，试听后再确认新声音。</p>
           {loaderData.configured && (
             <button
               className="secondary"
@@ -491,9 +478,9 @@ export default function Auditions({ loaderData }: Route.ComponentProps) {
             <>
               {loaderData.characterSource && (
                 <fieldset className="audition-decision">
-                  <legend>候选声音 · Flash 3.1 · 法语</legend>
+                  <legend>候选声音 · Flash 3.1 · {language.label}</legend>
                   <ChoiceDialog
-                    title="法语音色"
+                    title={`${language.label}音色`}
                     value={profile.voiceId}
                     choices={voiceChoices}
                     disabled={pending || attempted}
@@ -571,7 +558,7 @@ export default function Auditions({ loaderData }: Route.ComponentProps) {
                 </fieldset>
               )}
               <label>
-                法语台词
+                {language.label}台词
                 <textarea
                   name="auditionText"
                   required

@@ -308,7 +308,7 @@ export default function SpeechPlans({
           )}
           <p>
             {current.targets.length} 个内容片段 · {current.requestCount}{" "}
-            次独立生成 · {current.totalRequestCharacters} 个法语字符
+            次独立生成 · {current.totalRequestCharacters} 个字符
           </p>
           <p className="admin-note">
             相同配音请求已合并。此处只核对计划，保存不会触发收费合成。

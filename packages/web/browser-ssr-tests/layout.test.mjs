@@ -3982,3 +3982,100 @@ test("speech alignment imports and human corrections preserve exact requests aft
     await browser("cookies", "clear");
   }
 });
+
+test("operator configures a Cantonese role and auditions Cantonese defaults without overwriting the fixed voice", async () => {
+  accounts = true;
+  operatorAccount = true;
+  adminWrites = [];
+  voiceAuditions = [];
+  auditionLostReply = false;
+  voiceJob = null;
+  characterVoice = {
+    ...voiceSeed.items[0],
+    character: {
+      ...voiceSeed.items[0].character,
+      speechLocale: "yue-Hant-HK",
+      displayName: "阿欣",
+    },
+    voiceRevision: 0,
+    profile: null,
+  };
+  try {
+    await browser("open", origin + "/");
+    await browser("cookies", "set", "brioche.sid", "shell-a");
+    await browser("set", "viewport", "390", "844");
+    await browser("open", origin + "/admin/characters");
+    await browser("wait", "--text", "配置声音档案");
+    const snapshot = await browser("snapshot", "-i");
+    const edit = Object.entries(snapshot.refs).find(
+      ([, item]) => item.role === "button" && item.name === "配置声音档案",
+    )?.[0];
+    assert.ok(edit);
+    await browser("click", "@" + edit);
+    await browser("wait", ".admin-dialog[open]");
+    assert.match(
+      await evaluate(
+        "document.querySelectorAll('.admin-dialog[open] textarea')[1].value",
+      ),
+      /Hong Kong Cantonese/,
+    );
+    await browser(
+      "fill",
+      ".admin-dialog[open] form > label:last-of-type input",
+      "Synthetic Cantonese profile test",
+    );
+    await browser("focus", ".admin-dialog[open] .primary");
+    await browser("press", "Enter");
+    await browser("wait", "--text", "声音档案已保存为新版本。");
+    assert.equal(adminWrites[0].profile.locale, "yue-Hant-HK");
+    const saved = structuredClone(characterVoice.profile);
+    await browser(
+      "open",
+      origin +
+        "/admin/voice-auditions?characterId=character-camille&characterRevision=1",
+    );
+    await browser("wait", "--text", "生成一段试听");
+    const auditionSnapshot = await browser("snapshot", "-i");
+    const create = Object.entries(auditionSnapshot.refs).find(
+      ([, item]) => item.role === "button" && item.name === "生成一段试听",
+    )?.[0];
+    assert.ok(create);
+    await browser("click", "@" + create);
+    await browser("wait", "textarea[name=auditionText]");
+    const sample = await evaluate(
+      "document.querySelector('[name=auditionText]').value",
+    );
+    assert.match(sample, /唔該/);
+    assert.doesNotMatch(sample, /Bonjour/);
+    assert.equal(
+      await evaluate(
+        "document.querySelector('.admin-dialog[open]').textContent.includes('粤语台词')",
+      ),
+      true,
+    );
+    assert.equal(
+      await evaluate("document.querySelector('[name=candidateStyle]').value"),
+      saved.speakingStyle,
+    );
+    await browser(
+      "fill",
+      "textarea[name=auditionReason]",
+      "Synthetic Cantonese request only",
+    );
+    await browser("check", "input[name=auditionConsent]");
+    await browser("focus", ".admin-dialog[open] .primary");
+    await browser("press", "Enter");
+    await browser("wait", "--text", "试听已生成");
+    assert.equal(adminWrites.length, 2);
+    assert.equal(adminWrites[1].candidate.expectedVoiceRevision, 1);
+    assert.equal(adminWrites[1].candidate.profile.locale, "yue-Hant-HK");
+    assert.equal(adminWrites[1].text, sample);
+    assert.deepEqual(characterVoice.profile, saved);
+    assert.equal(characterVoice.voiceRevision, 1);
+  } finally {
+    accounts = false;
+    operatorAccount = false;
+    voiceAuditions = [];
+    characterVoice = { ...voiceSeed.items[0], voiceRevision: 0, profile: null };
+  }
+});
