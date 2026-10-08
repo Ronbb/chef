@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReadingText",
+  "type": "object",
+  "properties": {
+    "pronunciations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Pronunciation"
+      }
+    },
+    "text": {
+      "type": "string"
+    },
+    "words": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TextRange"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "text",
+    "words"
+  ],
+  "$defs": {
+    "Pronunciation": {
+      "type": "object",
+      "properties": {
+        "range": {
+          "$ref": "#/$defs/TextRange"
+        },
+        "system": {
+          "$ref": "#/$defs/PronunciationSystem"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "range",
+        "system",
+        "text"
+      ]
+    },
+    "PronunciationSystem": {
+      "type": "string",
+      "enum": [
+        "ipa",
+        "jyutping"
+      ]
+    },
+    "TextRange": {
+      "type": "object",
+      "properties": {
+        "end": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ]
+    }
+  }
+}

@@ -71,6 +71,9 @@ macro_rules! dto {
         pub struct $name { $($(#[$meta])* pub $field: $ty),* }
     };
 }
+mod reading;
+pub use reading::{Pronunciation, PronunciationSystem, ReadingText, TargetLanguage, TextRange};
+
 dto!(Title {
     fr: String,
     zh: String

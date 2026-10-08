@@ -30,6 +30,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let config = ts_rs::Config::default().with_out_dir(&out);
     PublicLesson::export_all(&config)?;
+    brioche_course_contract::ReadingText::export_all(&config)?;
+    brioche_course_contract::TargetLanguage::export_all(&config)?;
     Catalog::export_all(&config)?;
     brioche_course_contract::AdminOverview::export_all(&config)?;
     brioche_course_contract::AdminLessonAudioReview::export_all(&config)?;
@@ -117,6 +119,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(
         out.join("public-lesson.schema.json"),
         serde_json::to_string_pretty(&schemars::schema_for!(PublicLesson))?,
+    )?;
+    fs::write(
+        out.join("reading-text.schema.json"),
+        serde_json::to_string_pretty(&schemars::schema_for!(brioche_course_contract::ReadingText))?,
     )?;
     Ok(())
 }

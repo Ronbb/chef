@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+语言中立正文原语：ReadingText/TargetLanguage 的 Rust 真源与 TS/Schema 生成只 Chef；作者显式 Unicode scalar 词段，原文不归一化，粤拼独立注音且精确附着。词音区间不能越过作者范围，语言格式检查不是粤语/TTS质量证明。当前尚未贯通2.0课程/适配/API/UI，保持1.0及H运行关闭与生产/pin门槛；见 docs/language-neutral-reading.md。
+
 共享 Web 产品范围：product-runtime 从可信构建配置统一 Cookie/草稿/身份通知 namespace，Hargow 必填 hargow且与产品ID一致；账号清理只删除本产品，Brioche旧键兼容。所有生产恢复/退出调用显式传该范围，不从 URL/Host/storage 选产品。实现、实际组件/SSR与协议回归只 Chef，产品不复制业务；详见 docs/product-web-isolation.md。真实粤语/完整装配待齐，生产/pin保持。
 
 分离配音交付 CLI：alignment import、package import、lesson direct publication 先完整 author_scope 与真实 maintenance_auth，Some(product) 复用报告导入/打包快照与登记/授权事务，身份停止拒绝。package import 新 CLI 仅完整 split；原 HTTP 抽取同一内核，不复制逻辑。固定归档/哈希/实文件、不可变重试与产品范围保持，登记或授权不激活目录、不伪造 heard/timingsChecked。仅 Chef 合成隔离验证，生产/pin 不动。
