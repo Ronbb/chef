@@ -937,6 +937,11 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     ))
     .await
     .unwrap();
+    db.execute_unprepared(include_str!(
+        "../../migration/src/learning_product_voice_work.sql"
+    ))
+    .await
+    .unwrap();
     db.execute_unprepared(&format!(
         "CREATE ROLE {learner_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE"
     ))
@@ -1395,15 +1400,33 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
         .unwrap();
     learner_db.close().await.unwrap();
     identity_db.close().await.unwrap();
-    // New immutable revocation audit makes production downgrade unsafe. Preserve
-    // the guard and both records; discard only this entire owned test schema.
+    // Preserve the legacy audit downgrade guard independently of newer layout
+    // dependencies, rather than silently losing its coverage to an earlier error.
+    let audit_tx = db.begin().await.unwrap();
+    let migration = brioche_migration::Migrator::migrations()
+        .into_iter()
+        .find(|migration| migration.name() == "m20261007_000015_token_admin")
+        .unwrap();
+    let audit_downgrade = migration
+        .down(&sea_orm_migration::SchemaManager::new(&audit_tx))
+        .await
+        .unwrap_err();
+    assert!(
+        audit_downgrade
+            .to_string()
+            .contains("account_admin_audit_action_check"),
+        "{audit_downgrade}"
+    );
+    audit_tx.rollback().await.unwrap();
+    // The maintenance layout's generated source now stops the old rollback sooner.
     let downgrade = brioche_migration::Migrator::down(&db, None)
         .await
         .unwrap_err();
     assert!(
         downgrade
             .to_string()
-            .contains("account_admin_audit_action_check")
+            .contains("cannot drop column base_voice_revision"),
+        "{downgrade}"
     );
     let audit = db.query_one_raw(Statement::from_string(DbBackend::Postgres,
         "SELECT count(*)::bigint AS count FROM account_admin_audit WHERE target_email='role-grant@example.test'"))

@@ -24,6 +24,8 @@ mod product_facts;
 mod product_recordings;
 #[path = "support/product_visuals.rs"]
 mod product_visuals;
+#[path = "support/product_voice_work.rs"]
+mod product_voice_work;
 #[path = "support/product_voices.rs"]
 mod product_voices;
 mod support;
@@ -340,6 +342,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let root = assets::fixture_assets(&owner, &source).await;
     product_recordings::seed(&owner, &root).await;
     product_voices::seed(&owner, account).await;
+    product_voice_work::seed(&owner).await;
+    let voice_work_snapshot = product_voice_work::snapshot(&owner).await;
+    assert!(voice_work_snapshot.iter().all(|(n, _)| *n > 0));
     let voice_snapshot = product_voices::snapshot(&owner).await;
     assert!(voice_snapshot.iter().all(|(n, _)| *n > 0));
     let recording_snapshot = product_recordings::snapshot(&owner).await;
@@ -476,6 +481,20 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         )
         .await
         .unwrap();
+    owner.execute_unprepared("ALTER TABLE voice_audition_reviews ADD CONSTRAINT chef_audition_review_product_voice CHECK(true)").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name IN ('voice_clone_jobs','voice_auditions','voice_audition_reviews','character_voice_profiles','learning_sessions') AND column_name IN ('product_id','base_profile_revision','reference_asset_id','reference_asset_revision')) AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(
+        product_voice_work::snapshot(&owner).await,
+        voice_work_snapshot
+    );
+    owner
+        .execute_unprepared(
+            "ALTER TABLE voice_audition_reviews DROP CONSTRAINT chef_audition_review_product_voice",
+        )
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -483,7 +502,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=14 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=15 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -498,6 +517,15 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     product_recordings::verify(&owner).await;
     assert_eq!(product_voices::snapshot(&owner).await, voice_snapshot);
     product_voices::verify(&owner).await;
+    assert_eq!(
+        product_voice_work::snapshot(&owner).await,
+        voice_work_snapshot
+    );
+    product_voice_work::verify(&owner).await;
+    assert_eq!(
+        product_voice_work::snapshot(&owner).await,
+        voice_work_snapshot
+    );
     assert_eq!(product_voices::snapshot(&owner).await, voice_snapshot);
     assert_eq!(
         product_recordings::snapshot(&owner).await,
@@ -3306,9 +3334,10 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM lesson_revisions WHERE lesson_id='split-revoked-import'")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let row = owner
-        .query_one_raw(Statement::from_string(
+        .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            "SELECT count(*)::bigint AS n FROM voice_clone_events",
+            "SELECT count(*)::bigint AS n FROM voice_clone_events WHERE job_id=$1",
+            [submitted["id"].as_str().unwrap().into()],
         ))
         .await
         .unwrap()

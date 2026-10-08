@@ -79,6 +79,11 @@ const STEPS: &[Step] = &[
         identity: false,
         sql: include_str!("learning_product_voices.sql"),
     },
+    Step {
+        version: "learning_000014_product_voice_work",
+        identity: false,
+        sql: include_str!("learning_product_voice_work.sql"),
+    },
 ];
 fn error(message: &str) -> DbErr {
     DbErr::Custom(message.into())

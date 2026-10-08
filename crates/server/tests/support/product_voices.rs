@@ -72,17 +72,7 @@ pub async fn verify(db: &DatabaseConnection) {
     tx.rollback().await.unwrap();
     // Real database edges, synthetic data only; rollback all H registrations.
     let tx = db.begin().await.unwrap();
-    tx.execute_unprepared("INSERT INTO media_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size) SELECT 'hargow','voice-h-avatar',1,descriptor,provenance,sha256,extension,byte_size FROM media_assets LIMIT 1").await.unwrap();
-    tx.execute_unprepared("INSERT INTO character_revisions(product_id,character_id,revision,snapshot,avatar_id,avatar_revision) SELECT 'hargow','voice-h-character',1,snapshot,'voice-h-avatar',1 FROM character_revisions LIMIT 1").await.unwrap();
-    tx.execute_unprepared("INSERT INTO audio_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels) SELECT 'hargow','voice-h-audio',1,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels FROM audio_assets LIMIT 1").await.unwrap();
-    tx.execute_unprepared("INSERT INTO character_voice_profiles(product_id,character_id,character_revision,revision,profile,actor_id,reason) SELECT 'hargow','voice-h-character',1,1,jsonb_set(profile,'{referenceAudio,assetId}','\"voice-h-audio\"'),actor_id,reason FROM character_voice_profiles LIMIT 1").await.unwrap();
-    tx.execute_unprepared("INSERT INTO voice_reference_grants(product_id,id,token_hash,character_id,character_revision,voice_revision,asset_id,asset_revision,descriptor,reference,actor_id,reason,model,single_speaker_confirmed,expires_at) SELECT 'hargow',repeat('d',32),repeat('d',64),'voice-h-character',1,1,'voice-h-audio',1,descriptor,reference,actor_id,reason,model,single_speaker_confirmed,CURRENT_TIMESTAMP+interval '5 minutes' FROM voice_reference_grants LIMIT 1").await.unwrap();
-    tx.execute_unprepared("INSERT INTO voice_reference_revocations(product_id,grant_id,actor_id,reason) SELECT 'hargow',repeat('d',32),actor_id,reason FROM voice_reference_revocations LIMIT 1").await.unwrap();
-    tx.execute_unprepared(
-        "INSERT INTO voice_reference_reads(product_id,grant_id) VALUES('hargow',repeat('d',32))",
-    )
-    .await
-    .unwrap();
+    seed_hargow(&tx).await;
     for table in TABLES {
         let row = tx
             .query_one_raw(Statement::from_string(
@@ -137,4 +127,19 @@ pub async fn verify(db: &DatabaseConnection) {
     // Optional reference is valid for a system voice; no MATCH FULL with product_id.
     tx.execute_unprepared("INSERT INTO character_voice_profiles(product_id,character_id,character_revision,revision,profile,actor_id,reason) SELECT product_id,character_id,character_revision,3,jsonb_set(profile,'{referenceAudio}','null'),actor_id,reason FROM character_voice_profiles WHERE product_id='hargow'").await.unwrap();
     tx.rollback().await.unwrap();
+}
+
+// Shared disposable graph for ownership tests; never provider data.
+pub async fn seed_hargow(tx: &sea_orm::DatabaseTransaction) {
+    tx.execute_unprepared("INSERT INTO media_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size) SELECT 'hargow','voice-h-avatar',1,descriptor,provenance,sha256,extension,byte_size FROM media_assets LIMIT 1").await.unwrap();
+    tx.execute_unprepared("INSERT INTO character_revisions(product_id,character_id,revision,snapshot,avatar_id,avatar_revision) SELECT 'hargow','voice-h-character',1,snapshot,'voice-h-avatar',1 FROM character_revisions LIMIT 1").await.unwrap();
+    tx.execute_unprepared("INSERT INTO audio_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels) SELECT 'hargow','voice-h-audio',1,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels FROM audio_assets LIMIT 1").await.unwrap();
+    tx.execute_unprepared("INSERT INTO character_voice_profiles(product_id,character_id,character_revision,revision,profile,actor_id,reason) SELECT 'hargow','voice-h-character',1,1,jsonb_set(profile,'{referenceAudio,assetId}','\"voice-h-audio\"'),actor_id,reason FROM character_voice_profiles LIMIT 1").await.unwrap();
+    tx.execute_unprepared("INSERT INTO voice_reference_grants(product_id,id,token_hash,character_id,character_revision,voice_revision,asset_id,asset_revision,descriptor,reference,actor_id,reason,model,single_speaker_confirmed,expires_at) SELECT 'hargow',repeat('d',32),repeat('d',64),'voice-h-character',1,1,'voice-h-audio',1,descriptor,reference,actor_id,reason,model,single_speaker_confirmed,CURRENT_TIMESTAMP+interval '5 minutes' FROM voice_reference_grants LIMIT 1").await.unwrap();
+    tx.execute_unprepared("INSERT INTO voice_reference_revocations(product_id,grant_id,actor_id,reason) SELECT 'hargow',repeat('d',32),actor_id,reason FROM voice_reference_revocations LIMIT 1").await.unwrap();
+    tx.execute_unprepared(
+        "INSERT INTO voice_reference_reads(product_id,grant_id) VALUES('hargow',repeat('d',32))",
+    )
+    .await
+    .unwrap();
 }
