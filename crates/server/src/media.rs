@@ -816,6 +816,13 @@ pub(crate) fn source_refs(source: &serde_json::Value, key: &str) -> Result<Vec<A
 
 pub async fn hydrate_source<C: ConnectionTrait>(
     db: &C,
+    source: serde_json::Value,
+) -> Result<serde_json::Value> {
+    hydrate_source_for_product(db, None, source).await
+}
+pub(crate) async fn hydrate_source_for_product<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
     mut source: serde_json::Value,
 ) -> Result<serde_json::Value> {
     if source.get("assetRefs").is_none() {
@@ -826,7 +833,10 @@ pub async fn hydrate_source<C: ConnectionTrait>(
     for (index, reference) in refs.into_iter().enumerate() {
         let row = one(
             db,
-            "SELECT descriptor FROM media_assets WHERE asset_id=$1 AND revision=$2",
+            &format!(
+                "SELECT descriptor FROM media_assets WHERE asset_id=$1 AND revision=$2{}",
+                crate::learning::product_filter(product, "product_id")
+            ),
             vec![
                 reference.asset_id.into(),
                 (reference.revision as i32).into(),
@@ -842,6 +852,32 @@ pub async fn hydrate_source<C: ConnectionTrait>(
     }
     source["media"] = serde_json::Value::Array(descriptors);
     Ok(source)
+}
+// Draft imports may embed descriptors rather than assetRefs. Verify their
+// product ownership too, without requiring draft publication/file checks.
+pub(crate) async fn validate_product_references<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    lesson: &PublicLesson,
+) -> Result<()> {
+    let Some(product) = product else {
+        return Ok(());
+    };
+    for (index, asset) in lesson.media.iter().enumerate() {
+        let row = one(db,"SELECT 1 AS registered FROM media_assets WHERE product_id=$1 AND asset_id=$2 AND revision=$3",vec![product.as_str().into(),asset.asset_id.clone().into(),(asset.revision as i32).into()]).await?;
+        ensure!(
+            row.is_some(),
+            "/media/{index}/revision: visual asset revision is not registered for product"
+        );
+    }
+    for (index, character) in lesson.cast.iter().enumerate() {
+        let row = one(db,"SELECT 1 AS registered FROM character_revisions WHERE product_id=$1 AND character_id=$2 AND revision=$3",vec![product.as_str().into(),character.character_id.clone().into(),(character.revision as i32).into()]).await?;
+        ensure!(
+            row.is_some(),
+            "/cast/{index}/revision: character revision is not registered for product"
+        );
+    }
+    Ok(())
 }
 /// Publication diagnostics are local-author only; HTTP callers keep AppError.
 #[derive(Debug)]
@@ -872,12 +908,13 @@ pub async fn validate_lesson<C: ConnectionTrait>(
     lesson: &PublicLesson,
     root: &Path,
 ) -> Result<(), AppError> {
-    validate_lesson_detailed(db, lesson, root)
+    validate_lesson_detailed(db, None, lesson, root)
         .await
         .map_err(|error| error.runtime)
 }
 pub(crate) async fn validate_lesson_detailed<C: ConnectionTrait>(
     db: &C,
+    product: Option<crate::product::ProductId>,
     lesson: &PublicLesson,
     root: &Path,
 ) -> Result<(), PublicationFailure> {
@@ -902,7 +939,10 @@ pub(crate) async fn validate_lesson_detailed<C: ConnectionTrait>(
         }
         let row = one(
             db,
-            "SELECT descriptor FROM media_assets WHERE asset_id=$1 AND revision=$2",
+            &format!(
+                "SELECT descriptor FROM media_assets WHERE asset_id=$1 AND revision=$2{}",
+                crate::learning::product_filter(product, "product_id")
+            ),
             vec![
                 asset.asset_id.clone().into(),
                 (asset.revision as i32).into(),
@@ -958,7 +998,7 @@ pub(crate) async fn validate_lesson_detailed<C: ConnectionTrait>(
                 "character revision outside database range",
             ));
         }
-        let row=one(db,"SELECT snapshot,avatar_revision FROM character_revisions WHERE character_id=$1 AND revision=$2",vec![character.character_id.clone().into(),(character.revision as i32).into()]).await?
+        let row=one(db,&format!("SELECT snapshot,avatar_revision FROM character_revisions WHERE character_id=$1 AND revision=$2{}",crate::learning::product_filter(product,"product_id")),vec![character.character_id.clone().into(),(character.revision as i32).into()]).await?
             .ok_or_else(|| PublicationFailure::at(&format!("{pointer}/revision"), "character revision is not registered"))?;
         let avatar_revision = field::<i32>(&row, "avatar_revision")?;
         if field::<serde_json::Value>(&row, "snapshot")?

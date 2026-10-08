@@ -424,7 +424,7 @@ async fn checked_entries<'a>(
                         &format!("imported lesson grading validation failed: {error}"),
                     )
                 })?;
-                crate::media::validate_lesson_detailed(db, &lesson, media_root)
+                crate::media::validate_lesson_detailed(db, product, &lesson, media_root)
                     .await
                     .map_err(|error| ReleaseFailure::at(error.runtime, &path, &error.diagnostic))?;
                 source_hashes.push(hash(&source)?);
@@ -687,7 +687,7 @@ async fn activate_impl(
                 "release contains a lesson that is no longer approved",
             ));
         }
-        crate::media::validate_lesson_detailed(&tx, &lesson, media_root)
+        crate::media::validate_lesson_detailed(&tx, product, &lesson, media_root)
             .await
             .map_err(|error| ReleaseFailure {
                 runtime: error.runtime,

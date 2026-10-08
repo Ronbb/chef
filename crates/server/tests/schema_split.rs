@@ -3419,6 +3419,100 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .0,
         400
     );
+    owner.execute_unprepared("INSERT INTO media_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size) SELECT 'hargow','foreign-course-illustration',1,jsonb_set(descriptor,'{assetId}','\"foreign-course-illustration\"'),provenance,sha256,extension,byte_size FROM media_assets WHERE asset_id='art-bakery-morning' AND revision=1").await.unwrap();
+    let mut foreign_visual_source: serde_json::Value = serde_json::from_str(
+        &imported_source
+            .to_string()
+            .replace("art-bakery-morning", "foreign-course-illustration"),
+    )
+    .unwrap();
+    foreign_visual_source["id"] = "brioche-foreign-visual-source".into();
+    chef_engine::validate_source_schema(foreign_visual_source.clone()).unwrap();
+    let hydrated = chef_engine::media::hydrate_source(&owner, foreign_visual_source.clone())
+        .await
+        .unwrap();
+    let mixed_lesson = chef_engine::project_source(hydrated.clone()).unwrap();
+    // The descriptor and on-disk object are valid in the legacy global registry:
+    // only product ownership should prevent this course from being accepted.
+    chef_engine::media::validate_lesson(&owner, &mixed_lesson, &root)
+        .await
+        .unwrap();
+    let visual_document = serde_json::json!({"document":foreign_visual_source.to_string(),"reason":"Foreign visual source rejected"});
+    let (status, report) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/documents/lesson/check",
+        Some(visual_document.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["valid"], false);
+    assert_eq!(report["issue"]["pointer"], "/assetRefs/0/revision");
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/lessons/import",
+            Some(visual_document),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    let mut embedded = hydrated;
+    embedded.as_object_mut().unwrap().remove("assetRefs");
+    embedded["id"] = "brioche-foreign-embedded-visual".into();
+    chef_engine::validate_source_schema(embedded.clone()).unwrap();
+    let (status, report) = request(&content_app,"POST","/api/v1/operator/documents/lesson/check",Some(serde_json::json!({"document":embedded.to_string(),"reason":"Embedded foreign visual rejected"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["valid"], false);
+    assert_eq!(report["issue"]["pointer"], "/media/0/revision");
+    assert_eq!(request(&content_app,"POST","/api/v1/operator/lessons/import",Some(serde_json::json!({"document":embedded.to_string(),"reason":"Embedded foreign import rejected"})),&mut cookie,&mut csrf).await.0,400);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM lesson_revisions WHERE lesson_id IN ('brioche-foreign-visual-source','brioche-foreign-embedded-visual'))+(SELECT count(*) FROM lesson_import_audit WHERE lesson_id IN ('brioche-foreign-visual-source','brioche-foreign-embedded-visual')) AS n")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    owner.execute_unprepared("INSERT INTO media_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size) SELECT 'hargow','foreign-cast-avatar',1,jsonb_set(descriptor,'{assetId}','\"foreign-cast-avatar\"'),provenance,sha256,extension,byte_size FROM media_assets WHERE asset_id='avatar-camille-v1' AND revision=1").await.unwrap();
+    owner.execute_unprepared("INSERT INTO character_revisions(product_id,character_id,revision,snapshot,avatar_id,avatar_revision) SELECT 'hargow','foreign-cast-member',1,jsonb_set(jsonb_set(snapshot,'{characterId}','\"foreign-cast-member\"'),'{avatarId}','\"foreign-cast-avatar\"'),'foreign-cast-avatar',1 FROM character_revisions WHERE character_id='character-camille' AND revision=1").await.unwrap();
+    let mut foreign_cast_source: serde_json::Value = serde_json::from_str(
+        &imported_source
+            .to_string()
+            .replace("\"character-camille\"", "\"foreign-cast-member\""),
+    )
+    .unwrap();
+    foreign_cast_source["id"] = "brioche-foreign-cast-source".into();
+    chef_engine::validate_source_schema(foreign_cast_source.clone()).unwrap();
+    chef_engine::project_source(foreign_cast_source.clone()).unwrap();
+    let cast_document = serde_json::json!({"document":foreign_cast_source.to_string(),"reason":"Foreign cast source rejected"});
+    let (status, report) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/documents/lesson/check",
+        Some(cast_document.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["valid"], false);
+    assert_eq!(report["issue"]["pointer"], "/cast/0/revision");
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/lessons/import",
+            Some(cast_document),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM lesson_revisions WHERE lesson_id='brioche-foreign-cast-source')+(SELECT count(*) FROM lesson_import_audit WHERE lesson_id='brioche-foreign-cast-source') AS n")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let mut h_lesson = lesson.clone();
     let (status, admin_before) = request(
         &content_app,

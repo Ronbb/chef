@@ -43,10 +43,11 @@ pub(crate) async fn check_registered(
             other => Err(other),
         };
     }
-    let source = match crate::media::hydrate_source(db, document.value.clone()).await {
-        Ok(source) => source,
-        Err(error) => return issue(document, error, "图片素材未登记，或引用版本不存在。"),
-    };
+    let source =
+        match crate::media::hydrate_source_for_product(db, product, document.value.clone()).await {
+            Ok(source) => source,
+            Err(error) => return issue(document, error, "图片素材未登记，或引用版本不存在。"),
+        };
     let source = match crate::recording::hydrate_source(db, source).await {
         Ok(source) => source,
         Err(error) => return issue(document, error, "录音未登记，或引用版本不存在。"),
@@ -55,7 +56,7 @@ pub(crate) async fn check_registered(
         Ok(lesson) => lesson,
         Err(error) => return issue(document, error, "登记素材与课程结构或引用不匹配。"),
     };
-    if let Err(error) = crate::media::validate_lesson_detailed(db, &lesson, root).await {
+    if let Err(error) = crate::media::validate_lesson_detailed(db, product, &lesson, root).await {
         match error.runtime {
             AppError::InvalidInput => {
                 let pointer = error
@@ -163,10 +164,11 @@ async fn import_product_transaction(
     check_owner(db, product, &source).await?;
     crate::media::source_asset_refs(&source)?;
     crate::recording::source_audio_refs(&source)?;
-    let source = crate::media::hydrate_source(db, source).await?;
+    let source = crate::media::hydrate_source_for_product(db, product, source).await?;
     let source = crate::recording::hydrate_source(db, source).await?;
     let lesson = crate::project_source(source.clone())?;
     crate::grading::Grader::from_author_source(&lesson, &source)?;
+    crate::media::validate_product_references(db, product, &lesson).await?;
     // Serialize import retries by their immutable identity, independent of the directory lock.
     exec(
         db,
