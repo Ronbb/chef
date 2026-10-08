@@ -44,9 +44,16 @@ impl CsrfPolicy {
         let Ok(parsed) = url::Url::parse(origin) else {
             return false;
         };
-        // Require an actual serialized browser origin before dropping its port.
-        // Do not accept credentials, paths, queries or fragments as origins.
-        if parsed.origin().ascii_serialization() != origin {
+        // Validate the raw origin shape before URL normalization drops ports or paths.
+        // Explicit default ports are valid too; credentials and URL components are not.
+        let Some((scheme, authority)) = origin.split_once("://") else {
+            return false;
+        };
+        if !matches!(scheme, "http" | "https")
+            || authority.is_empty()
+            || authority.contains(['/', '\\', '?', '#', '@'])
+            || origin.chars().any(char::is_whitespace)
+        {
             return false;
         }
         self.origins.contains(&host_origin(parsed))
@@ -155,6 +162,7 @@ mod tests {
         assert!(policy.allows("http://localhost"));
         assert!(policy.allows("https://brioche.example:8443"));
         assert!(policy.allows("https://brioche.example:30075"));
+        assert!(policy.allows("https://brioche.example:443"));
         assert!(policy.allows("https://hargow.example"));
         assert!(policy.allows("https://hargow.example:8443"));
         assert!(policy.allows("http://[::1]:30075"));
@@ -169,6 +177,8 @@ mod tests {
             "https://brioche.example:8443?x",
             "https://brioche.example:8443#x",
             "https://brioche.example:99999",
+            "https://brioche.example:8443\\path",
+            " https://brioche.example",
         ] {
             assert!(!policy.allows(origin));
         }
