@@ -87,6 +87,25 @@ impl Client {
             permits: std::sync::Arc::new(tokio::sync::Semaphore::new(32)),
         })
     }
+    pub(crate) async fn authorize(
+        &self,
+        headers: &HeaderMap,
+        method: &str,
+    ) -> Result<RemoteAuthorization, AppError> {
+        let identity = self.verify(headers, method).await?;
+        let mut retained = HeaderMap::new();
+        for name in ["cookie", "origin", "x-csrf-token"] {
+            for value in headers.get_all(name) {
+                retained.append(name, value.clone());
+            }
+        }
+        Ok(RemoteAuthorization {
+            client: self.clone(),
+            headers: retained,
+            method: method.to_owned(),
+            identity,
+        })
+    }
     async fn verify(&self, headers: &HeaderMap, method: &str) -> Result<SessionIdentity, AppError> {
         let _permit = self
             .permits
@@ -177,6 +196,12 @@ pub(crate) struct RemoteAuthorization {
 impl RemoteAuthorization {
     pub(crate) async fn is_operator(&self, actor: i64) -> Result<bool, AppError> {
         self.client.is_operator(actor).await
+    }
+    pub(crate) fn matches_email(&self, email: &str) -> Result<(), AppError> {
+        if crate::identity::normalize_email(email)? != self.identity.account.email {
+            return Err(AppError::Forbidden);
+        }
+        Ok(())
     }
     pub(crate) fn actor(&self) -> i64 {
         self.identity

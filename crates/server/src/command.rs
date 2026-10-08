@@ -235,6 +235,8 @@ pub async fn run() -> Result<()> {
             | "release-status"
             | "assets-import"
             | "audio-import"
+            | "speech-plan-export"
+            | "speech-plan-export-direct"
     );
     let author_product = if author_command {
         crate::schema_split::author_scope(db.as_ref().unwrap(), product).await
@@ -248,6 +250,49 @@ pub async fn run() -> Result<()> {
         }
         None
     };
+    if let Some(scope) = author_product
+        && matches!(
+            command.as_str(),
+            "speech-plan-export" | "speech-plan-export-direct"
+        )
+    {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        anyhow::ensure!(
+            args.len() == 3,
+            "usage: {command} <plan-id> <operator-email> <new-private-output.tar>"
+        );
+        let operator = crate::maintenance_auth::operator(scope, &args[1]).await?;
+        let reviewed = command == "speech-plan-export";
+        let bytes = crate::speech_export::export_author(
+            db.as_ref().unwrap(),
+            scope,
+            &operator,
+            args[0].clone(),
+            crate::media::media_root(),
+            reviewed,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Private scoped export failed; output is not confirmed"))?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        use std::io::Write;
+        let mut file = options
+            .open(&args[2])
+            .map_err(|_| anyhow::anyhow!("Private output must be a new writable file"))?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| anyhow::anyhow!("Private output was not saved completely"))?;
+        println!(
+            "{}",
+            serde_json::json!({"planId":args[0],"byteLength":bytes.len(),"reviewRequired":reviewed,"published":false})
+        );
+        return Ok(());
+    }
     match command.as_str() {
         "speech-package-automatic" => {
             let args: Vec<String> = std::env::args().skip(2).collect();

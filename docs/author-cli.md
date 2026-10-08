@@ -31,3 +31,24 @@ chef-server release-status
 素材和录音导入共用 HTTP 导入内核的文件哈希、解码、来源和不可变登记校验；角色头像必须在同一产品登记。重复版本仍拒绝，不借用另一产品的登记或来源。批次中的角色引用或重复成员失败会回滚整批数据库记录；内容寻址文件仍沿用原先的哈希存储规则，不能以物理对象存在代替登记成功。
 
 详细布局边界见 [database-schema-split.md](database-schema-split.md)。
+
+
+## 分离后的私有配音导出
+
+`chef-server speech-plan-export <plan-id> <operator-email> <new-private-output.tar>` 与 `speech-plan-export-direct` 可以使用完整 split 布局和作者数据库角色。旧组合模式继续兼容原本机入口；分离模式不构建身份 Backend，不查询 users 或 product_memberships，不允许邮箱参数作为管理员证明。Hargow 写入/运维命令的关闭门槛仍保留。
+
+分离模式使用作者连接的 DATABASE_URL、DATABASE_SCHEMA 与 CHEF_PRODUCT，以及 PUBLIC_APP_URL、IDENTITY_INTERNAL_URL、IDENTITY_INTERNAL_KEY。作者角色使用 infra/database/author-grants.sql，具备内容权限与布局账本只读权限，仍无身份表读写权限。命令在读取私有会话文件前验证完整布局账本，不能顺便自动迁移。
+
+`CHEF_OPERATOR_SESSION_FILE` 指向调用者私有目录中的 JSON，包含当前产品管理员的有效会话 Cookie 和 CSRF：
+
+```json
+{"cookie":"brioche.sid=<current-session>","csrfToken":"<current-csrf>"}
+```
+
+HTTPS 产品使用 `__Host-brioche.sid` Cookie。文件只能包含 cookie 与 csrfToken，最大 16 KiB；来源是已登录的本产品管理员会话。保护该文件，不提交到仓库；会话过期或 CSRF 轮换后重新取得当前值。内部服务密钥与浏览器会话都不能用命令参数或标准输出传递。
+
+CLI 按可信公开来源向独立身份服务核验 POST 的会话/Origin/CSRF，确认实际产品管理员，并核对真实账号邮箱与参数一致。身份不可用、非管理员、另一产品 Cookie、错误邮箱或 CSRF 均失败关闭，无缓存、重试或兼容权限回退。内部服务密钥不能单独替代管理员会话。导出事务及交付复核继续使用同一原请求身份，并在共享数据库 account-admin 锁内复核权限，避免撤权后交付。
+
+导出只能读取本产品计划与最新片段。已审听导出要求当前评价；direct 导出只要求就绪片段，不声明人工审听。归档通过最终来源/权限复核后才创建输出文件，采用 create_new，不覆盖已有文件；Unix0600，Windows使用受限私有目录。标准输出只有计划编号、字节长度、审听要求与 published=false。导出不是发布。文件写入中断可留下不完整私有文件，不自动覆盖或重试。
+
+实际隔离 schema 回归通过受限作者角色和真实独立身份服务启动 CLI 子进程，比较两种 CLI 与 HTTP 归档逐字节一致及文件哈希，验证输出不覆盖、普通成员/错误邮箱/CSRF/外产品计划拒绝且无输出、身份停止时失败。测试仍使用合成供应商与素材，不调用付费语音服务。实现、授权和测试只在 Chef，产品不复制配音逻辑，生产/产品固定版本保持。

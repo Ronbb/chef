@@ -274,6 +274,26 @@ pub async fn export_direct_for_actor(
     )
     .await
 }
+pub(crate) async fn export_author(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    operator: &crate::product_memberships::Operator,
+    id: String,
+    root: PathBuf,
+    reviewed: bool,
+) -> Result<Vec<u8>, AppError> {
+    export_policy(
+        &Store {
+            db: db.clone(),
+            product: Some(product),
+        },
+        operator,
+        id,
+        root,
+        reviewed,
+    )
+    .await
+}
 async fn export_policy(
     b: &Store,
     operator: &crate::product_memberships::Operator,

@@ -25,6 +25,7 @@ pub mod learning_identity;
 pub mod learning_store;
 pub mod lesson_audio_reviews;
 pub mod library;
+mod maintenance_auth;
 pub mod media;
 mod media_read;
 pub mod observability;

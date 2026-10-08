@@ -33,6 +33,55 @@ mod product_voices;
 mod support;
 const KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const ORIGIN: &str = "http://brioche.example.test";
+struct ExportCli {
+    db_url: String,
+    schema: String,
+    root: std::path::PathBuf,
+    identity_url: String,
+}
+impl ExportCli {
+    async fn run(
+        &self,
+        command: &str,
+        id: &str,
+        email: &str,
+        session: &str,
+        output: &str,
+    ) -> std::process::Output {
+        let db_url = self.db_url.clone();
+        let schema = self.schema.clone();
+        let root = self.root.clone();
+        let identity_url = self.identity_url.clone();
+        let args = [
+            command.to_owned(),
+            id.to_owned(),
+            email.to_owned(),
+            output.to_owned(),
+        ];
+        let session = session.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_chef-server"));
+            command
+                .env_clear()
+                .env("DATABASE_URL", db_url)
+                .env("DATABASE_SCHEMA", schema)
+                .env("CHEF_PRODUCT", "brioche")
+                .env("PUBLIC_APP_URL", ORIGIN)
+                .env("IDENTITY_INTERNAL_URL", identity_url)
+                .env("IDENTITY_INTERNAL_KEY", KEY)
+                .env("CHEF_OPERATOR_SESSION_FILE", root.join(session))
+                .env("MEDIA_ROOT", &root)
+                .current_dir(&root)
+                .args(args);
+            if let Ok(system) = std::env::var("SystemRoot") {
+                command.env("SystemRoot", system);
+            }
+            command.output().unwrap()
+        })
+        .await
+        .unwrap()
+    }
+}
 #[derive(Default)]
 struct EnrollmentFixture {
     creates: std::sync::atomic::AtomicUsize,
@@ -4584,6 +4633,38 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     }
     assert_eq!(row.try_get::<i64>("", "generated_events").unwrap(), 2);
 
+    let grants = include_str!("../../../infra/database/author-grants.sql")
+        .lines()
+        .filter(|line| !line.starts_with('\\'))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(":\"schema\"", &format!("\"{source}\""))
+        .replace(":\"role\"", &format!("\"{content_role}\""));
+    owner.execute_unprepared(&grants).await.unwrap();
+    let export_cli = ExportCli {
+        db_url: role_url(&content_role),
+        schema: source.clone(),
+        root: root.clone(),
+        identity_url: format!("http://{address}"),
+    };
+    std::fs::write(root.join(".env"), "").unwrap();
+    for (name, session, token) in [
+        ("operator-session.json", cookie.as_str(), csrf.as_str()),
+        (
+            "learner-session.json",
+            next_cookie.as_str(),
+            next_csrf.as_str(),
+        ),
+        ("bad-csrf-session.json", cookie.as_str(), "bad-csrf"),
+    ] {
+        std::fs::write(
+            root.join(name),
+            serde_json::to_vec(&serde_json::json!({"cookie":session,"csrfToken":token})).unwrap(),
+        )
+        .unwrap();
+    }
+    std::fs::write(root.join("other-product-session.json"),serde_json::to_vec(&serde_json::json!({"cookie":cookie.replace("brioche.sid=","hargow.sid="),"csrfToken":csrf})).unwrap()).unwrap();
+    std::fs::write(root.join("unknown-session.json"),serde_json::to_vec(&serde_json::json!({"cookie":cookie,"csrfToken":csrf,"product":"hargow","secret":"DO_NOT_LOG_PRIVATE_CREDENTIAL"})).unwrap()).unwrap();
     // Export must choose the current product's latest reviewed clip even when
     // another product has a newer ready receipt with the exact generation key.
     for suffix in ["export", "export-direct"] {
@@ -4623,6 +4704,98 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         assert_eq!(response.status(), 200, "{path}");
         assert_eq!(response.headers()["cache-control"], "private, no-store");
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let command = if suffix == "export" {
+            "speech-plan-export"
+        } else {
+            "speech-plan-export-direct"
+        };
+        let output_name = format!("cli-{suffix}.tar");
+        let result = export_cli
+            .run(
+                command,
+                plan_id,
+                "split@example.test",
+                "operator-session.json",
+                &output_name,
+            )
+            .await;
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let receipt: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(receipt["published"], false);
+        assert_eq!(receipt["planId"], plan_id);
+        assert!(
+            std::fs::read(root.join(&output_name)).unwrap().as_slice() == bytes.as_ref(),
+            "CLI archive must match verified HTTP export"
+        );
+        for secret in [&cookie, &csrf] {
+            assert!(!String::from_utf8_lossy(&result.stderr).contains(secret));
+        }
+        let result = export_cli
+            .run(
+                command,
+                plan_id,
+                "split@example.test",
+                "operator-session.json",
+                &output_name,
+            )
+            .await;
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("new writable file"));
+        assert!(
+            std::fs::read(root.join(&output_name)).unwrap().as_slice() == bytes.as_ref(),
+            "CLI archive must match verified HTTP export"
+        );
+        let foreign_id = "4".repeat(32);
+        for (id, email, session, name) in [
+            (
+                plan_id,
+                "other@example.test",
+                "operator-session.json",
+                "wrong-actor",
+            ),
+            (
+                plan_id,
+                "next@example.test",
+                "learner-session.json",
+                "learner",
+            ),
+            (
+                plan_id,
+                "split@example.test",
+                "bad-csrf-session.json",
+                "csrf",
+            ),
+            (
+                plan_id,
+                "split@example.test",
+                "other-product-session.json",
+                "other-product-cookie",
+            ),
+            (
+                plan_id,
+                "split@example.test",
+                "unknown-session.json",
+                "unknown-credentials",
+            ),
+            (
+                foreign_id.as_str(),
+                "split@example.test",
+                "operator-session.json",
+                "foreign",
+            ),
+        ] {
+            let name = format!("cli-{suffix}-{name}.tar");
+            let result = export_cli.run(command, id, email, session, &name).await;
+            assert!(!result.status.success());
+            assert!(!root.join(name).exists());
+            let error = String::from_utf8_lossy(&result.stderr);
+            assert!(!error.contains("DO_NOT_LOG_PRIVATE_CREDENTIAL"));
+            assert!(!error.contains("SELECT ") && !error.contains("INSERT INTO"));
+        }
         let mut archive = tar::Archive::new(std::io::Cursor::new(bytes));
         let mut members = std::collections::BTreeMap::new();
         for entry in archive.entries().unwrap() {
@@ -6752,7 +6925,19 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         ]
     );
     task.abort();
-    let _ = task.await;
+    assert!(task.await.unwrap_err().is_cancelled());
+    let result = export_cli
+        .run(
+            "speech-plan-export-direct",
+            plan_id,
+            "split@example.test",
+            "operator-session.json",
+            "identity-offline.tar",
+        )
+        .await;
+    assert!(!result.status.success());
+    assert!(!root.join("identity-offline.tar").exists());
+
     assert_eq!(
         content_app
             .clone()

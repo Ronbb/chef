@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+分离本机配音导出补充：speech-plan-export/export-direct先author_scope完整账本，再以私有CHEF_OPERATOR_SESSION_FILE的cookie/csrf和可信PUBLIC_APP_URL向独立identity核验POST，实际产品operator+邮箱一致；邮箱不授权限，无identity Backend/身份SQL/角色缓存/失败回退。私有JSON有界/严格字段，凭据不日志，内部密钥不替代会话。export_author复用HTTP export_policy的本产品快照与交付事务权限复核；完成归档后create_new私有输出，既有文件不覆盖。实际split受限角色CLI与两种HTTP归档一致，非管理员/错误邮箱/CSRF/外计划无输出、identity停止拒绝；模拟供应商计数不增加。H运维gate、其他配音CLI与完整装配仍待迁移，旧combined兼容但不用于split，生产/pin保持，实现/测试只Chef。
+
 已有账号跨产品加入补充：独立identity account_login在真实密码认证后，以固定服务器product调用enroll_authenticated；account-admin锁→共享用户行核对认证密码摘要→缺失产品learner/version1与本人加入成员审计同事务→再建立会话。重复/并发加入不改现有role/version、不重复审计，不复制全局/别产品operator；旧密码/不存在账号/错误密码/审计错误失败关闭。身份不创建学习设置/数据，兼容组合登录保持。实际非所有者HTTP与PG核心验证仅Chef；成员与会话保存不是原子提交，不声明会话失败一定无成员。新增H成员审计使legacy29降级明确拒绝保留历史，原测试改为验证此真实门槛；普通成员加入身份环节已完成，H内容serve/完整装配、配音CLI/语言中立/生产继续待完成，pin保持。
 
 首位产品管理员维护补充：chef-identity bootstrap-operator <existing-email> <reason> 仅独立身份schema、四张身份表实际所有者可执行，运行非所有者明确拒绝；不需要服务密钥/公开URL，不创建账号/密码。account-admin锁内检查本产品无现任/历史管理员，再锁共享账号，成员版本+成员审计+账号role历史同事务；history标记bootstrap/identity-table-owner，不冒充浏览器actor证明。并发至多一次、审计末步失败全部回滚、历史管理员不允许重复bootstrap，users与B成员指纹保持。真实CLI隔离验证属于Chef，普通已有账号加入产品仍待完成，H内容serve关闭；生产初始化/产品pin不推进。
