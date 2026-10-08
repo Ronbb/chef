@@ -9,7 +9,7 @@ use crate::{
 use axum::{
     Extension, Router,
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue},
     response::Response,
     routing::get,
@@ -21,10 +21,12 @@ use unicode_segmentation::UnicodeSegmentation;
 const MAX_EXPORT: usize = 128 * 1024 * 1024;
 #[derive(Clone)]
 struct Store {
+    product: Option<crate::product::ProductId>,
     db: sea_orm::DatabaseConnection,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/speech-plans/{id}/export", get(export))
@@ -32,27 +34,30 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
             "/api/v1/operator/speech-plans/{id}/export-direct",
             get(export_direct),
         )
-        .with_state(Store { db })
+        .with_state(Store { db, product })
 }
+// Legacy snapshot adapters remain for alignment/package kernels pending product migration.
+// Product HTTP export passes its trusted scope directly to snapshot_policy.
 pub(crate) async fn snapshot(db: &impl ConnectionTrait, id: &str) -> Result<Value, AppError> {
-    snapshot_policy(db, id, true).await
+    snapshot_policy(db, None, id, true).await
 }
 pub(crate) async fn snapshot_direct(
     db: &impl ConnectionTrait,
     id: &str,
 ) -> Result<Value, AppError> {
-    snapshot_policy(db, id, false).await
+    snapshot_policy(db, None, id, false).await
 }
 async fn snapshot_policy(
     db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
     id: &str,
     reviewed: bool,
 ) -> Result<Value, AppError> {
-    let plan = speech_clips::plan(db, id).await?;
+    let plan = speech_clips::plan_for_product(db, product, id).await?;
     let requests = plan["requests"].as_object().ok_or(AppError::Unavailable)?;
     let mut clips = Vec::new();
     for key in requests.keys() {
-        let row = speech_clips::latest(db, key)
+        let row = speech_clips::latest_for_product(db, product, key)
             .await?
             .ok_or(AppError::Conflict)?;
         let clip = speech_clips::item(&row)?;
@@ -160,10 +165,14 @@ pub(crate) fn pack(root: &std::path::Path, mut manifest: Value) -> Result<Vec<u8
     append(&mut builder, "manifest.json", &bytes)?;
     builder.into_inner().map_err(|_| AppError::Unavailable)
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportQuery {}
 async fn export(
     auth: AdminAuth,
     State(b): State<Store>,
     Path(id): Path<String>,
+    Query(_query): Query<ExportQuery>,
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
 ) -> Result<Response, AppError> {
@@ -173,6 +182,7 @@ async fn export_direct(
     auth: AdminAuth,
     State(b): State<Store>,
     Path(id): Path<String>,
+    Query(_query): Query<ExportQuery>,
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
 ) -> Result<Response, AppError> {
@@ -223,7 +233,17 @@ pub async fn export_for_actor(
         actor,
     )
     .await?;
-    export_policy(&Store { db: b.db.clone() }, &operator, id, root, true).await
+    export_policy(
+        &Store {
+            db: b.db.clone(),
+            product: None,
+        },
+        &operator,
+        id,
+        root,
+        true,
+    )
+    .await
 }
 /// Technical input delivery for the owner's direct publication workflow.
 /// Ready clips are required; no human listening declaration is generated.
@@ -239,7 +259,17 @@ pub async fn export_direct_for_actor(
         actor,
     )
     .await?;
-    export_policy(&Store { db: b.db.clone() }, &operator, id, root, false).await
+    export_policy(
+        &Store {
+            db: b.db.clone(),
+            product: None,
+        },
+        &operator,
+        id,
+        root,
+        false,
+    )
+    .await
 }
 async fn export_policy(
     b: &Store,
@@ -248,6 +278,9 @@ async fn export_policy(
     root: PathBuf,
     reviewed: bool,
 ) -> Result<Vec<u8>, AppError> {
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
@@ -255,7 +288,7 @@ async fn export_policy(
         b.db.begin_with_config(Some(IsolationLevel::RepeatableRead), None)
             .await
             .map_err(|_| AppError::Unavailable)?;
-    let manifest = snapshot_policy(&tx, &id, reviewed).await?;
+    let manifest = snapshot_policy(&tx, b.product, &id, reviewed).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     let expected = manifest.clone();
     let bytes = tokio::task::spawn_blocking(move || pack(&root, manifest))
@@ -266,11 +299,17 @@ async fn export_policy(
     operator.lock_content(&tx).await?;
     exec(
         &tx,
-        "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            b.product.map_or_else(
+                || "singleton".to_owned(),
+                |p| format!("product_id='{}'", p.as_str())
+            )
+        ),
         vec![],
     )
     .await?;
-    if snapshot_policy(&tx, &id, reviewed).await? != expected {
+    if snapshot_policy(&tx, b.product, &id, reviewed).await? != expected {
         return Err(AppError::Conflict);
     }
     tx.commit().await.map_err(|_| AppError::Unavailable)?;

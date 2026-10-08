@@ -4316,6 +4316,83 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     }
     assert_eq!(row.try_get::<i64>("", "generated_events").unwrap(), 2);
 
+    // Export must choose the current product's latest reviewed clip even when
+    // another product has a newer ready receipt with the exact generation key.
+    for suffix in ["export", "export-direct"] {
+        let foreign_export = format!("{plan_route}/{}/{suffix}", "4".repeat(32));
+        let (status, body) = request(
+            &content_app,
+            "GET",
+            &foreign_export,
+            None,
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, 404, "{foreign_export}: {body}");
+        let path = format!("{plan_route}/{plan_id}/{suffix}");
+        let (status, body) = request(
+            &content_app,
+            "GET",
+            &format!("{path}?product=hargow"),
+            None,
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, 400, "{body}");
+        let response = content_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&path)
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{path}");
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let mut archive = tar::Archive::new(std::io::Cursor::new(bytes));
+        let mut members = std::collections::BTreeMap::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+            assert!(members.insert(path, bytes).is_none());
+        }
+        let exported: serde_json::Value =
+            serde_json::from_slice(&members["manifest.json"]).unwrap();
+        assert_eq!(exported["planId"], plan_id);
+        assert_eq!(exported["plan"]["planHash"], preview["planHash"]);
+        let clips = exported["clips"].as_array().unwrap();
+        assert_eq!(clips.len(), keys.len());
+        assert!(clips.iter().any(|c| c["id"] == format!("{:032x}", 502)));
+        assert!(clips.iter().all(|c| c["id"] != foreign_clip_id));
+        for clip in clips {
+            for (file, hash) in [("file", "sha256"), ("providerFile", "providerSha256")] {
+                assert_eq!(
+                    format!(
+                        "{:x}",
+                        Sha256::digest(&members[clip[file].as_str().unwrap()])
+                    ),
+                    clip["result"][hash]
+                );
+            }
+            if suffix == "export" {
+                assert_eq!(clip["review"]["actorId"], account);
+            } else {
+                assert!(clip["review"].is_null());
+            }
+        }
+        if suffix == "export-direct" {
+            assert_eq!(exported["humanListeningAsserted"], false);
+        }
+    }
+
     let foreign_audition = format!("{:032x}", 201);
     let foreign_path = format!("{audition_route}/{foreign_audition}");
     for path in [foreign_path.clone(), format!("{foreign_path}/file")] {
