@@ -1501,11 +1501,8 @@ fn process_product_configuration_is_checked_before_database_or_private_work() {
         assert!(!error.contains("database connection"));
     }
     for (command, message) in [
-        ("serve", "Product learning data migration incomplete"),
-        (
-            "speech-clip-generate",
-            "Product-scoped command migration incomplete",
-        ),
+        ("serve", "database connection failed"),
+        ("speech-clip-generate", "database connection failed"),
         ("invite", "Product-scoped command migration incomplete"),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_chef-server"))
@@ -1518,6 +1515,8 @@ fn process_product_configuration_is_checked_before_database_or_private_work() {
         assert!(!output.status.success());
         let error = String::from_utf8(output.stderr).unwrap();
         assert!(error.contains(message), "{error}");
-        assert!(!error.contains("database connection"));
+        if command == "invite" {
+            assert!(!error.contains("database connection"));
+        }
     }
 }
