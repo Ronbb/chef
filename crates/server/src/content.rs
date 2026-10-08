@@ -1,9 +1,7 @@
 //! Immutable directory releases; operations are local operator CLI transactions.
 use crate::{
     AppError,
-    grading::Grader,
     learning::{exec, field, hash, one, product_filter},
-    project_source,
 };
 use brioche_course_contract::{Catalog, LessonSummary, Level, PublicLesson, Unit};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, TransactionTrait};
@@ -424,18 +422,21 @@ async fn checked_entries<'a>(
                         "imported lesson requires reviewed editorial status",
                     ));
                 }
-                let lesson = project_source(source.clone()).map_err(|error| {
-                    ReleaseFailure::at(
-                        AppError::InvalidInput,
-                        &path,
-                        &format!("imported lesson validation failed: {error}"),
-                    )
-                })?;
-                if lesson.level_id != level.id
-                    || lesson.unit_id != unit.id
-                    || lesson.id != entry.lesson_id
-                    || lesson.revision != entry.revision
-                    || serde_json::to_value(&lesson).map_err(|_| AppError::Unavailable)?
+                let lesson =
+                    crate::author_source::project_checked_source(&source).map_err(|error| {
+                        ReleaseFailure::at(
+                            AppError::InvalidInput,
+                            &path,
+                            &format!("imported lesson validation failed: {error}"),
+                        )
+                    })?;
+                if lesson.level_id() != level.id
+                    || lesson.unit_id() != unit.id
+                    || lesson.id() != entry.lesson_id
+                    || lesson.revision() != entry.revision
+                    || lesson
+                        .public_document()
+                        .map_err(|_| AppError::Unavailable)?
                         != field::<serde_json::Value>(&row, "public_document")?
                 {
                     return Err(ReleaseFailure::at(
@@ -444,14 +445,14 @@ async fn checked_entries<'a>(
                         "lesson level/unit/revision or stored public projection does not match this directory entry",
                     ));
                 }
-                Grader::from_author_source(&lesson, &source).map_err(|error| {
+                lesson.validate_private_rules(&source).map_err(|error| {
                     ReleaseFailure::at(
                         AppError::InvalidInput,
                         &path,
                         &format!("imported lesson grading validation failed: {error}"),
                     )
                 })?;
-                crate::media::validate_lesson_detailed(db, product, &lesson, media_root)
+                crate::media::validate_checked_lesson_detailed(db, product, &lesson, media_root)
                     .await
                     .map_err(|error| ReleaseFailure::at(error.runtime, &path, &error.diagnostic))?;
                 source_hashes.push(hash(&source)?);
@@ -708,30 +709,36 @@ async fn activate_impl(
     let next = generation.checked_add(1).ok_or(AppError::Unavailable)?;
     let rows=tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT r.public_document,r.server_document FROM release_entries e JOIN lesson_revisions r USING(lesson_id,revision) WHERE e.release_id=$1{}{} ORDER BY e.position",product_filter(product,"e.product_id"),product_filter(product,"r.product_id")),[id.into()])).await.map_err(|_|AppError::Unavailable)?;
     for row in rows {
-        let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
-            .map_err(|_| AppError::Unavailable)?;
-        if !crate::admin::approved(
-            &tx,
-            product,
-            &lesson.id,
-            lesson.revision,
-            &field(&row, "server_document")?,
-        )
-        .await?
+        let source: serde_json::Value = field(&row, "server_document")?;
+        let lesson =
+            crate::author_source::check_any_source(&source).map_err(|_| AppError::Unavailable)?;
+        if lesson
+            .public_document()
+            .map_err(|_| AppError::Unavailable)?
+            != field::<serde_json::Value>(&row, "public_document")?
         {
+            return Err(ReleaseFailure::at(
+                AppError::Conflict,
+                "release-id",
+                "stored public projection differs from immutable author source",
+            ));
+        }
+        if !crate::admin::approved(&tx, product, lesson.id(), lesson.revision(), &source).await? {
             return Err(ReleaseFailure::at(
                 AppError::Conflict,
                 "release-id",
                 "release contains a lesson that is no longer approved",
             ));
         }
-        crate::media::validate_lesson_detailed(&tx, product, &lesson, media_root)
+        crate::media::validate_checked_lesson_detailed(&tx, product, &lesson, media_root)
             .await
             .map_err(|error| ReleaseFailure {
                 runtime: error.runtime,
                 diagnostic: Some(format!(
                     "lesson {}@{}: {}",
-                    lesson.id, lesson.revision, error.diagnostic
+                    lesson.id(),
+                    lesson.revision(),
+                    error.diagnostic
                 )),
                 pointer: None,
             })?;

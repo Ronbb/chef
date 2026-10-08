@@ -53,6 +53,13 @@ impl CheckedLesson {
             Self::Neutral(l) => &l.audio,
         }
     }
+    pub(crate) fn validate_private_rules(&self, source: &serde_json::Value) -> Result<()> {
+        match self {
+            Self::Legacy(l) => crate::grading::Grader::from_author_source(l, source),
+            Self::Neutral(l) => crate::grading::Grader::from_neutral_author_source(l, source),
+        }
+        .map(|_| ())
+    }
     pub(crate) fn validate_public(&self) -> Result<()> {
         match self {
             Self::Legacy(l) => l.validate(),
@@ -161,23 +168,27 @@ pub fn validate_any_source_schema(source: serde_json::Value) -> Result<()> {
     }
 }
 
-/// Version dispatch belongs to offline author tooling, not an implicit API downgrade.
-pub fn check_any_source(source: &serde_json::Value) -> Result<CheckedLesson> {
+/// Projection for publication paths that report structural and private errors separately.
+pub(crate) fn project_checked_source(source: &serde_json::Value) -> Result<CheckedLesson> {
+    crate::media::source_asset_refs(source)?;
+    crate::recording::source_audio_refs(source)?;
     match source
         .get("schemaVersion")
         .and_then(serde_json::Value::as_str)
     {
-        Some("1.0") => check_source(source).map(CheckedLesson::Legacy),
-        Some("2.0") => {
-            crate::media::source_asset_refs(source)?;
-            crate::recording::source_audio_refs(source)?;
-            let lesson = project_neutral_source(source.clone())?;
-            crate::grading::Grader::from_neutral_author_source(&lesson, source)
-                .context(GRADING_CONTEXT)?;
-            Ok(CheckedLesson::Neutral(lesson))
-        }
+        Some("1.0") => crate::project_source(source.clone()).map(CheckedLesson::Legacy),
+        Some("2.0") => project_neutral_source(source.clone()).map(CheckedLesson::Neutral),
         _ => anyhow::bail!("/schemaVersion: expected supported course version 1.0 or 2.0"),
     }
+}
+
+/// Version dispatch belongs to offline author tooling, not an implicit API downgrade.
+pub fn check_any_source(source: &serde_json::Value) -> Result<CheckedLesson> {
+    let lesson = project_checked_source(source)?;
+    lesson
+        .validate_private_rules(source)
+        .context(GRADING_CONTEXT)?;
+    Ok(lesson)
 }
 pub fn check_any_lesson(document: &crate::author_json::Document) -> Result<CheckedLesson> {
     check_any_source(&document.value).map_err(|error| locate(document, error))

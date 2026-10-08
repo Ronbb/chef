@@ -533,6 +533,185 @@ mod neutral_tests {
             .is_err()
         );
         assert_eq!(totals(&db).await, json!([1, 1, 0]));
+        db.execute_unprepared("DROP TRIGGER fail_neutral_audit ON lesson_import_audit; DROP FUNCTION fail_neutral_audit()").await.unwrap();
+        // Local maintenance kernels exercise v2 publication, not H session/serve readiness.
+        let mut publish_source = private.clone();
+        publish_source["id"] = json!("neutral-publish");
+        publish_source["editorial"] = json!({"status":"reviewed","note":"Explicit synthetic author assertion, no language quality claim"});
+        publish_source["audio"] = json!([]);
+        publish_source["audioRefs"] = json!([]);
+        publish_source["audioTracks"] = json!([]);
+        import_author_product(
+            &db,
+            Some(ProductId::Hargow),
+            publish_source,
+            "protocol-test",
+            "neutral publication protocol",
+        )
+        .await
+        .unwrap();
+        let manifest: crate::content::ReleaseManifest = serde_json::from_value(json!({"schemaVersion":"1.0","id":"neutral-release","levels":[{"id":"starter","label":"合成等级","units":[{"id":"greetings","titleZh":"合成单元","lessons":[{"lessonId":"neutral-publish","revision":1}]}]}]})).unwrap();
+        let manifest_file = root.join("release.json");
+        std::fs::write(&manifest_file, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let manifest_document = crate::author_json::Document::load(&manifest_file).unwrap();
+        assert!(
+            crate::content::check_registered_release(
+                &db,
+                Some(ProductId::Hargow),
+                &manifest_document,
+                &root
+            )
+            .await
+            .unwrap()
+            .valid
+        );
+        let before = totals(&db).await;
+        assert!(
+            crate::content::stage_author_product(
+                &db,
+                Some(ProductId::Brioche),
+                &manifest,
+                "protocol-test",
+                "foreign source",
+                &root
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(totals(&db).await, before);
+        crate::content::stage_author_product(
+            &db,
+            Some(ProductId::Hargow),
+            &manifest,
+            "protocol-test",
+            "neutral stage",
+            &root,
+        )
+        .await
+        .unwrap();
+        let visual_object = root.join(format!("{avatar_sha}.svg"));
+        std::fs::write(&visual_object, b"corrupted").unwrap();
+        let before = totals(&db).await;
+        assert!(
+            crate::content::activate_author_product(
+                &db,
+                Some(ProductId::Hargow),
+                "neutral-release",
+                0,
+                "protocol-test",
+                "corrupted publication",
+                &root
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(totals(&db).await, before);
+        let state = one(
+            &db,
+            "SELECT generation FROM content_state WHERE product_id='hargow'",
+            vec![],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(field::<i64>(&state, "generation").unwrap(), 0);
+        std::fs::write(&visual_object, &avatar).unwrap();
+        assert_eq!(
+            crate::content::activate_author_product(
+                &db,
+                Some(ProductId::Hargow),
+                "neutral-release",
+                0,
+                "protocol-test",
+                "neutral activation",
+                &root
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        let state = one(
+            &db,
+            "SELECT generation,active_release FROM content_state WHERE product_id='hargow'",
+            vec![],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(field::<i64>(&state, "generation").unwrap(), 1);
+        assert_eq!(
+            field::<String>(&state, "active_release").unwrap(),
+            "neutral-release"
+        );
+        let brioche = one(
+            &db,
+            "SELECT generation,active_release FROM content_state WHERE product_id='brioche'",
+            vec![],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(field::<i64>(&brioche, "generation").unwrap(), 0);
+        assert!(
+            field::<Option<String>>(&brioche, "active_release")
+                .unwrap()
+                .is_none()
+        );
+        let published = one(&db,"SELECT published,public_document FROM lesson_revisions WHERE product_id='hargow' AND lesson_id='neutral-publish'",vec![]).await.unwrap().unwrap();
+        assert!(field::<bool>(&published, "published").unwrap());
+        assert_eq!(
+            field::<Value>(&published, "public_document").unwrap()["targetLanguage"],
+            "yue-Hant-HK"
+        );
+        assert!(
+            crate::content::activate_author_product(
+                &db,
+                Some(ProductId::Hargow),
+                "neutral-release",
+                0,
+                "protocol-test",
+                "stale activation",
+                &root
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            crate::content::withdraw_author_product(
+                &db,
+                Some(ProductId::Hargow),
+                "neutral-publish",
+                1,
+                1,
+                "protocol-test",
+                "neutral withdrawal"
+            )
+            .await
+            .unwrap(),
+            2
+        );
+        assert!(
+            crate::content::activate_author_product(
+                &db,
+                Some(ProductId::Hargow),
+                "neutral-release",
+                2,
+                "protocol-test",
+                "withdrawn source",
+                &root
+            )
+            .await
+            .is_err()
+        );
+        let state = one(
+            &db,
+            "SELECT generation FROM content_state WHERE product_id='hargow'",
+            vec![],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(field::<i64>(&state, "generation").unwrap(), 2);
         db.close().await.unwrap();
         admin
             .execute_unprepared(&format!(

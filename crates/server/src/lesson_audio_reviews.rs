@@ -225,9 +225,14 @@ async fn authorize_for_operator(
         if published {
             return Err(AppError::Conflict);
         }
-        let lesson = crate::project_source(document).map_err(|_| AppError::Unavailable)?;
-        lesson.validate().map_err(|_| AppError::InvalidInput)?;
-        crate::recording::validate_lesson_for_product(&tx, b.product, &lesson, root).await?;
+        let lesson =
+            crate::author_source::check_any_source(&document).map_err(|_| AppError::Unavailable)?;
+        lesson
+            .validate_public()
+            .map_err(|_| AppError::InvalidInput)?;
+        crate::recording::validate_checked_lesson_detailed(&tx, b.product, &lesson, root)
+            .await
+            .map_err(|error| error.runtime)?;
         let mut values = vec![
             id.into(),
             (revision as i32).into(),
@@ -348,9 +353,14 @@ async fn review(
         return Err(AppError::Conflict);
     }
     if request.accepted {
-        let lesson = crate::project_source(source).map_err(|_| AppError::Unavailable)?;
-        lesson.validate().map_err(|_| AppError::Unavailable)?;
-        crate::recording::validate_lesson_for_product(&tx, b.product, &lesson, &root).await?;
+        let lesson =
+            crate::author_source::check_any_source(&source).map_err(|_| AppError::Unavailable)?;
+        lesson
+            .validate_public()
+            .map_err(|_| AppError::Unavailable)?;
+        crate::recording::validate_checked_lesson_detailed(&tx, b.product, &lesson, &root)
+            .await
+            .map_err(|error| error.runtime)?;
     }
     let next = i32::try_from(current.version)
         .ok()

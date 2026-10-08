@@ -2,7 +2,7 @@
 
 2026-10-08 CI 实际日志修复：管理员分页使用数据库动态未来边界，不写死日期；SSR 人工试听必须从可选入口进行，默认 primary 保持直接发布。Brioche maintenance 框架提交仅测试补丁，不部署多产品迁移。Hargow 已部署独立品牌准备页，serve-product-launch.mjs 无身份/DB/课程接口，不能视作正式 H serve 或完整双产品上线；真实粤语运行门槛保持。见 docs/ci-repair-20261008.md。
 
-课程2.0公开模型：neutral::NeutralLesson及独立TS/Schema导出只Chef；结构/媒体复用旧内核，私有字段位置视图不返回或保存，角色使用真实目标locale。旧1.0仍固定法语；2.0词音cue精确对应作者Unicode范围，不用法语空格词界。公开模型与2.0离线作者校验/私有判分已实现：check/check-release精确按版本分派，保留粤拼与作者词段，三题型共用判分内核；混合课包只作离线结构检查。2.0上传预检查、共享导入与登记素材检查已接通，严格版本投影原样入库；角色登记接受契约两种locale，课程仍核对真实目标语言。素材/角色/录音归属和真实字节检查复用内核，不激活发布。旧适配、发布/API/UI/配音仍待贯通，生产/pin与H运行门槛保持；见 docs/neutral-course-contract.md。
+课程2.0公开模型：neutral::NeutralLesson及独立TS/Schema导出只Chef；结构/媒体复用旧内核，私有字段位置视图不返回或保存，角色使用真实目标locale。旧1.0仍固定法语；2.0词音cue精确对应作者Unicode范围，不用法语空格词界。公开模型与2.0离线作者校验/私有判分已实现：check/check-release精确按版本分派，保留粤拼与作者词段，三题型共用判分内核；混合课包只作离线结构检查。2.0上传预检查、共享导入与登记素材检查已接通，严格版本投影原样入库；角色登记接受契约两种locale，课程仍核对真实目标语言。素材/角色/录音归属和真实字节检查复用内核，导入不激活发布。共享目录暂存/激活和录音发布授权已分派1.0/2.0；激活复核原课源/私有规则/公开投影与实际素材。隔离H维护内核验证2.0发布、跨产品拒绝、损坏素材回滚、CAS与硬撤回；不代表H会话写入/serve已开放。旧适配、目录/学习API/UI/配音仍待贯通，生产/pin与H运行门槛保持；见 docs/neutral-course-contract.md。
 
 语言中立正文原语：ReadingText/TargetLanguage 的 Rust 真源与 TS/Schema 生成只 Chef；作者显式 Unicode scalar 词段，原文不归一化，粤拼独立注音且精确附着。词音区间不能越过作者范围，语言格式检查不是粤语/TTS质量证明。当前尚未贯通2.0课程/适配/API/UI，保持1.0及H运行关闭与生产/pin门槛；见 docs/language-neutral-reading.md。
 
