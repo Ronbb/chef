@@ -83,6 +83,74 @@ pub(crate) async fn lock_operator<C: ConnectionTrait>(
         .map_err(|_| AppError::Unavailable)?;
     require_operator(tx, product, actor).await
 }
+/// Owner-only first product grant for an existing shared account. Never an HTTP route.
+pub(crate) async fn bootstrap_owner(
+    db: &sea_orm::DatabaseConnection,
+    product: ProductId,
+    email: &str,
+    reason: &str,
+) -> Result<(), AppError> {
+    crate::account_admin::reason(reason)?;
+    let reason = reason.trim();
+    let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
+    tx.execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
+        .await
+        .map_err(|_| AppError::Unavailable)?;
+    let owner = tx.query_one_raw(Statement::from_string(DbBackend::Postgres,
+        "SELECT count(*)::bigint AS n FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace s ON s.oid=c.relnamespace WHERE s.nspname=current_schema() AND c.relkind='r' AND c.relname IN ('users','product_memberships','product_membership_audit','account_admin_audit') AND c.relowner=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname=current_user)"))
+        .await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::Unavailable)?;
+    if owner
+        .try_get::<i64>("", "n")
+        .map_err(|_| AppError::Unavailable)?
+        != 4
+    {
+        return Err(AppError::Forbidden);
+    }
+    let history = tx.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        "SELECT EXISTS(SELECT 1 FROM product_memberships WHERE product_id=$1 AND role='operator') OR EXISTS(SELECT 1 FROM product_membership_audit WHERE product_id=$1 AND new_role='operator') OR EXISTS(SELECT 1 FROM account_admin_audit WHERE product_id=$1 AND ((action='role' AND details->>'to'='operator') OR (action='invite' AND details->>'role'='operator'))) AS used",
+        [product.as_str().into()])).await.map_err(|_| AppError::Unavailable)?.ok_or(AppError::Unavailable)?;
+    if history
+        .try_get::<bool>("", "used")
+        .map_err(|_| AppError::Unavailable)?
+    {
+        return Err(AppError::Conflict);
+    }
+    let user = tx
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT id FROM users WHERE email=$1 FOR UPDATE",
+            [email.into()],
+        ))
+        .await
+        .map_err(|_| AppError::Unavailable)?
+        .ok_or(AppError::NotFound)?;
+    let target: i64 = user.try_get("", "id").map_err(|_| AppError::Unavailable)?;
+    let previous = read(&tx, product, target).await?;
+    let next = previous
+        .version
+        .checked_add(1)
+        .filter(|v| *v <= 2147483647)
+        .ok_or(AppError::Conflict)?;
+    tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        "INSERT INTO product_memberships(product_id,user_id,role,version) VALUES($1,$2,'operator',$3) ON CONFLICT(product_id,user_id) DO UPDATE SET role=EXCLUDED.role,version=EXCLUDED.version",
+        [product.as_str().into(), target.into(), (next as i32).into()]))
+        .await.map_err(|_| AppError::Unavailable)?;
+    let old_role = if previous.version == 0 {
+        None::<String>
+    } else {
+        Some(previous.role)
+    };
+    tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        "INSERT INTO product_membership_audit(product_id,actor_id,target_id,old_role,new_role,old_version,new_version,reason) VALUES($1,$2,$2,$3,'operator',$4,$5,$6)",
+        vec![product.as_str().into(),target.into(),old_role.clone().into(),(previous.version as i32).into(),(next as i32).into(),reason.into()]))
+        .await.map_err(|_| AppError::Unavailable)?;
+    tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        "INSERT INTO account_admin_audit(action,actor_id,target_email,reason,details,product_id) VALUES('role',$1,$2,$3,$4,$5)",
+        vec![target.into(),email.into(),reason.into(),serde_json::json!({"userId":target,"from":old_role,"to":"operator","bootstrap":true,"authority":"identity-table-owner"}).into(),product.as_str().into()]))
+        .await.map_err(|_| AppError::Unavailable)?;
+    tx.commit().await.map_err(|_| AppError::Unavailable)?;
+    Ok(())
+}
 pub async fn read<C: ConnectionTrait>(
     db: &C,
     product: ProductId,

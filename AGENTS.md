@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+首位产品管理员维护补充：chef-identity bootstrap-operator <existing-email> <reason> 仅独立身份schema、四张身份表实际所有者可执行，运行非所有者明确拒绝；不需要服务密钥/公开URL，不创建账号/密码。account-admin锁内检查本产品无现任/历史管理员，再锁共享账号，成员版本+成员审计+账号role历史同事务；history标记bootstrap/identity-table-owner，不冒充浏览器actor证明。并发至多一次、审计末步失败全部回滚、历史管理员不允许重复bootstrap，users与B成员指纹保持。真实CLI隔离验证属于Chef，普通已有账号加入产品仍待完成，H内容serve关闭；生产初始化/产品pin不推进。
+
 独立身份维护 CLI 补充：chef-identity invite/reset-password 使用必填独立身份 schema 与专用非所有者身份连接，PUBLIC_APP_URL/产品只取可信配置；不得借用全局role、学习连接或HTTP证明。发行复用后台issue_operator_token事务的本产品管理员复核/邮箱锁/审计；链接只写create_new私有文件，Unix0600，文件与DB不能宣称原子，失败须检查待用令牌而不自动重发。隔离实际CLI/HTTP回归覆盖组合拒绝、最小权限、同邮箱双产品发行/审计、输出不覆盖、跨入口拒绝、H邀请仅H权限及共享重置全产品失效。首位管理员初始化/已有账号加入产品仍待完成；不更新生产或产品pin，实现与测试只Chef。
 
 可信产品启动配置补充：共享ProductId::configured统一读取应用CHEF_PRODUCT与身份进程IDENTITY_PRODUCT，仅精确brioche/hargow，缺省B兼容既有部署；空值/空白/别名/未知/非Unicode失败且不回显内容。command在任何课源/私有文件/数据库工作前校验产品与命令，H只允许离线只读作者检查，未迁移写命令拒绝；H serve在连接DB之前明确拒绝，保留内容/身份边界原关闭门槛，不能把配置贯通当H上线。应用远端identity Client、公共课程router和图片/音频router都接同一可信product，删除启动装配固定B常量。身份进程复用解析器，非Unicode不再默默回退B。实际server/identity子进程验证非法配置不回显marker、不连接不可用DB；H serve/生成/邀请提前拒绝。26作者CLI、工作区lib20契约+64server通过（2原ignored保留）、workspace check/tests/clippy通过。本轮无PG布局/真实TTS/产品业务副本/生产改动；布局CLI、产品局部编号、真正H入口及语言中立仍待完成，产品pin和生产48课保持。

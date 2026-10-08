@@ -245,10 +245,25 @@ chef-identity invite learner@example.test .local/operator-link.txt operator@exam
 chef-identity reset-password learner@example.test .local/reset-link.txt operator@example.test 'Requested password reset'
 ```
 
-`IDENTITY_PRODUCT` 只能由可信进程配置选择 brioche 或 hargow。操作邮箱必须是该产品当前管理员；全局账号角色不授予产品权限。命令复用账号后台事务内的权限复核、邮箱锁、发行逻辑和不可变审计。本机操作者仍须保护数据库凭据；审计邮箱是受信维护操作的归属，不是浏览器登录证明。此命令不能初始化首位管理员，也不允许邀请已经存在的共享账号，成员加入与首位管理员初始化仍待完成。
+`IDENTITY_PRODUCT` 只能由可信进程配置选择 brioche 或 hargow。操作邮箱必须是该产品当前管理员；全局账号角色不授予产品权限。命令复用账号后台事务内的权限复核、邮箱锁、发行逻辑和不可变审计。本机操作者仍须保护数据库凭据；审计邮箱是受信维护操作的归属，不是浏览器登录证明。邀请命令不允许邀请已经存在的共享账号；首位管理员使用下面的独立所有者入口，普通成员加入仍待完成。
 
 输出路径必须是尚不存在的私有文件，不覆盖已有文件。一次性链接包含敏感 fragment，只写文件，不写标准输出或日志；Unix 新文件权限为 0600，Windows 应使用受限的私有目录。邀请只建立发行产品的成员权限；Hargow 管理员邀请不创建 Brioche 成员，也不改变共享账号为全局管理员。密码重置只在发行产品入口接受，成功后变更共享密码并使所有产品的账号会话和重置令牌失效。
 
 数据库提交与文件写入不是同一事务。如果命令报告发行未确认，或发行完成但私有文件未保存，先通过账号后台检查待用令牌并撤销不需要的令牌，再重试；不要假定失败即未发行。命令不会自动重复发行。默认无参数或显式 `serve` 继续启动身份 HTTP 服务；服务配置与维护命令配置分开。
 
 隔离 PostgreSQL 回归使用实际非所有者授权模板、真实 CLI 子进程和身份 HTTP 路由，覆盖旧组合拒绝、无课程读取权限、全局管理员不能越权、两产品同邮箱独立发行/审计、文件不覆盖、跨产品令牌拒绝、Hargow 接受邀请不授予全局/Brioche 管理员以及共享密码重置。测试使用合成账号与私有临时输出，不访问生产。
+
+
+## 从已有共享账号初始化首位产品管理员
+
+```powershell
+chef-identity bootstrap-operator ronbiaobiao@gmail.com 'Initialize first Hargow operator'
+```
+
+使用维护用 `DATABASE_URL`、独立 `IDENTITY_DATABASE_SCHEMA` 和明确的 `IDENTITY_PRODUCT=hargow`。这个入口只用于首次建立产品管理员，不需要 PUBLIC_APP_URL、内省密钥或文件输出。数据库当前角色必须实际拥有 users、product_memberships、product_membership_audit 和 account_admin_audit 四张身份表；非所有者身份运行角色即使具有写权限，也不能使用这个入口。不要把所有者凭据配置到服务容器中。命令只操作已存在的共享账号，不新建账号或设置密码。
+
+初始化在同一 account-admin 事务锁下确认该产品没有现任管理员，也没有成员审计或账号历史中的管理员授予/邀请记录，再锁定已有账号并更新该产品成员版本。成员审计与后台账号历史在同一事务写入；后台历史使用 role 事件，并明确记录 bootstrap=true、authority=identity-table-owner。维护主体是数据库所有者，actor/target 标记被初始化的共享账号，不声明该账号已经浏览器登录或审批。共享账号、密码、全局角色、另一产品成员和学习资料都不修改。
+
+并发初始化最多成功一次。已有管理员、历史曾有管理员、邮箱不存在、非所有者或审计写入失败均拒绝；不自动重试，也不提供第二次 bootstrap 来恢复被删除的管理员。失败需核对当前成员与审计，日后管理员更换采用正常后台成员管理。该命令不能用来开放尚未完成的 Hargow 学习与内容服务。
+
+实际隔离 CLI 回归包括非所有者/不存在账号拒绝、最终账号审计插入失败时成员与成员审计全部回滚、并发两次只有一次提交、已有/历史管理员拒绝、双审计及版本一致、共享 users 与 Brioche 成员全表指纹不变。生产首位管理员尚未执行，完整装配验收前不迁移生产。

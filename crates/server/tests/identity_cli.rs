@@ -162,7 +162,7 @@ async fn identity_tokens_cli_is_product_scoped_audited_and_private() {
         .sqlx_logging(false)
         .set_schema_search_path(&identity);
     let owner = Database::connect(owner_options).await.unwrap();
-    owner.execute_unprepared("INSERT INTO users(id,email,password_hash,display_name,role) VALUES(1,'b@example.test','synthetic','B actor','learner'),(2,'global@example.test','synthetic','Global operator','operator'),(3,'h@example.test','synthetic','H actor','learner'); INSERT INTO product_memberships(product_id,user_id,role) VALUES('brioche',1,'operator'),('brioche',2,'operator'),('hargow',2,'learner'),('hargow',3,'operator'); SELECT setval('users_id_seq',3)").await.unwrap();
+    owner.execute_unprepared("INSERT INTO users(id,email,password_hash,display_name,role) VALUES(1,'b@example.test','synthetic','B actor','learner'),(2,'global@example.test','synthetic','Global operator','operator'),(3,'h@example.test','synthetic','H actor','learner'); INSERT INTO product_memberships(product_id,user_id,role) VALUES('brioche',1,'operator'),('brioche',2,'operator'),('hargow',2,'learner'),('hargow',3,'learner'); SELECT setval('users_id_seq',3)").await.unwrap();
     let mut role_url = url::Url::parse(&base).unwrap();
     role_url.set_username(&role).unwrap();
     role_url.set_password(None).unwrap();
@@ -181,6 +181,202 @@ async fn identity_tokens_cli_is_product_scoped_audited_and_private() {
             .await
             .is_err()
     );
+    let shared_before = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT md5(jsonb_agg(to_jsonb(u) ORDER BY id)::text) AS hash FROM users u",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "hash")
+        .unwrap();
+    let brioche_before=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY user_id)::text) AS hash FROM product_memberships m WHERE product_id='brioche'")).await.unwrap().unwrap().try_get::<String>("","hash").unwrap();
+    // Bootstrap is an owner maintenance exception, never a global-role authorization.
+    for (database, target) in [
+        (&cli_url, "h@example.test"),
+        (&base, "missing@example.test"),
+    ] {
+        rejection(
+            invoke(
+                database,
+                &identity,
+                &root,
+                "hargow",
+                &["bootstrap-operator", target, "First H operator"],
+            ),
+            "First operator bootstrap not confirmed",
+        );
+    }
+    owner.execute_unprepared("CREATE FUNCTION reject_bootstrap_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic audit rejection'; END $$; CREATE TRIGGER reject_bootstrap_test BEFORE INSERT ON account_admin_audit FOR EACH ROW EXECUTE FUNCTION reject_bootstrap_test()").await.unwrap();
+    rejection(
+        invoke(
+            &base,
+            &identity,
+            &root,
+            "hargow",
+            &["bootstrap-operator", "h@example.test", "First H operator"],
+        ),
+        "First operator bootstrap not confirmed",
+    );
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT role,version,(SELECT count(*) FROM product_membership_audit)::bigint AS audits FROM product_memberships WHERE product_id='hargow' AND user_id=3")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "role").unwrap(), "learner");
+    assert_eq!(row.try_get::<i32>("", "version").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "audits").unwrap(), 0);
+    owner.execute_unprepared("DROP TRIGGER reject_bootstrap_test ON account_admin_audit; DROP FUNCTION reject_bootstrap_test()").await.unwrap();
+    // The real initial shared account can have no Hargow membership at all.
+    owner
+        .execute_unprepared(
+            "DELETE FROM product_memberships WHERE product_id='hargow' AND user_id=3",
+        )
+        .await
+        .unwrap();
+    let first = tokio::task::spawn_blocking({
+        let base = base.clone();
+        let identity = identity.clone();
+        let root = root.clone();
+        move || {
+            invoke(
+                &base,
+                &identity,
+                &root,
+                "hargow",
+                &["bootstrap-operator", "h@example.test", "First H operator"],
+            )
+        }
+    });
+    let second = tokio::task::spawn_blocking({
+        let base = base.clone();
+        let identity = identity.clone();
+        let root = root.clone();
+        move || {
+            invoke(
+                &base,
+                &identity,
+                &root,
+                "hargow",
+                &["bootstrap-operator", "h@example.test", "First H operator"],
+            )
+        }
+    });
+    let (first, second) = tokio::join!(first, second);
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert!(first.status.success() != second.status.success());
+    if first.status.success() {
+        success(first);
+        rejection(second, "First operator bootstrap not confirmed");
+    } else {
+        rejection(first, "First operator bootstrap not confirmed");
+        success(second);
+    }
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT u.role AS global_role,m.role,m.version,(SELECT count(*) FROM product_memberships WHERE product_id='brioche' AND user_id=3)::bigint AS b_members,(SELECT count(*) FROM product_membership_audit WHERE product_id='hargow')::bigint AS audits FROM users u JOIN product_memberships m ON u.id=m.user_id WHERE u.id=3 AND m.product_id='hargow'")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "global_role").unwrap(), "learner");
+    assert_eq!(row.try_get::<String>("", "role").unwrap(), "operator");
+    assert_eq!(row.try_get::<i32>("", "version").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "b_members").unwrap(), 0);
+    assert_eq!(row.try_get::<i64>("", "audits").unwrap(), 1);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT actor_id,target_id,old_role,new_role,old_version,new_version,reason FROM product_membership_audit WHERE product_id='hargow'")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "actor_id").unwrap(), 3);
+    assert_eq!(row.try_get::<i64>("", "target_id").unwrap(), 3);
+    assert_eq!(row.try_get::<Option<String>>("", "old_role").unwrap(), None);
+    assert_eq!(row.try_get::<String>("", "new_role").unwrap(), "operator");
+    assert_eq!(row.try_get::<i32>("", "old_version").unwrap(), 0);
+    assert_eq!(row.try_get::<i32>("", "new_version").unwrap(), 1);
+    assert_eq!(
+        row.try_get::<String>("", "reason").unwrap(),
+        "First H operator"
+    );
+    // Even if an owner removes the current role, the historical first grant is not repeatable.
+    owner
+        .execute_unprepared(
+            "UPDATE product_memberships SET role='learner' WHERE product_id='hargow' AND user_id=3",
+        )
+        .await
+        .unwrap();
+    rejection(
+        invoke(
+            &base,
+            &identity,
+            &root,
+            "hargow",
+            &[
+                "bootstrap-operator",
+                "global@example.test",
+                "Repeated bootstrap",
+            ],
+        ),
+        "First operator bootstrap not confirmed",
+    );
+    owner.execute_unprepared("UPDATE product_memberships SET role='operator' WHERE product_id='hargow' AND user_id=3").await.unwrap();
+    rejection(
+        invoke(
+            &base,
+            &identity,
+            &root,
+            "brioche",
+            &[
+                "bootstrap-operator",
+                "global@example.test",
+                "Existing B operator",
+            ],
+        ),
+        "First operator bootstrap not confirmed",
+    );
+    // Earlier operator grants may exist only in account history (e.g. accepted invites).
+    owner.execute_unprepared("UPDATE product_memberships SET role='learner' WHERE product_id='brioche' AND user_id IN(1,2); INSERT INTO account_admin_audit(action,actor_id,target_email,reason,details,product_id) VALUES('role',1,'b@example.test','Synthetic historical grant','{\"to\":\"operator\"}','brioche')").await.unwrap();
+    rejection(
+        invoke(
+            &base,
+            &identity,
+            &root,
+            "brioche",
+            &[
+                "bootstrap-operator",
+                "global@example.test",
+                "Historical B grant",
+            ],
+        ),
+        "First operator bootstrap not confirmed",
+    );
+    owner.execute_unprepared("UPDATE product_memberships SET role='operator' WHERE product_id='brioche' AND user_id IN(1,2)").await.unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT product_id,actor_id,target_email,details FROM account_admin_audit WHERE action='role' AND product_id='hargow'")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "product_id").unwrap(), "hargow");
+    assert_eq!(row.try_get::<i64>("", "actor_id").unwrap(), 3);
+    assert_eq!(
+        row.try_get::<String>("", "target_email").unwrap(),
+        "h@example.test"
+    );
+    let details: Value = row.try_get("", "details").unwrap();
+    assert_eq!(details["bootstrap"], true);
+    assert_eq!(details["authority"], "identity-table-owner");
+    assert_eq!(
+        owner
+            .query_one_raw(Statement::from_string(
+                DbBackend::Postgres,
+                "SELECT count(*)::bigint AS n FROM account_admin_audit WHERE product_id='hargow'"
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get::<i64>("", "n")
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        owner
+            .query_one_raw(Statement::from_string(
+                DbBackend::Postgres,
+                "SELECT md5(jsonb_agg(to_jsonb(u) ORDER BY id)::text) AS hash FROM users u"
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get::<String>("", "hash")
+            .unwrap(),
+        shared_before
+    );
+    assert_eq!(owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(jsonb_agg(to_jsonb(m) ORDER BY user_id)::text) AS hash FROM product_memberships m WHERE product_id='brioche'")).await.unwrap().unwrap().try_get::<String>("","hash").unwrap(), brioche_before);
     let users_before = owner
         .query_one_raw(Statement::from_string(
             DbBackend::Postgres,
