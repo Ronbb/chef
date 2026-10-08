@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+分离语音生成 CLI：clip/audition generate 使用 author_scope 和真实 maintenance_auth，Some(product) Store 复用创建内核及同产品完成轮询，不构建身份 Backend 或按邮箱/全局 role 授权。local-cli 标记、成本确认、未知重试、精确重放与缓存音频验证保留；不发布或声明审听。测试只用合成供应商及无付费配置的实际 CLI 缓存/重放，生产和产品 pin 保持。
+
 分离配音计划 CLI：preview/save 使用完整 author_scope 与 maintenance_auth 真实本产品管理员会话，不读取身份表或以邮箱授权。Some(product) Store 复用 HTTP preview_authorized/save_for_actor，固定哈希、事务权限复核与不可变重试保留；save 理由标记 local-cli，preview 只写 create_new 私有输出。实现仅 Chef，产品不增加副本；旧组合兼容、H 写入关闭、生产与产品 pin 保持。
 
 分离本机自动打包补充：speech-package-automatic先完整author_scope，再maintenance_auth真实本产品会话核验/邮箱一致，以Some(product) Store复用assemble_authorized；不构建身份Backend或查全局role，不改旧combined/H关闭门槛。固定报告/归档SHA/计划/片段/课源全产品范围，交付前同一身份与来源事务复核；共用save_private_archive/create_new私有输出，不覆盖。实际split受限作者CLI与HTTP自动包一致，外计划/外片段/错误账号/普通成员/CSRF/identity停止无输出，六类导入/审听/直接发布表零增量及供应商计数不增加；不声明真人审听/真实对齐或粤语质量。输出/权限实现与测试只Chef，其他配音CLI/语言中立/双产品装配与最终部署继续待完成，生产/pin保持。

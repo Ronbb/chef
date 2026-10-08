@@ -6697,7 +6697,40 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let calls_before = enrollment
         .syntheses
         .load(std::sync::atomic::Ordering::SeqCst);
-    let own_audition_request = serde_json::json!({"id":foreign_audition,"candidate":{"characterId":"aaa-foreign-character-1","characterRevision":1,"expectedVoiceRevision":1,"profile":system_profile},"text":"Bonjour !","emotion":"Friendly.","costConfirmed":true,"reason":"Product-local synthetic audition"});
+    let mut own_audition_request = serde_json::json!({"id":foreign_audition,"candidate":{"characterId":"aaa-foreign-character-1","characterRevision":1,"expectedVoiceRevision":1,"profile":system_profile},"text":"Bonjour !","emotion":"Friendly.","costConfirmed":true,"reason":"Product-local synthetic audition"});
+    std::fs::write(
+        root.join("cli-audition.json"),
+        serde_json::to_vec(&own_audition_request).unwrap(),
+    )
+    .unwrap();
+    let mut unavailable_audition = own_audition_request.clone();
+    unavailable_audition["id"] = "f0".repeat(16).into();
+    std::fs::write(
+        root.join("cli-unavailable-audition.json"),
+        serde_json::to_vec(&unavailable_audition).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "voice-audition-generate".to_owned(),
+                    "cli-unavailable-audition.json".to_owned(),
+                    "split@example.test".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
+    let row = owner.query_one_raw(Statement::from_string(DbBackend::Postgres, "SELECT count(*)::bigint AS n FROM voice_auditions WHERE product_id='brioche' AND id=repeat('f0',16)")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    own_audition_request["reason"] = format!(
+        "[local-cli] {}",
+        own_audition_request["reason"].as_str().unwrap()
+    )
+    .into();
     let (status, submitted_local) = request(
         &content_app,
         "POST",
@@ -6725,6 +6758,46 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     .await;
     assert_eq!(status, 200, "{retried_local}");
     assert_eq!(retried_local, settled_local);
+    let result = export_cli
+        .execute(
+            vec![
+                "voice-audition-generate".to_owned(),
+                "cli-audition.json".to_owned(),
+                "split@example.test".to_owned(),
+            ],
+            "operator-session.json",
+        )
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let summary: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(summary["id"], settled_local["id"]);
+    assert_eq!(summary["status"], "ready");
+    assert_eq!(summary["durationMs"], settled_local["durationMs"]);
+    assert!(summary.get("profile").is_none());
+    for session in [
+        "learner-session.json",
+        "bad-csrf-session.json",
+        "other-product-session.json",
+    ] {
+        assert!(
+            !export_cli
+                .execute(
+                    vec![
+                        "voice-audition-generate".to_owned(),
+                        "cli-audition.json".to_owned(),
+                        "split@example.test".to_owned()
+                    ],
+                    session
+                )
+                .await
+                .status
+                .success()
+        );
+    }
     let mut changed = own_audition_request;
     changed["text"] = "Au revoir !".into();
     assert_eq!(
@@ -7136,6 +7209,95 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     local_clip_request["id"] = foreign_clip_id.clone().into();
     local_clip_request["planId"] = "4".repeat(32).into();
     local_clip_request["expectedPreviousId"] = reused["id"].clone();
+    std::fs::write(
+        root.join("cli-clip.json"),
+        serde_json::to_vec(&local_clip_request).unwrap(),
+    )
+    .unwrap();
+    let clip_args = vec![
+        "speech-clip-generate".to_owned(),
+        "cli-clip.json".to_owned(),
+        "split@example.test".to_owned(),
+    ];
+    for session in [
+        "learner-session.json",
+        "bad-csrf-session.json",
+        "other-product-session.json",
+    ] {
+        assert!(
+            !export_cli
+                .execute(clip_args.clone(), session)
+                .await
+                .status
+                .success()
+        );
+    }
+    let result = export_cli
+        .execute(clip_args.clone(), "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let cli_clip: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(cli_clip["id"], foreign_clip_id);
+    assert_eq!(cli_clip["status"], "ready");
+    let result = export_cli.execute(clip_args, "operator-session.json").await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
+        cli_clip
+    );
+    let mut unavailable_clip = local_clip_request.clone();
+    unavailable_clip["id"] = "f1".repeat(16).into();
+    unavailable_clip["generationKey"] = preview["targets"][1]["generationKey"].clone();
+    unavailable_clip["expectedPreviousId"] = serde_json::Value::Null;
+    unavailable_clip["costConfirmed"] = true.into();
+    std::fs::write(
+        root.join("cli-unavailable-clip.json"),
+        serde_json::to_vec(&unavailable_clip).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "speech-clip-generate".to_owned(),
+                    "cli-unavailable-clip.json".to_owned(),
+                    "split@example.test".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
+    let row = owner.query_one_raw(Statement::from_string(DbBackend::Postgres, "SELECT count(*)::bigint AS n FROM course_speech_clips WHERE product_id='brioche' AND id=repeat('f1',16)")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "speech-clip-generate".to_owned(),
+                    "cli-clip.json".to_owned(),
+                    "other@example.test".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
+    local_clip_request["reason"] = format!(
+        "[local-cli] {}",
+        local_clip_request["reason"].as_str().unwrap()
+    )
+    .into();
     let (status, local_clip) = request(
         &content_app,
         "POST",
@@ -7228,6 +7390,25 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     );
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
+    for (command, input) in [
+        ("speech-clip-generate", "cli-clip.json"),
+        ("voice-audition-generate", "cli-audition.json"),
+    ] {
+        assert!(
+            !export_cli
+                .execute(
+                    vec![
+                        command.to_owned(),
+                        input.to_owned(),
+                        "split@example.test".to_owned()
+                    ],
+                    "operator-session.json"
+                )
+                .await
+                .status
+                .success()
+        );
+    }
     assert!(
         !export_cli
             .run(

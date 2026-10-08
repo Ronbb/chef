@@ -229,22 +229,60 @@ pub async fn submit_local(
     actor: i64,
     service: Option<Service>,
     root: PathBuf,
-    mut request: AdminSpeechClipRequest,
+    request: AdminSpeechClipRequest,
 ) -> Result<AdminSpeechClip, AppError> {
-    request.reason = format!("[local-cli] {}", request.reason);
-    let id = request.id.clone();
     let operator = crate::product_memberships::require_operator(
         &b.db,
         crate::product::ProductId::Brioche,
         actor,
     )
     .await?;
-    let Json(mut result) = create_for_actor(
+    submit_authorized(
         Store {
             db: b.db.clone(),
             product: None,
         },
         &operator,
+        service,
+        root,
+        request,
+    )
+    .await
+}
+
+pub(crate) async fn submit_author(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    operator: &crate::product_memberships::Operator,
+    service: Option<Service>,
+    root: PathBuf,
+    request: AdminSpeechClipRequest,
+) -> Result<AdminSpeechClip, AppError> {
+    submit_authorized(
+        Store {
+            db: db.clone(),
+            product: Some(product),
+        },
+        operator,
+        service,
+        root,
+        request,
+    )
+    .await
+}
+
+async fn submit_authorized(
+    b: Store,
+    operator: &crate::product_memberships::Operator,
+    service: Option<Service>,
+    root: PathBuf,
+    mut request: AdminSpeechClipRequest,
+) -> Result<AdminSpeechClip, AppError> {
+    request.reason = format!("[local-cli] {}", request.reason);
+    let id = request.id.clone();
+    let Json(mut result) = create_for_actor(
+        b.clone(),
+        operator,
         service,
         root,
         Arc::new(tokio::sync::Semaphore::new(2)),
@@ -254,7 +292,7 @@ pub async fn submit_local(
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(245);
     while result.status == "submitted" && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        result = item(&load(&b.db, None, &id).await?)?;
+        result = item(&load(&b.db, b.product, &id).await?)?;
     }
     Ok(result)
 }

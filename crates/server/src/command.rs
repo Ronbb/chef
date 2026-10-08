@@ -240,6 +240,8 @@ pub async fn run() -> Result<()> {
             | "speech-package-automatic"
             | "speech-plan-preview"
             | "speech-plan-save"
+            | "speech-clip-generate"
+            | "voice-audition-generate"
     );
     let author_product = if author_command {
         crate::schema_split::author_scope(db.as_ref().unwrap(), product).await
@@ -253,6 +255,57 @@ pub async fn run() -> Result<()> {
         }
         None
     };
+    if let Some(scope) = author_product
+        && matches!(
+            command.as_str(),
+            "speech-clip-generate" | "voice-audition-generate"
+        )
+    {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        anyhow::ensure!(
+            args.len() == 2,
+            "usage: {command} <request.json> <operator-email>"
+        );
+        let operator = crate::maintenance_auth::operator(scope, &args[1]).await?;
+        let document = crate::author_json::Document::load(&args[0])?;
+        let service = crate::qwen::Service::from_env()
+            .map_err(|_| anyhow::anyhow!("Invalid TTS configuration"))?;
+        let summary = if command == "speech-clip-generate" {
+            let result = crate::speech_clips::submit_author(
+                db.as_ref().unwrap(),
+                scope,
+                &operator,
+                service,
+                crate::media::media_root(),
+                crate::author_json::from_value(document.value, "")?,
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Scoped clip not confirmed; inspect the fixed attempt before retrying"
+                )
+            })?;
+            serde_json::json!({"id":result.id,"status":result.status,"durationMs":result.duration_ms,"reviewRequired":result.accepted != Some(true)})
+        } else {
+            let result = crate::voice_auditions::submit_author(
+                db.as_ref().unwrap(),
+                scope,
+                &operator,
+                service,
+                crate::media::media_root(),
+                crate::author_json::from_value(document.value, "")?,
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Scoped audition not confirmed; inspect the fixed attempt before retrying"
+                )
+            })?;
+            serde_json::json!({"id":result.id,"status":result.status,"durationMs":result.duration_ms,"reviewRequired":true})
+        };
+        println!("{summary}");
+        return Ok(());
+    }
     if let Some(scope) = author_product
         && matches!(command.as_str(), "speech-plan-preview" | "speech-plan-save")
     {
