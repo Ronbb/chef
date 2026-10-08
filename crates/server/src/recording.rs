@@ -392,6 +392,13 @@ pub fn source_audio_refs(source: &serde_json::Value) -> Result<Vec<media::AssetR
 
 pub async fn hydrate_source<C: ConnectionTrait>(
     db: &C,
+    source: serde_json::Value,
+) -> Result<serde_json::Value> {
+    hydrate_source_for_product(db, None, source).await
+}
+pub(crate) async fn hydrate_source_for_product<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
     mut source: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let refs = source_audio_refs(&source)?;
@@ -402,7 +409,10 @@ pub async fn hydrate_source<C: ConnectionTrait>(
     for (index, reference) in refs.into_iter().enumerate() {
         let row = one(
             db,
-            "SELECT descriptor FROM audio_assets WHERE asset_id=$1 AND revision=$2",
+            &format!(
+                "SELECT descriptor FROM audio_assets WHERE asset_id=$1 AND revision=$2{}",
+                crate::learning::product_filter(product, "product_id")
+            ),
             vec![
                 reference.asset_id.into(),
                 (reference.revision as i32).into(),
@@ -420,24 +430,51 @@ pub async fn hydrate_source<C: ConnectionTrait>(
     Ok(source)
 }
 
+// Drafts with embedded audio bypass audioRefs hydration; check ownership too.
+pub(crate) async fn validate_product_references<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    lesson: &PublicLesson,
+) -> Result<()> {
+    let Some(product) = product else {
+        return Ok(());
+    };
+    for (index, asset) in lesson.audio.iter().enumerate() {
+        let row=one(db,"SELECT 1 AS registered FROM audio_assets WHERE product_id=$1 AND asset_id=$2 AND revision=$3",vec![product.as_str().into(),asset.asset_id.clone().into(),(asset.revision as i32).into()]).await?;
+        ensure!(
+            row.is_some(),
+            "/audio/{index}/revision: recording revision is not registered for product"
+        );
+    }
+    Ok(())
+}
 /// Rechecks immutable registration and stored bytes before staging/activating a release.
 pub async fn validate_lesson<C: ConnectionTrait>(
     db: &C,
     lesson: &PublicLesson,
     root: &Path,
 ) -> Result<(), crate::AppError> {
-    validate_lesson_detailed(db, lesson, root)
+    validate_lesson_for_product(db, None, lesson, root).await
+}
+pub(crate) async fn validate_lesson_for_product<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    lesson: &PublicLesson,
+    root: &Path,
+) -> Result<(), crate::AppError> {
+    validate_lesson_detailed(db, product, lesson, root)
         .await
         .map_err(|error| error.runtime)
 }
 pub(crate) async fn validate_lesson_detailed<C: ConnectionTrait>(
     db: &C,
+    product: Option<crate::product::ProductId>,
     lesson: &PublicLesson,
     root: &Path,
 ) -> Result<(), media::PublicationFailure> {
     for (index, asset) in lesson.audio.iter().enumerate() {
         let pointer = format!("/audio/{index}");
-        let row = one(db, "SELECT descriptor,provenance,byte_size,sample_rate,channels FROM audio_assets WHERE asset_id=$1 AND revision=$2", vec![asset.asset_id.clone().into(), (asset.revision as i32).into()]).await?.ok_or_else(|| media::PublicationFailure::at(&format!("{pointer}/revision"), "recording revision is not registered"))?;
+        let row = one(db, &format!("SELECT descriptor,provenance,byte_size,sample_rate,channels FROM audio_assets WHERE asset_id=$1 AND revision=$2{}",crate::learning::product_filter(product,"product_id")), vec![asset.asset_id.clone().into(), (asset.revision as i32).into()]).await?.ok_or_else(|| media::PublicationFailure::at(&format!("{pointer}/revision"), "recording revision is not registered"))?;
         if field::<serde_json::Value>(&row, "descriptor")?
             != serde_json::to_value(asset).map_err(|_| crate::AppError::Unavailable)?
         {

@@ -201,7 +201,7 @@ async fn authorize_for_operator(
         }
         let lesson = crate::project_source(document).map_err(|_| AppError::Unavailable)?;
         lesson.validate().map_err(|_| AppError::InvalidInput)?;
-        crate::recording::validate_lesson(&tx, &lesson, root).await?;
+        crate::recording::validate_lesson_for_product(&tx, b.product, &lesson, root).await?;
         let mut values = vec![
             id.into(),
             (revision as i32).into(),
@@ -324,7 +324,7 @@ async fn review(
     if request.accepted {
         let lesson = crate::project_source(source).map_err(|_| AppError::Unavailable)?;
         lesson.validate().map_err(|_| AppError::Unavailable)?;
-        crate::recording::validate_lesson(&tx, &lesson, &root).await?;
+        crate::recording::validate_lesson_for_product(&tx, b.product, &lesson, &root).await?;
     }
     let next = i32::try_from(current.version)
         .ok()

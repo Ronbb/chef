@@ -921,7 +921,7 @@ pub(crate) async fn validate_lesson_detailed<C: ConnectionTrait>(
     lesson
         .validate()
         .map_err(|_| PublicationFailure::at("/", "public lesson validation failed"))?;
-    crate::recording::validate_lesson_detailed(db, lesson, root).await?;
+    crate::recording::validate_lesson_detailed(db, product, lesson, root).await?;
     let mut ids = BTreeSet::new();
     for (index, asset) in lesson.media.iter().enumerate() {
         let pointer = format!("/media/{index}");

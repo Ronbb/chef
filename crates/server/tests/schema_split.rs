@@ -3635,6 +3635,83 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         row.try_get::<serde_json::Value>("", "descriptor").unwrap(),
         serde_json::json!({})
     );
+    owner.execute_unprepared("INSERT INTO audio_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels) SELECT 'hargow','foreign-course-recording',1,jsonb_set(descriptor,'{assetId}','\"foreign-course-recording\"'),jsonb_set(provenance,'{assetId}','\"foreign-course-recording\"'),sha256,extension,byte_size,duration_ms,sample_rate,channels FROM audio_assets WHERE asset_id='layout-recording-fixture' AND revision=1").await.unwrap();
+    let mut foreign_audio_source = imported_source.clone();
+    foreign_audio_source["id"] = "brioche-foreign-audio-source".into();
+    foreign_audio_source["audioRefs"] =
+        serde_json::json!([{"assetId":"foreign-course-recording","revision":1}]);
+    chef_engine::validate_source_schema(foreign_audio_source.clone()).unwrap();
+    let hydrated = chef_engine::media::hydrate_source(&owner, foreign_audio_source.clone())
+        .await
+        .unwrap();
+    let mut hydrated = chef_engine::recording::hydrate_source(&owner, hydrated)
+        .await
+        .unwrap();
+    hydrated["knowledge"]["vocabulary"][0]["recording"] = serde_json::json!({
+        "asset": hydrated["audio"][0], "startMs": 0, "endMs": 100
+    });
+    let mixed_audio = chef_engine::project_source(hydrated.clone()).unwrap();
+    chef_engine::media::validate_lesson(&owner, &mixed_audio, &root)
+        .await
+        .unwrap();
+    let audio_document = serde_json::json!({"document":foreign_audio_source.to_string(),"reason":"Foreign recording reference rejected"});
+    let (status, report) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/documents/lesson/check",
+        Some(audio_document.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["valid"], false);
+    assert_eq!(report["issue"]["pointer"], "/audioRefs/0/revision");
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/lessons/import",
+            Some(audio_document),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    let mut embedded_audio = hydrated;
+    embedded_audio.as_object_mut().unwrap().remove("audioRefs");
+    embedded_audio["id"] = "brioche-foreign-embedded-audio".into();
+    chef_engine::validate_source_schema(embedded_audio.clone()).unwrap();
+    let audio_document = serde_json::json!({"document":embedded_audio.to_string(),"reason":"Embedded foreign recording rejected"});
+    let (status, report) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/documents/lesson/check",
+        Some(audio_document.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["valid"], false);
+    assert_eq!(report["issue"]["pointer"], "/audio/0/revision");
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/lessons/import",
+            Some(audio_document),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM lesson_revisions WHERE lesson_id IN ('brioche-foreign-audio-source','brioche-foreign-embedded-audio'))+(SELECT count(*) FROM lesson_import_audit WHERE lesson_id IN ('brioche-foreign-audio-source','brioche-foreign-embedded-audio')) AS n")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let mut h_lesson = lesson.clone();
     let (status, admin_before) = request(
         &content_app,

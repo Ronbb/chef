@@ -48,7 +48,7 @@ pub(crate) async fn check_registered(
             Ok(source) => source,
             Err(error) => return issue(document, error, "图片素材未登记，或引用版本不存在。"),
         };
-    let source = match crate::recording::hydrate_source(db, source).await {
+    let source = match crate::recording::hydrate_source_for_product(db, product, source).await {
         Ok(source) => source,
         Err(error) => return issue(document, error, "录音未登记，或引用版本不存在。"),
     };
@@ -165,10 +165,11 @@ async fn import_product_transaction(
     crate::media::source_asset_refs(&source)?;
     crate::recording::source_audio_refs(&source)?;
     let source = crate::media::hydrate_source_for_product(db, product, source).await?;
-    let source = crate::recording::hydrate_source(db, source).await?;
+    let source = crate::recording::hydrate_source_for_product(db, product, source).await?;
     let lesson = crate::project_source(source.clone())?;
     crate::grading::Grader::from_author_source(&lesson, &source)?;
     crate::media::validate_product_references(db, product, &lesson).await?;
+    crate::recording::validate_product_references(db, product, &lesson).await?;
     // Serialize import retries by their immutable identity, independent of the directory lock.
     exec(
         db,
