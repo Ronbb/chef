@@ -3211,7 +3211,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     revoked_audition["id"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
     let mut revoked_plan = plan_request.clone();
     revoked_plan["id"] = "dddddddddddddddddddddddddddddddd".into();
-    let mut revoked_clip = clip_request;
+    let mut revoked_clip = clip_request.clone();
     revoked_clip["id"] = "99999999999999999999999999999999".into();
     revoked_clip["expectedPreviousId"] = "ffffffffffffffffffffffffffffffff".into();
     let mut revoked_alignment = alignment_request;
@@ -4159,6 +4159,163 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         history_pages(&content_app, &mut cookie, &mut csrf).await,
         "foreign auditions do not alter any history page"
     );
+
+    let clip_list_path = format!("{plan_route}/cccccccccccccccccccccccccccccccc/clips");
+    let (status, clips_before) = request(
+        &content_app,
+        "GET",
+        &clip_list_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{clips_before}");
+    let previous = clips_before["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["generationKey"] == clip_request["generationKey"])
+        .unwrap()
+        .clone();
+    let foreign_clip_id = format!("{:032x}", 501);
+    // A newer foreign ready clip has the same generation key and a genuine synthetic WAV receipt.
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO course_speech_clips(product_id,id,plan_id,generation_key,request,actor_id,reason) SELECT 'hargow',$1,repeat('4',32),generation_key,request,$2,'Foreign shared-key clip' FROM course_speech_clips WHERE id=repeat('e',32)",[foreign_clip_id.clone().into(),account.into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO course_speech_clip_events(product_id,clip_id,version,status,result) SELECT 'hargow',$1,1,'ready',result FROM course_speech_clip_events WHERE clip_id=repeat('e',32) AND version=2",[foreign_clip_id.clone().into()])).await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO course_speech_clip_reviews(product_id,clip_id,accepted,actor_id,reason) VALUES('hargow',$1,true,$2,'Foreign shared-key decision')",[foreign_clip_id.clone().into(),account.into()])).await.unwrap();
+    let (status, clips_after) = request(
+        &content_app,
+        "GET",
+        &clip_list_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{clips_after}");
+    assert_eq!(
+        clips_before, clips_after,
+        "newer foreign recording cannot replace own latest clip"
+    );
+    let foreign_clip_path = format!("{clip_route}/{foreign_clip_id}");
+    let foreign_clips_path = format!("{plan_route}/{}/clips", "4".repeat(32));
+    for path in [
+        foreign_clip_path.clone(),
+        format!("{foreign_clip_path}/file"),
+        foreign_clips_path.clone(),
+    ] {
+        let (status, body) =
+            request(&content_app, "GET", &path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 404, "{path}: {body}");
+    }
+    for path in [
+        format!("{foreign_clip_path}?product=hargow"),
+        format!("{foreign_clip_path}/file?product=hargow"),
+        format!("{foreign_clips_path}?product=hargow"),
+    ] {
+        let (status, body) =
+            request(&content_app, "GET", &path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 400, "{path}: {body}");
+    }
+    let before=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM course_speech_clips)+(SELECT count(*) FROM course_speech_clip_events)+(SELECT count(*) FROM course_speech_clip_reviews) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    let calls_before = [
+        enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment
+            .syntheses
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ];
+    let mut foreign_plan_clip = clip_request.clone();
+    foreign_plan_clip["id"] = format!("{:032x}", 503).into();
+    foreign_plan_clip["planId"] = "4".repeat(32).into();
+    let mut foreign_retry = clip_request.clone();
+    foreign_retry["id"] = foreign_clip_id.clone().into();
+    let mut foreign_previous = clip_request.clone();
+    foreign_previous["id"] = format!("{:032x}", 504).into();
+    foreign_previous["expectedPreviousId"] = foreign_clip_id.clone().into();
+    for (body, expected) in [
+        (foreign_plan_clip, 404),
+        (foreign_retry, 404),
+        (foreign_previous, 409),
+    ] {
+        let (status, result) = request(
+            &content_app,
+            "POST",
+            clip_route,
+            Some(body),
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, expected, "{result}");
+    }
+    let (status,body)=request(&content_app,"POST",&format!("{foreign_clip_path}/review"),Some(serde_json::json!({"accepted":true,"heard":true,"reason":"Synthetic foreign clip adoption rejected"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 404, "{body}");
+    let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM course_speech_clips)+(SELECT count(*) FROM course_speech_clip_events)+(SELECT count(*) FROM course_speech_clip_reviews) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    assert_eq!(
+        before, after,
+        "foreign clip attempts/retries/reviews have no writes"
+    );
+    let mut own_reuse = clip_request.clone();
+    own_reuse["id"] = format!("{:032x}", 502).into();
+    own_reuse["expectedPreviousId"] = previous["id"].clone();
+    own_reuse["costConfirmed"] = false.into();
+    let (status, reused) = request(
+        &content_app,
+        "POST",
+        clip_route,
+        Some(own_reuse.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{reused}");
+    assert_eq!(reused["status"], "ready");
+    assert_eq!(reused["reusedFrom"], serde_json::json!("e".repeat(32)));
+    assert_eq!(reused["accepted"], true);
+    let (status, receipt) = request(
+        &content_app,
+        "POST",
+        clip_route,
+        Some(own_reuse),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(receipt, reused);
+    let own_review =
+        serde_json::json!({"accepted":true,"heard":true,"reason":"Synthetic scoped reuse review"});
+    let review_path = format!("{clip_route}/{:032x}/review", 502);
+    for _ in 0..2 {
+        let (status, body) = request(
+            &content_app,
+            "POST",
+            &review_path,
+            Some(own_review.clone()),
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+    }
+    assert_eq!(
+        calls_before,
+        [
+            enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment
+                .syntheses
+                .load(std::sync::atomic::Ordering::SeqCst)
+        ],
+        "own ready reuse and foreign requests do not contact provider"
+    );
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM course_speech_clips WHERE id=lpad(to_hex(502),32,'0') AND product_id='brioche') AS clips,(SELECT count(*) FROM course_speech_clip_events WHERE clip_id=lpad(to_hex(502),32,'0') AND product_id='brioche') AS events,(SELECT count(*) FROM course_speech_clip_reviews WHERE clip_id=lpad(to_hex(502),32,'0') AND product_id='brioche') AS reviews,(SELECT count(*) FROM course_speech_clip_events WHERE clip_id=repeat('e',32) AND product_id='brioche') AS generated_events")).await.unwrap().unwrap();
+    for key in ["clips", "events", "reviews"] {
+        assert_eq!(row.try_get::<i64>("", key).unwrap(), 1);
+    }
+    assert_eq!(row.try_get::<i64>("", "generated_events").unwrap(), 2);
+
     let foreign_audition = format!("{:032x}", 201);
     let foreign_path = format!("{audition_route}/{foreign_audition}");
     for path in [foreign_path.clone(), format!("{foreign_path}/file")] {

@@ -3,13 +3,13 @@ use crate::{
     AppError,
     admin_auth::AdminAuth,
     identity::Backend,
-    learning::{exec, field, one},
+    learning::{exec, field, one, product_filter},
     qwen::{ProviderError, Service, SpeechRequest},
     voice_references::hex,
 };
 use axum::{
     Extension, Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     routing::{get, post},
 };
@@ -19,25 +19,60 @@ use brioche_course_contract::{
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, TransactionTrait};
 use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
-pub(crate) const SELECT: &str = r#"SELECT a.id,a.plan_id,a.generation_key,a.reused_from,e.result,
+fn projection(product: Option<crate::product::ProductId>) -> String {
+    let same = |column: &str| {
+        if product.is_some() {
+            format!(" AND {column}=a.product_id")
+        } else {
+            String::new()
+        }
+    };
+    format!(
+        r#"SELECT a.id,a.plan_id,a.generation_key,a.reused_from,e.result,
 CASE WHEN e.status='submitted' AND e.created_at<clock_timestamp()-interval '300 seconds' THEN 'unknown' ELSE e.status END AS status,
 COALESCE(r.accepted,original_review.accepted) AS accepted,
 COALESCE(r.actor_id,original_review.actor_id) AS review_actor,
 COALESCE(r.reason,original_review.reason) AS review_reason,
 to_char(a.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
-FROM course_speech_clips a JOIN course_speech_plans p ON p.id=a.plan_id
-LEFT JOIN course_speech_clips original ON original.id=a.reused_from
-LEFT JOIN course_speech_plans original_plan ON original_plan.id=original.plan_id
-JOIN LATERAL(SELECT * FROM course_speech_clip_events WHERE clip_id=a.id ORDER BY version DESC LIMIT 1)e ON true
-LEFT JOIN course_speech_clip_reviews r ON r.clip_id=a.id
-LEFT JOIN course_speech_clip_reviews original_review ON original_review.clip_id=original.id"#;
-pub(crate) const VISIBLE: &str = "NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(p.lesson_id,p.lesson_revision) OR (w.lesson_id,w.revision)=(original_plan.lesson_id,original_plan.lesson_revision))";
+FROM course_speech_clips a JOIN course_speech_plans p ON p.id=a.plan_id{}
+LEFT JOIN course_speech_clips original ON original.id=a.reused_from{}
+LEFT JOIN course_speech_plans original_plan ON original_plan.id=original.plan_id{}
+JOIN LATERAL(SELECT * FROM course_speech_clip_events WHERE clip_id=a.id{} ORDER BY version DESC LIMIT 1)e ON true
+LEFT JOIN course_speech_clip_reviews r ON r.clip_id=a.id{}
+LEFT JOIN course_speech_clip_reviews original_review ON original_review.clip_id=original.id{}"#,
+        same("p.product_id"),
+        same("original.product_id"),
+        same("original_plan.product_id"),
+        same("product_id"),
+        same("r.product_id"),
+        same("original_review.product_id")
+    )
+}
+fn visible(product: Option<crate::product::ProductId>) -> String {
+    format!(
+        "NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE ((w.lesson_id,w.revision)=(p.lesson_id,p.lesson_revision) OR (w.lesson_id,w.revision)=(original_plan.lesson_id,original_plan.lesson_revision)){}){}",
+        if product.is_some() {
+            " AND w.product_id=a.product_id"
+        } else {
+            ""
+        },
+        product_filter(product, "a.product_id")
+    )
+}
+fn state_scope(product: Option<crate::product::ProductId>) -> String {
+    product.map_or_else(
+        || "singleton".to_owned(),
+        |p| format!("product_id='{}'", p.as_str()),
+    )
+}
 #[derive(Clone)]
 struct Store {
+    product: Option<crate::product::ProductId>,
     db: sea_orm::DatabaseConnection,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/speech-plans/{id}/clips", get(list))
@@ -45,7 +80,7 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
         .route("/api/v1/operator/speech-clips/{id}", get(read))
         .route("/api/v1/operator/speech-clips/{id}/file", get(file))
         .route("/api/v1/operator/speech-clips/{id}/review", post(review))
-        .with_state(Store { db })
+        .with_state(Store { db, product })
 }
 pub(crate) fn item(row: &QueryResult) -> Result<AdminSpeechClip, AppError> {
     let result: Option<Value> = field(row, "result")?;
@@ -67,52 +102,89 @@ pub(crate) fn item(row: &QueryResult) -> Result<AdminSpeechClip, AppError> {
             .map(String::from),
     })
 }
-async fn load(db: &impl ConnectionTrait, id: &str) -> Result<QueryResult, AppError> {
+async fn load(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    id: &str,
+) -> Result<QueryResult, AppError> {
     if !hex(id, 32) {
         return Err(AppError::InvalidInput);
     }
     one(
         db,
-        &format!("{SELECT} WHERE a.id=$1 AND {VISIBLE}"),
+        &format!(
+            "{} WHERE a.id=$1 AND {}",
+            projection(product),
+            visible(product)
+        ),
         vec![id.into()],
     )
     .await?
     .ok_or(AppError::NotFound)
 }
+// Legacy exporters still select the combined layout until their scoped migration.
 pub(crate) async fn plan(db: &impl ConnectionTrait, id: &str) -> Result<Value, AppError> {
+    plan_for_product(db, None, id).await
+}
+pub(crate) async fn plan_for_product(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    id: &str,
+) -> Result<Value, AppError> {
     if !hex(id, 32) {
         return Err(AppError::InvalidInput);
     }
-    let row=one(db,"SELECT p.plan FROM course_speech_plans p WHERE p.id=$1 AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(p.lesson_id,p.lesson_revision))",vec![id.into()]).await?.ok_or(AppError::NotFound)?;
+    let row=one(db,&format!("SELECT p.plan FROM course_speech_plans p WHERE p.id=$1{} AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(p.lesson_id,p.lesson_revision){})",product_filter(product,"p.product_id"),if product.is_some(){" AND w.product_id=p.product_id"}else{""}),vec![id.into()]).await?.ok_or(AppError::NotFound)?;
     field(&row, "plan")
 }
 pub(crate) async fn latest(
     db: &impl ConnectionTrait,
     key: &str,
 ) -> Result<Option<QueryResult>, AppError> {
-    one(db,&format!("{SELECT} WHERE a.generation_key=$1 AND {VISIBLE} ORDER BY a.created_at DESC,a.id DESC LIMIT 1"),vec![key.into()]).await
+    latest_for_product(db, None, key).await
 }
+pub(crate) async fn latest_for_product(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    key: &str,
+) -> Result<Option<QueryResult>, AppError> {
+    one(
+        db,
+        &format!(
+            "{} WHERE a.generation_key=$1 AND {} ORDER BY a.created_at DESC,a.id DESC LIMIT 1",
+            projection(product),
+            visible(product)
+        ),
+        vec![key.into()],
+    )
+    .await
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ItemQuery {}
 async fn read(
     auth: AdminAuth,
     State(b): State<Store>,
     Path(id): Path<String>,
+    Query(_query): Query<ItemQuery>,
 ) -> Result<Json<AdminSpeechClip>, AppError> {
     auth.require_operator().await?;
-    Ok(Json(item(&load(&b.db, &id).await?)?))
+    Ok(Json(item(&load(&b.db, b.product, &id).await?)?))
 }
 async fn list(
     auth: AdminAuth,
     State(b): State<Store>,
     Path(id): Path<String>,
     service: Option<Extension<Service>>,
+    Query(_query): Query<ItemQuery>,
 ) -> Result<Json<AdminSpeechClips>, AppError> {
     auth.require_operator().await?;
-    let source = plan(&b.db, &id).await?;
+    let source = plan_for_product(&b.db, b.product, &id).await?;
     let requests = source["requests"]
         .as_object()
         .ok_or(AppError::Unavailable)?;
     let keys: Vec<String> = requests.keys().cloned().collect();
-    let rows=b.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT DISTINCT ON(a.generation_key) * FROM ({SELECT} WHERE a.generation_key=ANY($1::text[]) AND {VISIBLE}) a ORDER BY a.generation_key,a.created_at DESC,a.id DESC"),vec![keys.into()])).await.map_err(|_|AppError::Unavailable)?;
+    let rows=b.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("SELECT DISTINCT ON(a.generation_key) * FROM ({} WHERE a.generation_key=ANY($1::text[]) AND {}) a ORDER BY a.generation_key,a.created_at DESC,a.id DESC",projection(b.product),visible(b.product)),vec![keys.into()])).await.map_err(|_|AppError::Unavailable)?;
     Ok(Json(AdminSpeechClips {
         items: rows.iter().map(item).collect::<Result<_, _>>()?,
         configured: service.is_some(),
@@ -178,7 +250,10 @@ pub async fn submit_local(
     )
     .await?;
     let Json(mut result) = create_for_actor(
-        Store { db: b.db.clone() },
+        Store {
+            db: b.db.clone(),
+            product: None,
+        },
         &operator,
         service,
         root,
@@ -189,7 +264,7 @@ pub async fn submit_local(
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(245);
     while result.status == "submitted" && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        result = item(&load(&b.db, &id).await?)?;
+        result = item(&load(&b.db, None, &id).await?)?;
     }
     Ok(result)
 }
@@ -202,6 +277,9 @@ async fn create_for_actor(
     read_permits: Arc<tokio::sync::Semaphore>,
     request: AdminSpeechClipRequest,
 ) -> Result<Json<AdminSpeechClip>, AppError> {
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !hex(&request.id, 32)
@@ -218,9 +296,23 @@ async fn create_for_actor(
     let payload = serde_json::to_value(&request).map_err(|_| AppError::InvalidInput)?;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
+    if let Some(product) = b.product
+        && one(
+            &tx,
+            "SELECT 1 FROM course_speech_clips WHERE id=$1 AND product_id<>$2",
+            vec![request.id.clone().into(), product.as_str().into()],
+        )
+        .await?
+        .is_some()
+    {
+        return Err(AppError::NotFound);
+    }
     if let Some(row) = one(
         &tx,
-        "SELECT actor_id,request FROM course_speech_clips WHERE id=$1",
+        &format!(
+            "SELECT actor_id,request FROM course_speech_clips WHERE id=$1{}",
+            product_filter(b.product, "product_id")
+        ),
         vec![request.id.clone().into()],
     )
     .await?
@@ -228,20 +320,23 @@ async fn create_for_actor(
         if field::<i64>(&row, "actor_id")? != actor || field::<Value>(&row, "request")? != payload {
             return Err(AppError::Conflict);
         }
-        return Ok(Json(item(&load(&tx, &request.id).await?)?));
+        return Ok(Json(item(&load(&tx, b.product, &request.id).await?)?));
     }
     exec(
         &tx,
-        "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            state_scope(b.product)
+        ),
         vec![],
     )
     .await?;
-    let source = plan(&tx, &request.plan_id).await?;
+    let source = plan_for_product(&tx, b.product, &request.plan_id).await?;
     if source["planHash"] != request.expected_plan_hash {
         return Err(AppError::Conflict);
     }
     let speech = speech(&source, &request.generation_key)?;
-    let previous = latest(&tx, &request.generation_key).await?;
+    let previous = latest_for_product(&tx, b.product, &request.generation_key).await?;
     let old = previous.as_ref().map(item).transpose()?;
     if old.as_ref().map(|i| &i.id) != request.expected_previous_id.as_ref() {
         return Err(AppError::Conflict);
@@ -284,23 +379,35 @@ async fn create_for_actor(
     } else {
         None
     };
-    exec(&tx,"INSERT INTO course_speech_clips(id,plan_id,generation_key,request,actor_id,reason,reused_from)VALUES($1,$2,$3,$4,$5,$6,$7)",vec![request.id.clone().into(),request.plan_id.into(),request.generation_key.into(),payload.into(),actor.into(),request.reason.into(),reuse.into()]).await?;
-    exec(
-        &tx,
-        "INSERT INTO course_speech_clip_events(clip_id,version,status,result)VALUES($1,1,$2,$3)",
-        vec![
-            request.id.clone().into(),
-            if cached.is_some() {
-                "ready"
-            } else {
-                "submitted"
-            }
-            .into(),
-            cached.into(),
-        ],
+    let mut values = vec![
+        request.id.clone().into(),
+        request.plan_id.into(),
+        request.generation_key.into(),
+        payload.into(),
+        actor.into(),
+        request.reason.into(),
+        reuse.into(),
+    ];
+    let sql = if let Some(product) = b.product {
+        values.push(product.as_str().into());
+        "INSERT INTO course_speech_clips(id,plan_id,generation_key,request,actor_id,reason,reused_from,product_id)VALUES($1,$2,$3,$4,$5,$6,$7,$8)"
+    } else {
+        "INSERT INTO course_speech_clips(id,plan_id,generation_key,request,actor_id,reason,reused_from)VALUES($1,$2,$3,$4,$5,$6,$7)"
+    };
+    exec(&tx, sql, values).await?;
+    event(
+        (&tx, b.product),
+        &request.id,
+        1,
+        if cached.is_some() {
+            "ready"
+        } else {
+            "submitted"
+        },
+        cached,
     )
     .await?;
-    let receipt = item(&load(&tx, &request.id).await?)?;
+    let receipt = item(&load(&tx, b.product, &request.id).await?)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     if let Some((service, permit)) = paid {
         tokio::spawn(async move {
@@ -324,10 +431,31 @@ async fn create_for_actor(
                 Err(ProviderError::Rejected) => ("failed", None),
                 Err(ProviderError::Unknown) => ("unknown", None),
             };
-            if exec(&b.db,"INSERT INTO course_speech_clip_events(clip_id,version,status,result)VALUES($1,2,$2,$3)",vec![request.id.into(),status.into(),result.into()]).await.is_err(){tracing::warn!("course speech result persistence unavailable");}
+            if event((&b.db, b.product), &request.id, 2, status, result)
+                .await
+                .is_err()
+            {
+                tracing::warn!("course speech result persistence unavailable");
+            }
         });
     }
     Ok(Json(receipt))
+}
+async fn event(
+    (db, product): (&impl ConnectionTrait, Option<crate::product::ProductId>),
+    id: &str,
+    version: i32,
+    status: &str,
+    result: Option<Value>,
+) -> Result<(), AppError> {
+    let mut values = vec![id.into(), version.into(), status.into(), result.into()];
+    let sql = if let Some(product) = product {
+        values.push(product.as_str().into());
+        "INSERT INTO course_speech_clip_events(clip_id,version,status,result,product_id)VALUES($1,$2,$3,$4,$5)"
+    } else {
+        "INSERT INTO course_speech_clip_events(clip_id,version,status,result)VALUES($1,$2,$3,$4)"
+    };
+    exec(db, sql, values).await.map(|_| ())
 }
 async fn file(
     auth: AdminAuth,
@@ -336,9 +464,10 @@ async fn file(
     Extension(root): Extension<PathBuf>,
     Extension(permits): Extension<Arc<tokio::sync::Semaphore>>,
     headers: HeaderMap,
+    Query(_query): Query<ItemQuery>,
 ) -> Result<axum::response::Response, AppError> {
     auth.require_operator().await?;
-    let row = load(&b.db, &id).await?;
+    let row = load(&b.db, b.product, &id).await?;
     if item(&row)?.status != "ready" {
         return Err(AppError::NotFound);
     }
@@ -376,7 +505,16 @@ pub async fn review_local(
         actor,
     )
     .await?;
-    review_for_actor(&Store { db: b.db.clone() }, &operator, id, request).await
+    review_for_actor(
+        &Store {
+            db: b.db.clone(),
+            product: None,
+        },
+        &operator,
+        id,
+        request,
+    )
+    .await
 }
 
 async fn review_for_actor(
@@ -385,6 +523,9 @@ async fn review_for_actor(
     id: String,
     request: AdminSpeechClipReview,
 ) -> Result<AdminSpeechClip, AppError> {
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !hex(&id, 32) || !request.heard {
@@ -394,17 +535,23 @@ async fn review_for_actor(
     operator.lock_content(&tx).await?;
     exec(
         &tx,
-        "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            state_scope(b.product)
+        ),
         vec![],
     )
     .await?;
-    let clip = item(&load(&tx, &id).await?)?;
+    let clip = item(&load(&tx, b.product, &id).await?)?;
     if clip.status != "ready" {
         return Err(AppError::Conflict);
     }
     if let Some(row) = one(
         &tx,
-        "SELECT actor_id,accepted,reason FROM course_speech_clip_reviews WHERE clip_id=$1",
+        &format!(
+            "SELECT actor_id,accepted,reason FROM course_speech_clip_reviews WHERE clip_id=$1{}",
+            product_filter(b.product, "product_id")
+        ),
         vec![id.clone().into()],
     )
     .await?
@@ -417,8 +564,20 @@ async fn review_for_actor(
         }
         return Ok(clip);
     }
-    exec(&tx,"INSERT INTO course_speech_clip_reviews(clip_id,accepted,actor_id,reason)VALUES($1,$2,$3,$4)",vec![id.clone().into(),request.accepted.into(),actor.into(),request.reason.into()]).await?;
-    let clip = item(&load(&tx, &id).await?)?;
+    let mut values = vec![
+        id.clone().into(),
+        request.accepted.into(),
+        actor.into(),
+        request.reason.into(),
+    ];
+    let sql = if let Some(product) = b.product {
+        values.push(product.as_str().into());
+        "INSERT INTO course_speech_clip_reviews(clip_id,accepted,actor_id,reason,product_id)VALUES($1,$2,$3,$4,$5)"
+    } else {
+        "INSERT INTO course_speech_clip_reviews(clip_id,accepted,actor_id,reason)VALUES($1,$2,$3,$4)"
+    };
+    exec(&tx, sql, values).await?;
+    let clip = item(&load(&tx, b.product, &id).await?)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(clip)
 }
