@@ -1061,6 +1061,11 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     ))
     .await
     .unwrap();
+    // This combined fixture installs steps directly, rather than claiming a completed
+    // split-layout migration. Keep its ledger empty while exercising runtime grants.
+    db.execute_unprepared("CREATE TABLE chef_layout_migrations(version TEXT PRIMARY KEY,scope TEXT NOT NULL CHECK(scope IN ('identity','learning')),schema_name TEXT NOT NULL,definition TEXT NOT NULL,applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        .await
+        .unwrap();
     db.execute_unprepared(&format!(
         "CREATE ROLE {learner_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE"
     ))
