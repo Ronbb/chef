@@ -71,8 +71,11 @@ async fn replay(
     actor: i64,
     request: &AdminSpeechPackageImport,
 ) -> Result<Option<AdminSpeechPackageResult>, AppError> {
-    // The old global key remains temporarily; never read another product's retry payload.
-    if let Some(product) = product
+    // Both the receipt key and the lesson-version key must be product-local.
+    let local_ids = product.is_some()
+        && crate::product_keys::supports_local_ids(db, crate::product_keys::LocalIdTable::Package)
+            .await?;
+    if let Some(product) = product.filter(|_| !local_ids)
         && one(
             db,
             "SELECT 1 FROM speech_package_imports WHERE id=$1 AND product_id<>$2",

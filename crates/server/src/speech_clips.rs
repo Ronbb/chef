@@ -287,11 +287,8 @@ async fn create_for_actor(
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
     let local_ids = b.product.is_some()
-        && crate::product_keys::supports_local_ids(
-            &tx,
-            crate::product_keys::LocalIdTable::SpeechClip,
-        )
-        .await?;
+        && crate::product_keys::supports_local_ids(&tx, crate::product_keys::LocalIdTable::Clip)
+            .await?;
     if let Some(product) = b.product.filter(|_| !local_ids)
         && one(
             &tx,

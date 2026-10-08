@@ -489,8 +489,14 @@ async fn import_for_actor(
         vec![],
     )
     .await?;
-    // Global IDs are temporary: only test foreign ownership, never read its payload.
-    if let Some(product) = b.product
+    // Only a completed local key allows equal IDs in separate products.
+    let local_ids = b.product.is_some()
+        && crate::product_keys::supports_local_ids(
+            &tx,
+            crate::product_keys::LocalIdTable::Alignment,
+        )
+        .await?;
+    if let Some(product) = b.product.filter(|_| !local_ids)
         && one(
             &tx,
             "SELECT 1 FROM speech_alignments WHERE id=$1 AND product_id<>$2",

@@ -4698,6 +4698,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     foreign_alignment_request["reportJson"] = foreign_report.to_string().into();
     let mut foreign_alignment_retry = alignment_request.clone();
     foreign_alignment_retry["id"] = "4".repeat(32).into();
+    owner.execute_unprepared("ALTER TABLE speech_alignments DROP CONSTRAINT chef_local_alignment_primary; ALTER TABLE speech_alignments ADD CONSTRAINT legacy_alignment_primary_fixture PRIMARY KEY(id)").await.unwrap();
     for body in [foreign_alignment_request, foreign_alignment_retry] {
         let (status, result) = request(
             &content_app,
@@ -4710,6 +4711,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .await;
         assert_eq!(status, 404, "{result}");
     }
+    owner.execute_unprepared("ALTER TABLE speech_alignments DROP CONSTRAINT legacy_alignment_primary_fixture; ALTER TABLE speech_alignments ADD CONSTRAINT chef_local_alignment_primary PRIMARY KEY(product_id,id)").await.unwrap();
     let (status, body) = request(
         &content_app,
         "POST",
@@ -4812,6 +4814,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     )
     .await;
     assert_eq!(status, 404, "foreign import: {body}");
+    owner.execute_unprepared("ALTER TABLE speech_package_imports DROP CONSTRAINT chef_local_package_primary; ALTER TABLE speech_package_imports ADD CONSTRAINT legacy_package_primary_fixture PRIMARY KEY(id)").await.unwrap();
     let mut foreign_retry = package_import.clone();
     foreign_retry["id"] = "4".repeat(32).into();
     let (status, body) = request(
@@ -4824,6 +4827,22 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     )
     .await;
     assert_eq!(status, 404, "foreign import id retry: {body}");
+    owner.execute_unprepared("ALTER TABLE speech_package_imports DROP CONSTRAINT legacy_package_primary_fixture; ALTER TABLE speech_package_imports ADD CONSTRAINT chef_local_package_primary PRIMARY KEY(product_id,id)").await.unwrap();
+    // A local receipt PK with the old global lesson key is still incomplete.
+    owner.execute_unprepared("ALTER TABLE speech_package_imports DROP CONSTRAINT chef_local_package_lesson; ALTER TABLE speech_package_imports ADD CONSTRAINT legacy_package_lesson_fixture UNIQUE(lesson_id,revision)").await.unwrap();
+    let mut partial_retry = package_import.clone();
+    partial_retry["id"] = "4".repeat(32).into();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        &import_path,
+        Some(partial_retry),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "partial local package layout: {body}");
+    owner.execute_unprepared("ALTER TABLE speech_package_imports DROP CONSTRAINT legacy_package_lesson_fixture; ALTER TABLE speech_package_imports ADD CONSTRAINT chef_local_package_lesson UNIQUE(product_id,lesson_id,revision)").await.unwrap();
     let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_package_imports)+(SELECT count(*) FROM audio_assets)+(SELECT count(*) FROM audio_import_audit)+(SELECT count(*) FROM lesson_revisions)+(SELECT count(*) FROM lesson_import_audit) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
     assert_eq!(
         before, after,
@@ -6421,6 +6440,214 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(p)::text) AS hash,(SELECT count(*) FROM course_speech_plans WHERE product_id='brioche' AND id=repeat('4',32))::bigint AS own FROM course_speech_plans p WHERE product_id='hargow' AND id=repeat('4',32)")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_plan_hash);
     assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
+    // Real archive/report/package operations may reuse a foreign product's IDs,
+    // but never its payload, review, source audio, or lesson version.
+    let h_delivery_sql = "SELECT md5(jsonb_build_array((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM speech_alignments a WHERE product_id='hargow'),(SELECT jsonb_agg(to_jsonb(r) ORDER BY r.alignment_id,r.clip_id) FROM speech_alignment_reviews r WHERE product_id='hargow'),(SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id) FROM speech_package_imports p WHERE product_id='hargow'),(SELECT jsonb_agg(to_jsonb(l) ORDER BY l.lesson_id,l.revision) FROM lesson_revisions l WHERE product_id='hargow'))::text) AS hash";
+    let h_delivery_hash = owner
+        .query_one_raw(Statement::from_string(DbBackend::Postgres, h_delivery_sql))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "hash")
+        .unwrap();
+    let delivery_calls_before = [
+        enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment
+            .syntheses
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ];
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&export_path)
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let local_archive = response.into_body().collect().await.unwrap().to_bytes();
+    let local_members = tar_members(&local_archive);
+    let local_manifest: serde_json::Value =
+        serde_json::from_slice(&local_members["manifest.json"]).unwrap();
+    let mut local_report = original_alignment_report.clone();
+    local_report["sourceArchiveSha256"] = format!("{:x}", Sha256::digest(&local_archive)).into();
+    for c in local_report["clips"].as_array_mut().unwrap() {
+        let current = local_manifest["clips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["generationKey"] == c["generationKey"])
+            .unwrap();
+        c["clipId"] = current["id"].clone();
+    }
+    let mut local_alignment_request = alignment_request.clone();
+    local_alignment_request["id"] = "4".repeat(32).into();
+    local_alignment_request["reportJson"] = local_report.to_string().into();
+    let (status, local_alignment) = request(
+        &content_app,
+        "POST",
+        alignment_route,
+        Some(local_alignment_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{local_alignment}");
+    assert!(
+        local_alignment["clips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["accepted"].is_null())
+    );
+    let (status, retry) = request(
+        &content_app,
+        "POST",
+        alignment_route,
+        Some(local_alignment_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{retry}");
+    assert_eq!(retry, local_alignment);
+    let (status, read) = request(
+        &content_app,
+        "GET",
+        &foreign_alignment_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read, local_alignment);
+    let mut changed = local_alignment_request;
+    changed["reason"] = "Changed product-local alignment".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            alignment_route,
+            Some(changed),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    // Explicit synthetic decisions exercise the package protocol; they are not listening evidence.
+    for c in local_alignment["clips"].as_array().unwrap() {
+        let review = serde_json::json!({"expectedReportHash":local_alignment["reportHash"],"accepted":true,"heard":true,"timingsChecked":true,"words":c["words"],"reason":"Synthetic product-local timing fixture"});
+        let path = format!(
+            "{foreign_alignment_path}/clips/{}/review",
+            c["clipId"].as_str().unwrap()
+        );
+        let (status, result) = request(
+            &content_app,
+            "POST",
+            &path,
+            Some(review.clone()),
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, 200, "{result}");
+        let (status, retry) = request(
+            &content_app,
+            "POST",
+            &path,
+            Some(review),
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, 200, "{retry}");
+        assert_eq!(retry, result);
+    }
+    let next_revision=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT max(revision)+1 AS revision FROM lesson_revisions WHERE product_id='brioche' AND lesson_id=$1",[lesson.id.clone().into()])).await.unwrap().unwrap().try_get::<i32>("","revision").unwrap();
+    let mut local_package_request = package_import.clone();
+    local_package_request["id"] = "4".repeat(32).into();
+    local_package_request["package"]["expectedReportHash"] = local_alignment["reportHash"].clone();
+    local_package_request["package"]["lessonRevision"] = next_revision.into();
+    let local_package_path = format!("{foreign_alignment_path}/package/import");
+    let (status, local_package) = request(
+        &content_app,
+        "POST",
+        &local_package_path,
+        Some(local_package_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{local_package}");
+    assert_eq!(local_package["revision"], next_revision);
+    let (status, retry) = request(
+        &content_app,
+        "POST",
+        &local_package_path,
+        Some(local_package_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{retry}");
+    assert_eq!(retry, local_package);
+    let mut changed = local_package_request;
+    changed["package"]["reason"] = "Changed product-local package".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &local_package_path,
+            Some(changed),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let (status, list) = request(
+        &content_app,
+        "GET",
+        &format!("{foreign_alignment_path}/packages"),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{list}");
+    assert_eq!(list["items"].as_array().unwrap(), &vec![local_package]);
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_alignments WHERE product_id='brioche' AND id=repeat('4',32))::bigint AS alignments,(SELECT count(*) FROM speech_package_imports WHERE product_id='brioche' AND id=repeat('4',32))::bigint AS packages,(SELECT count(*) FROM lesson_import_audit WHERE product_id='brioche' AND lesson_id=$1 AND revision=$2)::bigint AS imports",[lesson.id.clone().into(),next_revision.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "alignments").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "packages").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "imports").unwrap(), 1);
+    assert_eq!(
+        owner
+            .query_one_raw(Statement::from_string(DbBackend::Postgres, h_delivery_sql))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get::<String>("", "hash")
+            .unwrap(),
+        h_delivery_hash
+    );
+    assert_eq!(
+        delivery_calls_before,
+        [
+            enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment
+                .syntheses
+                .load(std::sync::atomic::Ordering::SeqCst)
+        ]
+    );
     let h_clip_hash=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT md5(jsonb_build_array(to_jsonb(c),(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.version) FROM course_speech_clip_events e WHERE e.product_id=c.product_id AND e.clip_id=c.id),(SELECT to_jsonb(r) FROM course_speech_clip_reviews r WHERE r.product_id=c.product_id AND r.clip_id=c.id))::text) AS hash FROM course_speech_clips c WHERE product_id='hargow' AND id=$1",[foreign_clip_id.clone().into()])).await.unwrap().unwrap().try_get::<String>("", "hash").unwrap();
     let calls_before = [
         enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),

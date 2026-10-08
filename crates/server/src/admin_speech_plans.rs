@@ -337,11 +337,8 @@ async fn save_for_actor(
     let request_json = serde_json::to_value(&request).map_err(|_| AppError::InvalidInput)?;
     // Keep the global guard on old/partial layouts; retries never load foreign payloads.
     let local_ids = b.product.is_some()
-        && crate::product_keys::supports_local_ids(
-            &tx,
-            crate::product_keys::LocalIdTable::SpeechPlan,
-        )
-        .await?;
+        && crate::product_keys::supports_local_ids(&tx, crate::product_keys::LocalIdTable::Plan)
+            .await?;
     if let Some(product) = b.product.filter(|_| !local_ids)
         && one(
             &tx,
