@@ -1287,11 +1287,17 @@ const api = createServer((request, response) => {
     response.writeHead(404).end("{}");
     return;
   }
-  if (request.url.startsWith("/api/catalog")) {
+  if (
+    request.url.startsWith("/api/catalog") ||
+    request.url.startsWith("/api/v2/catalog")
+  ) {
     response.end(JSON.stringify({ ...catalog, developmentFixture: !accounts }));
     return;
   }
-  if (request.url.startsWith("/api/lessons/")) {
+  if (
+    request.url.startsWith("/api/lessons/") ||
+    request.url.startsWith("/api/v2/lessons/")
+  ) {
     response.statusCode = lessonStatus;
     response.end(JSON.stringify(lessonStatus === 200 ? lesson : {}));
     return;

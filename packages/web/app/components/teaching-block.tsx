@@ -1,12 +1,19 @@
 import type { Block } from "@brioche/contracts/Block";
-import type { PublicLesson } from "@brioche/contracts/PublicLesson";
+import type { NeutralBlock } from "@brioche/contracts/NeutralBlock";
+import {
+  lessonLanguage,
+  targetText,
+  exampleText,
+  type ReadingLesson,
+} from "../lib/reading-model";
+import { ReadingTextLabel } from "./reading-text";
 import { useLearning } from "./learning";
 import { Illustration, illustration } from "./illustration";
 import { LessonNote } from "./lesson-note";
 import { knowledgeUnit } from "../lib/recording-playback";
 
 type TeachingBlock = Exclude<
-  Block,
+  Block | NeutralBlock,
   { type: "dialogue" | "article" | "exercise" }
 >;
 export function TeachingBlock({
@@ -14,7 +21,7 @@ export function TeachingBlock({
   lesson,
 }: {
   block: TeachingBlock;
-  lesson: PublicLesson;
+  lesson: ReadingLesson;
 }) {
   const learning = useLearning();
   switch (block.type) {
@@ -57,14 +64,18 @@ export function TeachingBlock({
                   <dt>
                     <button
                       type="button"
-                      lang="fr"
+                      lang={lessonLanguage(lesson)}
                       onClick={() =>
                         learning.play([
-                          knowledgeUnit(id, word.lemma, word.recording),
+                          knowledgeUnit(
+                            id,
+                            targetText(word.lemma),
+                            word.recording,
+                          ),
                         ])
                       }
                     >
-                      {word.lemma}
+                      <ReadingTextLabel reading={word.lemma} />
                     </button>
                   </dt>
                   <dd>
@@ -89,18 +100,18 @@ export function TeachingBlock({
                   <div className="grammar-example" key={i}>
                     <button
                       type="button"
-                      lang="fr"
+                      lang={lessonLanguage(lesson)}
                       onClick={() =>
                         learning.play([
                           knowledgeUnit(
                             id + ":" + i,
-                            example.fr,
+                            targetText(exampleText(example)),
                             example.recording,
                           ),
                         ])
                       }
                     >
-                      {example.fr}
+                      <ReadingTextLabel reading={exampleText(example)} />
                     </button>
                     <p>{example.zh}</p>
                   </div>

@@ -1,10 +1,14 @@
 import { useState } from "react";
-import type { PublicLesson } from "@brioche/contracts/PublicLesson";
-export function illustration(lesson: PublicLesson, id: string | undefined) {
+import { lessonLanguage, type ReadingLesson } from "../lib/reading-model";
+export function illustration(lesson: ReadingLesson, id: string | undefined) {
   const asset = lesson.media.find((asset) => asset.assetId === id);
   if (asset) return asset;
   // Development fixture only; production staging requires all registered descriptors.
-  if (!lesson.media.length && id === "art-bakery-morning")
+  if (
+    lessonLanguage(lesson) === "fr-FR" &&
+    !lesson.media.length &&
+    id === "art-bakery-morning"
+  )
     return {
       url: "/assets/bakery.svg",
       width: 640,

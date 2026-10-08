@@ -1,5 +1,7 @@
 import type { Catalog } from "@brioche/contracts/Catalog";
 import type { PublicLesson } from "@brioche/contracts/PublicLesson";
+import type { NeutralLesson } from "@brioche/contracts/NeutralLesson";
+import type { NeutralCatalog } from "@brioche/contracts/NeutralCatalog";
 import type { UserProfile } from "@brioche/contracts/UserProfile";
 import { productNamespace } from "./product-runtime";
 import { productSessionCookie } from "./product-session";
@@ -62,6 +64,13 @@ export const getCatalog = (query?: string) =>
 export const getLesson = (id: string, revision?: number) =>
   api<PublicLesson>(
     "/api/lessons/" +
+      encodeURIComponent(id) +
+      (revision ? "?revision=" + revision : ""),
+  );
+export const getReadingCatalog = () => api<NeutralCatalog>("/api/v2/catalog");
+export const getReadingLesson = (id: string, revision?: number) =>
+  api<NeutralLesson>(
+    "/api/v2/lessons/" +
       encodeURIComponent(id) +
       (revision ? "?revision=" + revision : ""),
   );

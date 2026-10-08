@@ -1193,6 +1193,24 @@ small,
     background 0.15s,
     color 0.15s;
 }
+.sentence ruby,
+.knowledge ruby,
+.knowledge-dialog ruby,
+.vocabulary-list ruby,
+.grammar-example ruby {
+  ruby-position: over;
+}
+rt {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 0.42em;
+  font-weight: 500;
+  letter-spacing: 0.025em;
+  color: var(--muted);
+  user-select: none;
+}
+.sentence:lang(yue) {
+  line-height: 2.1;
+}
 .word.known {
   box-shadow: inset 0 -1px #c9b698;
 }

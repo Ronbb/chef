@@ -1,11 +1,19 @@
 import { useId, useRef, useState, type SyntheticEvent } from "react";
 import { Link } from "react-router";
-import type { Segment } from "@brioche/contracts/Segment";
-import type { PublicLesson } from "@brioche/contracts/PublicLesson";
-import type { Vocabulary } from "@brioche/contracts/Vocabulary";
-import type { Grammar } from "@brioche/contracts/Grammar";
+import {
+  readingTokens,
+  lessonLanguage,
+  segmentText,
+  targetText,
+  exampleText,
+  type ReadingSegment,
+  type ReadingLesson,
+  type ReadingVocabulary,
+  type ReadingGrammar,
+} from "../lib/reading-model";
+import { ReadingTextLabel } from "../components/reading-text";
 import { TeachingBlock } from "../components/teaching-block";
-import { getCatalog, getLesson } from "../lib/api.server";
+import { getReadingCatalog, getReadingLesson } from "../lib/api.server";
 import { StartLearning } from "../components/start-learning";
 import { Player, useLearning } from "../components/learning";
 import { Icon } from "../components/icon";
@@ -14,18 +22,18 @@ import { PendingNavigation } from "../components/pending-navigation";
 import { usePendingOwnedWrites } from "../components/pending-owned-writes";
 import {
   readingUnits,
-  wordUnit,
+  rangeWordUnit,
   knowledgeUnit,
 } from "../lib/recording-playback";
 import type { Route } from "./+types/lesson";
 export async function loader({ params }: Route.LoaderArgs) {
   const [lesson, catalog] = await Promise.all([
-    getLesson(params.lessonId),
-    getCatalog(),
+    getReadingLesson(params.lessonId),
+    getReadingCatalog(),
   ]);
   return { lesson, demo: catalog.developmentFixture };
 }
-export const avatar = (id: string, lesson?: PublicLesson) =>
+export const avatar = (id: string, lesson?: ReadingLesson) =>
   lesson?.media.find((asset) => asset.assetId === id)?.url ??
   "/assets/avatars/" +
     ({
@@ -52,53 +60,41 @@ export function Sentence({
   blockId,
   entryId,
 }: {
-  segments: Segment[];
-  lesson: PublicLesson;
-  onTerm: (v: Vocabulary) => void;
-  onGrammar: (v: Grammar) => void;
+  segments: ReadingSegment[];
+  lesson: ReadingLesson;
+  onTerm: (v: ReadingVocabulary) => void;
+  onGrammar: (v: ReadingGrammar) => void;
   blockId: string;
   entryId: string;
 }) {
   const learning = useLearning();
   return (
-    <span className="sentence" lang="fr">
+    <span className="sentence" lang={lessonLanguage(lesson)}>
       {segments.flatMap((segment) =>
-        Array.from(
-          new Intl.Segmenter("fr", { granularity: "word" }).segment(
-            segment.text,
-          ),
-        ).map((token, i) =>
-          token.isWordLike ? (
+        readingTokens(segment).map((token) => {
+          const unit = rangeWordUnit(
+            lesson,
+            blockId,
+            entryId,
+            segment.id,
+            token.text,
+            token.start,
+            token.end,
+          );
+          if (!token.word)
+            return (
+              <span key={segment.id + ":" + token.start}>{token.text}</span>
+            );
+          return (
             <button
-              key={segment.id + i}
+              key={segment.id + ":" + token.start}
               className={
                 "word" +
                 (segment.vocabularyId || segment.grammarId ? " known" : "") +
-                (learning.player.wordId ===
-                wordUnit(
-                  lesson,
-                  blockId,
-                  entryId,
-                  segment.id,
-                  token.segment,
-                  segment.text,
-                  token.index,
-                ).id
-                  ? " is-speaking"
-                  : "")
+                (learning.player.wordId === unit.id ? " is-speaking" : "")
               }
               onClick={() => {
-                learning.play([
-                  wordUnit(
-                    lesson,
-                    blockId,
-                    entryId,
-                    segment.id,
-                    token.segment,
-                    segment.text,
-                    token.index,
-                  ),
-                ]);
+                learning.play([unit]);
                 const term = lesson.knowledge.vocabulary.find(
                   (v) => v.id === segment.vocabularyId,
                 );
@@ -111,12 +107,19 @@ export function Sentence({
                 }
               }}
             >
-              {token.segment}
+              {token.pronunciation ? (
+                <ruby>
+                  {token.text}
+                  <rp>（</rp>
+                  <rt>{token.pronunciation}</rt>
+                  <rp>）</rp>
+                </ruby>
+              ) : (
+                token.text
+              )}
             </button>
-          ) : (
-            <span key={segment.id + i}>{token.segment}</span>
-          ),
-        ),
+          );
+        }),
       )}
     </span>
   );
@@ -132,11 +135,11 @@ export default function Lesson({
     />
   );
 }
-function LessonContent({
+export function LessonContent({
   lesson,
   demo,
 }: {
-  lesson: PublicLesson;
+  lesson: ReadingLesson;
   demo: boolean;
 }) {
   const bodies = lesson.blocks.filter(
@@ -147,15 +150,15 @@ function LessonContent({
       (bodies.find((block) => block.type === "dialogue") ?? bodies[0])?.id,
     ),
     [revealed, setRevealed] = useState<Set<string>>(new Set()),
-    [term, setTerm] = useState<Vocabulary | null>(null);
-  const [grammar, setGrammar] = useState<Grammar | null>(null);
+    [term, setTerm] = useState<ReadingVocabulary | null>(null);
+  const [grammar, setGrammar] = useState<ReadingGrammar | null>(null);
   const pending = usePendingOwnedWrites(learning.profile?.id),
     heading = useRef<HTMLHeadingElement>(null);
-  const showTerm = (value: Vocabulary) => {
+  const showTerm = (value: ReadingVocabulary) => {
     setGrammar(null);
     setTerm(value);
   };
-  const showGrammar = (value: Grammar) => {
+  const showGrammar = (value: ReadingGrammar) => {
     setTerm(null);
     setGrammar(value);
   };
@@ -193,8 +196,8 @@ function LessonContent({
         <div className="crumb">
           {lesson.levelId.toUpperCase()} / {lesson.title.zh}
         </div>
-        <h1 lang="fr" ref={heading} tabIndex={-1}>
-          {lesson.title.fr}
+        <h1 lang={lessonLanguage(lesson)} ref={heading} tabIndex={-1}>
+          {"target" in lesson.title ? lesson.title.target : lesson.title.fr}
         </h1>
         {lesson.blocks
           .filter((b) => b.type === "scene")
@@ -266,7 +269,7 @@ function LessonContent({
                       onError={avatarFallback}
                     />
                     <div>
-                      <span lang="fr">{s.displayName}</span>
+                      <span lang={lessonLanguage(lesson)}>{s.displayName}</span>
                       <small>{s.labelZh}</small>
                     </div>
                   </li>
@@ -367,14 +370,18 @@ function LessonContent({
               {grammar.examples.map((e, i) => (
                 <div className="grammar-example" key={i}>
                   <button
-                    lang="fr"
+                    lang={lessonLanguage(lesson)}
                     onClick={() =>
                       learning.play([
-                        knowledgeUnit(grammar.id + ":" + i, e.fr, e.recording),
+                        knowledgeUnit(
+                          grammar.id + ":" + i,
+                          targetText(exampleText(e)),
+                          e.recording,
+                        ),
                       ])
                     }
                   >
-                    {e.fr}
+                    <ReadingTextLabel reading={exampleText(e)} />
                   </button>
                   <p>{e.zh}</p>
                 </div>
@@ -383,8 +390,11 @@ function LessonContent({
           ) : term ? (
             <>
               <span className="knowledge-label">表达与词汇</span>
-              <h2 id={`${bodyId}-knowledge-title`} lang="fr">
-                {term.lemma}
+              <h2
+                id={`${bodyId}-knowledge-title`}
+                lang={lessonLanguage(lesson)}
+              >
+                <ReadingTextLabel reading={term.lemma} />
               </h2>
               <p className="meaning">{term.meaningZh}</p>
               <p className="explain">{term.noteZh}</p>
@@ -417,20 +427,27 @@ function LessonContent({
                     {g.titleZh}
                   </button>
                 ))}
-              <div className="example" lang="fr">
+              <div className="example" lang={lessonLanguage(lesson)}>
                 {entries
                   .find((e) =>
                     e.segments.some((s) => s.vocabularyId === term.id),
                   )
-                  ?.segments.map((s) => s.text)
+                  ?.segments.map(segmentText)
                   .join("")}
               </div>
             </>
           ) : (
             <>
               <span className="knowledge-label">本课表达</span>
-              <h2 id={`${bodyId}-knowledge-title`} lang="fr">
-                {lesson.knowledge.vocabulary[1]?.lemma}
+              <h2
+                id={`${bodyId}-knowledge-title`}
+                lang={lessonLanguage(lesson)}
+              >
+                {lesson.knowledge.vocabulary[1] && (
+                  <ReadingTextLabel
+                    reading={lesson.knowledge.vocabulary[1].lemma}
+                  />
+                )}
               </h2>
               <p className="meaning">
                 {lesson.knowledge.vocabulary[1]?.meaningZh}

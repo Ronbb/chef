@@ -14,7 +14,9 @@ import { ExerciseEditor } from "../app/components/exercise-editor";
 import type { ExerciseAnswer } from "@brioche/contracts/ExerciseAnswer";
 import type { GradeResult } from "@brioche/contracts/GradeResult";
 import { LearningProvider, useLearning } from "../app/components/learning";
-import Lesson from "../app/routes/lesson";
+import { LessonContent } from "../app/routes/lesson";
+import nativeSource from "../../../crates/server/tests/fixtures/neutral-cantonese.lesson.json";
+import type { NeutralLesson } from "@brioche/contracts/NeutralLesson";
 import { lesson } from "./lesson";
 import { ChoiceDialog } from "../app/components/choice-dialog";
 import Profile from "../app/routes/profile";
@@ -493,6 +495,59 @@ function StartHarness() {
     </main>
   );
 }
+const neutralReading: NeutralLesson = {
+  schemaVersion: nativeSource.schemaVersion,
+  targetLanguage: "yue-Hant-HK",
+  explanationLanguage: "zh-CN",
+  id: nativeSource.id,
+  revision: nativeSource.revision,
+  levelId: nativeSource.levelId,
+  unitId: nativeSource.unitId,
+  title: nativeSource.title,
+  summaryZh: nativeSource.summaryZh,
+  estimatedMinutes: nativeSource.estimatedMinutes,
+  objectivesZh: nativeSource.objectivesZh,
+  knowledge: nativeSource.knowledge as NeutralLesson["knowledge"],
+  blocks: nativeSource.blocks as NeutralLesson["blocks"],
+  steps: nativeSource.steps as NeutralLesson["steps"],
+  completion: nativeSource.completion,
+  reviewItemIds: nativeSource.reviewItemIds,
+  cast: [],
+  media: [],
+  audio: [
+    {
+      assetId: "qa-native",
+      revision: 1,
+      sha256: "1".repeat(64),
+      mimeType: "audio/wav",
+      durationMs: 30000,
+      creditZh: "Silent protocol fixture",
+      url: "/api/audio/" + "1".repeat(64) + ".wav",
+    },
+  ],
+  audioTracks: [
+    {
+      blockId: "reading",
+      assetId: "qa-native",
+      cues: [
+        {
+          entryId: "paragraph-greeting",
+          segmentId: null,
+          wordRange: null,
+          startMs: 0,
+          endMs: 30000,
+        },
+        {
+          entryId: "paragraph-greeting",
+          segmentId: "segment-greeting",
+          wordRange: { start: 0, end: 2 },
+          startMs: 0,
+          endMs: 30000,
+        },
+      ],
+    },
+  ],
+};
 function ReadingHarness() {
   const { player } = useLearning();
   qa.playback = player.status;
@@ -500,25 +555,9 @@ function ReadingHarness() {
   return (
     <div className="app">
       <main>
-        <Lesson
-          loaderData={{ lesson, demo: true }}
-          params={{ lessonId: lesson.id }}
-          matches={[
-            {
-              id: "root",
-              params: {},
-              pathname: "/",
-              loaderData: { user: null, enabled: false },
-              handle: undefined,
-            },
-            {
-              id: "routes/lesson",
-              params: { lessonId: lesson.id },
-              pathname: "/",
-              loaderData: { lesson, demo: true },
-              handle: undefined,
-            },
-          ]}
+        <LessonContent
+          lesson={kind === "reading-neutral" ? neutralReading : lesson}
+          demo={kind !== "reading-neutral"}
         />
       </main>
     </div>
@@ -1235,7 +1274,7 @@ function TextLimitHarness({ hintText = "边界测试" }: { hintText?: string }) 
     </LearningProvider>
   );
 }
-const reading = kind === "reading";
+const reading = kind === "reading" || kind === "reading-neutral";
 function AccountHarness() {
   qa.deferAuthBootstrap = kind === "account-abort";
   return (

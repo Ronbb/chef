@@ -102,6 +102,42 @@ afterEach(async () => {
   );
 });
 
+test("native Cantonese reading uses one authored word, Jyutping and measured playback across viewport widths", async () => {
+  await open("reading-neutral");
+  for (const width of [320, 390, 678, 1280]) {
+    await browser("set", "viewport", String(width), "844");
+    assert.deepEqual(
+      await evaluate(
+        "({lang:document.querySelector('.sentence').lang,words:document.querySelectorAll('.sentence .word').length,text:document.querySelector('.sentence ruby').firstChild.textContent,jyutping:document.querySelector('.sentence rt').textContent,tabs:document.querySelectorAll('[role=tab]').length,overflow:document.documentElement.scrollWidth>innerWidth})",
+      ),
+      {
+        lang: "yue-Hant-HK",
+        words: 1,
+        text: "你好",
+        jyutping: "nei5 hou2",
+        tabs: 0,
+        overflow: false,
+      },
+    );
+    await browser("click", ".sentence .word");
+    await browser(
+      "wait",
+      "--fn",
+      "qa.playback==='playing' && !!document.querySelector('.knowledge h2 ruby')",
+    );
+    assert.equal(
+      await evaluate("document.querySelector('.knowledge h2 rt').textContent"),
+      "nei5 hou2",
+    );
+    assert.equal(
+      await evaluate("qa.playbackId"),
+      "neutral-protocol:1:reading:paragraph-greeting:word:segment-greeting:0:2",
+    );
+    assert.deepEqual(await evaluate("qa.spoken"), []);
+    await browser("click", ".knowledge .note-close");
+  }
+});
+
 test("direct audio publication does not assert hearing and freezes exact retry across uncertain results", async () => {
   await open("audio-publication");
   await browser(

@@ -38,6 +38,7 @@ const lesson = {
 let fixture = false;
 let authenticated = false;
 let lessonStatus = 200;
+let neutralPublicLesson = null;
 const profile = {
   id: "00000000-0000-0000-0000-000000000001",
   email: "learner@example.test",
@@ -252,7 +253,10 @@ const server = createServer((request, response) => {
       `/api/v1/operator/lessons/${lesson.id}/revisions/${lesson.revision}`
   ) {
     response.end(JSON.stringify(lesson));
-  } else if (request.url === "/api/catalog") {
+  } else if (
+    request.url === "/api/catalog" ||
+    request.url === "/api/v2/catalog"
+  ) {
     response.end(
       JSON.stringify({
         developmentFixture: fixture,
@@ -267,9 +271,16 @@ const server = createServer((request, response) => {
         ],
       }),
     );
-  } else if (request.url.startsWith("/api/lessons/")) {
+  } else if (
+    request.url.startsWith("/api/lessons/") ||
+    request.url.startsWith("/api/v2/lessons/")
+  ) {
     response.statusCode = lessonStatus;
-    response.end(JSON.stringify(lessonStatus === 200 ? lesson : {}));
+    response.end(
+      JSON.stringify(
+        lessonStatus === 200 ? (neutralPublicLesson ?? lesson) : {},
+      ),
+    );
   } else {
     response.statusCode = 401;
     response.end("{}");
@@ -1094,6 +1105,43 @@ test("fixed character SSR works without a voice profile and bounds revisions", a
   } finally {
     authenticated = false;
     profile.role = "learner";
+  }
+});
+
+test("public lesson SSR reads v2 and renders native Cantonese words and pronunciation without legacy fields", async () => {
+  const source = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../crates/server/tests/fixtures/neutral-cantonese.lesson.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  neutralPublicLesson = Object.fromEntries(
+    [...fields, "targetLanguage", "explanationLanguage"].map((key) => [
+      key,
+      source[key],
+    ]),
+  );
+  neutralPublicLesson.media = [];
+  fixture = false;
+  authenticated = false;
+  requests.length = 0;
+  try {
+    const response = await request(`/lessons/${source.id}`);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.ok(html.includes('class="sentence" lang="yue-Hant-HK"'));
+    assert.ok(html.includes("<rt>nei5 hou2</rt>"));
+    assert.ok(html.includes("<ruby>你好"));
+    assert.ok(!html.includes("[object Object]"));
+    assert.ok(!html.includes('role="tab"'));
+    assert.ok(requests.some((r) => r.path === `/api/v2/lessons/${source.id}`));
+    assert.ok(requests.some((r) => r.path === "/api/v2/catalog"));
+    assert.ok(!requests.some((r) => r.path.startsWith("/api/lessons/")));
+  } finally {
+    neutralPublicLesson = null;
   }
 });
 

@@ -1,8 +1,16 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { Block } from "@brioche/contracts/Block";
-import type { PublicLesson } from "@brioche/contracts/PublicLesson";
-import type { Vocabulary } from "@brioche/contracts/Vocabulary";
-import type { Grammar } from "@brioche/contracts/Grammar";
+import type { NeutralBlock } from "@brioche/contracts/NeutralBlock";
+import {
+  lessonLanguage,
+  segmentText,
+  targetText,
+  exampleText,
+  type ReadingLesson,
+  type ReadingVocabulary,
+  type ReadingGrammar,
+} from "../lib/reading-model";
+import { ReadingTextLabel } from "./reading-text";
 import {
   Sentence,
   avatar,
@@ -21,23 +29,23 @@ export function ReadingBlock({
   lesson,
   personalActions = true,
 }: {
-  block: Extract<Block, { type: "dialogue" | "article" }>;
-  lesson: PublicLesson;
+  block: Extract<Block | NeutralBlock, { type: "dialogue" | "article" }>;
+  lesson: ReadingLesson;
   personalActions?: boolean;
 }) {
   const learning = useLearning(),
     dialog = useRef<HTMLDialogElement>(null),
     knowledgeTitleId = useId();
   const [revealed, setRevealed] = useState(new Set<string>()),
-    [term, setTerm] = useState<Vocabulary | null>(null),
-    [grammar, setGrammar] = useState<Grammar | null>(null);
+    [term, setTerm] = useState<ReadingVocabulary | null>(null),
+    [grammar, setGrammar] = useState<ReadingGrammar | null>(null);
   const entries = block.type === "dialogue" ? block.turns : block.paragraphs;
-  function showTerm(value: Vocabulary) {
+  function showTerm(value: ReadingVocabulary) {
     setTerm(value);
     setGrammar(null);
     dialog.current?.showModal();
   }
-  function showGrammar(value: Grammar) {
+  function showGrammar(value: ReadingGrammar) {
     setGrammar(value);
     setTerm(null);
     if (!dialog.current?.open) dialog.current?.showModal();
@@ -72,7 +80,7 @@ export function ReadingBlock({
                 onError={avatarFallback}
               />
               <div>
-                <span lang="fr">{speaker.displayName}</span>
+                <span lang={lessonLanguage(lesson)}>{speaker.displayName}</span>
                 <small>{speaker.labelZh}</small>
               </div>
             </li>
@@ -162,8 +170,13 @@ export function ReadingBlock({
             <Icon name="close" />
           </button>
         </div>
-        <h2 id={knowledgeTitleId} lang={grammar ? "zh-CN" : "fr"}>
-          {grammar?.titleZh ?? term?.lemma}
+        <h2
+          id={knowledgeTitleId}
+          lang={grammar ? "zh-CN" : lessonLanguage(lesson)}
+        >
+          {grammar
+            ? grammar.titleZh
+            : term && <ReadingTextLabel reading={term.lemma} />}
         </h2>
         {term && (
           <>
@@ -185,14 +198,14 @@ export function ReadingBlock({
                 revision={lesson.revision}
               />
             )}
-            <div className="example" lang="fr">
+            <div className="example" lang={lessonLanguage(lesson)}>
               {entries
                 .find((entry) =>
                   entry.segments.some(
                     (segment) => segment.vocabularyId === term.id,
                   ),
                 )
-                ?.segments.map((segment) => segment.text)
+                ?.segments.map(segmentText)
                 .join("")}
             </div>
           </>
@@ -203,18 +216,18 @@ export function ReadingBlock({
             {grammar.examples.map((example, index) => (
               <div className="grammar-example" key={index}>
                 <button
-                  lang="fr"
+                  lang={lessonLanguage(lesson)}
                   onClick={() =>
                     learning.play([
                       knowledgeUnit(
                         scope + "grammar:" + grammar.id + ":" + index,
-                        example.fr,
+                        targetText(exampleText(example)),
                         example.recording,
                       ),
                     ])
                   }
                 >
-                  {example.fr}
+                  <ReadingTextLabel reading={exampleText(example)} />
                 </button>
                 <p>{example.zh}</p>
               </div>

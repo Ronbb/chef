@@ -1,6 +1,11 @@
 import type { AudioCue } from "@brioche/contracts/AudioCue";
 import type { Block } from "@brioche/contracts/Block";
-import type { PublicLesson } from "@brioche/contracts/PublicLesson";
+import type { NeutralBlock } from "@brioche/contracts/NeutralBlock";
+import {
+  segmentText,
+  lessonLanguage,
+  type ReadingLesson,
+} from "./reading-model.ts";
 import type { KnowledgeRecording } from "@brioche/contracts/KnowledgeRecording";
 
 export type TimelineCue = {
@@ -58,7 +63,7 @@ export function knowledgeUnit(
   };
   return unit;
 }
-export const readingScope = (lesson: PublicLesson, blockId: string) =>
+export const readingScope = (lesson: ReadingLesson, blockId: string) =>
   `${lesson.id}:${lesson.revision}:${blockId}:`;
 export const wordId = (
   scope: string,
@@ -68,7 +73,7 @@ export const wordId = (
   end: number,
 ) => `${scope}${entryId}:word:${segmentId}:${start}:${end}`;
 
-function assetTrack(lesson: PublicLesson, blockId: string) {
+function assetTrack(lesson: ReadingLesson, blockId: string) {
   const track = lesson.audioTracks?.find((track) => track.blockId === blockId);
   const asset = lesson.audio?.find((asset) => asset.assetId === track?.assetId);
   // Public and operator URLs are both same-origin API paths. Never fetch author-provided origins.
@@ -83,7 +88,7 @@ function assetTrack(lesson: PublicLesson, blockId: string) {
   return { track, asset };
 }
 function timeline(
-  lesson: PublicLesson,
+  lesson: ReadingLesson,
   blockId: string,
   cue: AudioCue,
 ): TimelineCue {
@@ -106,8 +111,8 @@ function timeline(
   };
 }
 export function readingUnits(
-  lesson: PublicLesson,
-  block: Extract<Block, { type: "dialogue" | "article" }>,
+  lesson: ReadingLesson,
+  block: Extract<Block | NeutralBlock, { type: "dialogue" | "article" }>,
 ): SpeechUnit[] {
   const entries = block.type === "dialogue" ? block.turns : block.paragraphs;
   const media = assetTrack(lesson, block.id);
@@ -117,7 +122,8 @@ export function readingUnits(
     );
     return {
       id: readingScope(lesson, block.id) + entry.id,
-      text: entry.segments.map((segment) => segment.text).join(""),
+      text: entry.segments.map(segmentText).join(""),
+      locale: lessonLanguage(lesson),
       ...(cue && media
         ? {
             recording: {
@@ -138,7 +144,7 @@ export function readingUnits(
   });
 }
 export function wordUnit(
-  lesson: PublicLesson,
+  lesson: ReadingLesson,
   blockId: string,
   entryId: string,
   segmentId: string,
@@ -148,6 +154,17 @@ export function wordUnit(
 ): SpeechUnit {
   const start = Array.from(segmentText.slice(0, utf16Start)).length;
   const end = start + Array.from(text).length;
+  return rangeWordUnit(lesson, blockId, entryId, segmentId, text, start, end);
+}
+export function rangeWordUnit(
+  lesson: ReadingLesson,
+  blockId: string,
+  entryId: string,
+  segmentId: string,
+  text: string,
+  start: number,
+  end: number,
+): SpeechUnit {
   const id = wordId(
     readingScope(lesson, blockId),
     entryId,
@@ -166,6 +183,7 @@ export function wordUnit(
   return {
     id,
     text,
+    locale: lessonLanguage(lesson),
     ...(cue && media
       ? {
           recording: {
