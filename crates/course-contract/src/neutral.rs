@@ -122,6 +122,7 @@ dto!(NeutralLessonSummary {
 dto!(NeutralUnit { id:String,title_zh:String,lessons:Vec<NeutralLessonSummary> });
 dto!(NeutralLevel { id:String,label:String,units:Vec<NeutralUnit> });
 dto!(NeutralCatalog { levels:Vec<NeutralLevel>,development_fixture:bool });
+dto!(NeutralPreviewRelease { id:String,catalog:NeutralCatalog,withdrawn_lesson_ids:Vec<String> });
 dto!(NeutralLearningSession {
     lesson: NeutralLesson,
     progress: LearningState

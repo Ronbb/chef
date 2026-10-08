@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { Block } from "@brioche/contracts/Block";
-import type { PublicLesson } from "@brioche/contracts/PublicLesson";
+import type { NeutralBlock } from "@brioche/contracts/NeutralBlock";
+import { lessonLanguage, type ReadingLesson } from "../lib/reading-model";
 import type { ExerciseAnswer } from "@brioche/contracts/ExerciseAnswer";
 import type { GradeResult } from "@brioche/contracts/GradeResult";
 import {
@@ -14,8 +15,8 @@ export function PreviewExercise({
   block,
   lesson,
 }: {
-  block: Extract<Block, { type: "exercise" }>;
-  lesson: PublicLesson;
+  block: Extract<Block | NeutralBlock, { type: "exercise" }>;
+  lesson: ReadingLesson;
 }) {
   const audio = useLearning();
   const owner = audio.profile?.role === "operator" ? audio.profile.id : null;
@@ -33,8 +34,8 @@ function PreviewExerciseContent({
   block,
   lesson,
 }: {
-  block: Extract<Block, { type: "exercise" }>;
-  lesson: PublicLesson;
+  block: Extract<Block | NeutralBlock, { type: "exercise" }>;
+  lesson: ReadingLesson;
 }) {
   const audio = useLearning();
   const [busy, setBusy] = useState(false),
@@ -63,7 +64,7 @@ function PreviewExerciseContent({
     setBusy(true);
     try {
       const result = await requestApi<GradeResult>(
-        `/api/v1/operator/lessons/${encodeURIComponent(lesson.id)}/revisions/${lesson.revision}/grade`,
+        `/api/${lesson.schemaVersion === "2.0" ? "v2" : "v1"}/operator/lessons/${encodeURIComponent(lesson.id)}/revisions/${lesson.revision}/grade`,
         "POST",
         { revision: lesson.revision, exerciseId: block.id, answer },
         requestController.signal,
@@ -87,6 +88,7 @@ function PreviewExerciseContent({
   return (
     <ExerciseEditor
       block={block}
+      language={lessonLanguage(lesson)}
       latest={latest}
       hinted={hinted}
       blocked={busy}

@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { createRequestHandler } from "react-router";
 import { productWebUrl, browserCliUrl } from "../test-product.mjs";
+import { neutralFixture } from "../test-neutral.mjs";
 const build = await import(productWebUrl("build/server/index.js"));
 
 const execute = promisify(execFile);
@@ -80,6 +81,27 @@ let accountOnlyLogin = false;
 const accountLoginWrites = [];
 const accountPreferenceWrites = [];
 let operatorAccount = false;
+let nativePreview = false;
+const previewGrades = [];
+const nativePreviewSource = JSON.parse(
+  await readFile(
+    new URL(
+      "../../../crates/server/tests/fixtures/neutral-cantonese.lesson.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+);
+const nativePreviewLesson = Object.fromEntries(
+  [
+    ...publicFields,
+    "targetLanguage",
+    "explanationLanguage",
+    "media",
+    "audio",
+    "audioTracks",
+  ].map((key) => [key, nativePreviewSource[key]]),
+);
 let managedRole = "learner";
 let managedSessionRevoked = false;
 let pendingTokenRevoked = false;
@@ -151,6 +173,36 @@ const profile = (id) => ({
 });
 const api = createServer((request, response) => {
   response.setHeader("Content-Type", "application/json");
+  const nativePath = `/api/v2/operator/lessons/${nativePreviewLesson.id}/revisions/1`;
+  if (nativePreview && request.url === nativePath) {
+    response.end(JSON.stringify(nativePreviewLesson));
+    return;
+  }
+  if (
+    nativePreview &&
+    request.method === "POST" &&
+    request.url === `${nativePath}/grade`
+  ) {
+    let body = "";
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      if (request.headers["x-csrf-token"] !== "controlled-admin-csrf") {
+        response.writeHead(403).end("{}");
+        return;
+      }
+      const document = JSON.parse(body);
+      previewGrades.push({ path: request.url, document });
+      response.end(
+        JSON.stringify({
+          correct: document.answer.text === "點心",
+          feedbackZh: "保留作者字形。",
+        }),
+      );
+    });
+    return;
+  }
   if (request.url === "/api/v1/auth/login" && accountOnlyLogin) {
     let body = "";
     request.on("data", (chunk) => {
@@ -975,11 +1027,11 @@ const api = createServer((request, response) => {
   }
   if (
     finalListening &&
-    request.url === `/api/v1/operator/lessons/${lesson.id}/revisions/1`
+    request.url === `/api/v2/operator/lessons/${lesson.id}/revisions/1`
   ) {
     response.end(
       JSON.stringify({
-        ...lesson,
+        ...neutralFixture(lesson),
         audio: [
           {
             assetId: "audio-protocol",
@@ -2354,6 +2406,62 @@ test("operator versions a character voice profile through the real mobile page",
       true,
     );
   } finally {
+    accounts = false;
+    operatorAccount = false;
+  }
+});
+
+test("native course preview submits Cantonese through the v2 grade route", async () => {
+  accounts = true;
+  operatorAccount = true;
+  nativePreview = true;
+  previewGrades.length = 0;
+  try {
+    await browser("open", origin + "/");
+    await browser("cookies", "set", "brioche.sid", "shell-a");
+    await browser("set", "viewport", "390", "844");
+    await browser(
+      "open",
+      origin + `/author-preview?lessonId=${nativePreviewLesson.id}&revision=1`,
+    );
+    await browser("wait", ".practice-input");
+    assert.equal(
+      await evaluate("document.querySelector('.practice-input').lang"),
+      "yue-Hant-HK",
+    );
+    assert.ok(
+      await evaluate(
+        "document.querySelector('.author-preview').textContent.includes('nei5 hou2')",
+      ),
+    );
+    assert.equal(
+      await evaluate("document.documentElement.scrollWidth <= innerWidth"),
+      true,
+    );
+    await browser("fill", ".practice-input", "點心");
+    await browser("click", ".exercise-sheet:has(.practice-input) .primary");
+    await browser(
+      "wait",
+      ".exercise-sheet:has(.practice-input) .practice-feedback.is-correct",
+    );
+    assert.deepEqual(previewGrades, [
+      {
+        path: `/api/v2/operator/lessons/${nativePreviewLesson.id}/revisions/1/grade`,
+        document: {
+          revision: 1,
+          exerciseId: "text",
+          answer: { kind: "text", text: "點心" },
+        },
+      },
+    ]);
+    assert.equal(
+      await evaluate(
+        "document.activeElement.classList.contains('practice-feedback')",
+      ),
+      true,
+    );
+  } finally {
+    nativePreview = false;
     accounts = false;
     operatorAccount = false;
   }

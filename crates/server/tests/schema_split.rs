@@ -5162,6 +5162,64 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         1,
         "native package/source/import audit all belong to Brioche"
     );
+    // The same restricted remote content consumer must preview v2 courses
+    // without reading any foreign product or leaking the private author source.
+    let native_row = owner.query_one_raw(Statement::from_string(DbBackend::Postgres,
+        "SELECT l.lesson_id,l.revision FROM speech_package_imports p JOIN lesson_revisions l ON (l.lesson_id,l.revision,l.product_id)=(p.lesson_id,p.revision,p.product_id) WHERE p.id=repeat('6',32) AND p.product_id='brioche'"))
+        .await.unwrap().unwrap();
+    let native_id = native_row.try_get::<String>("", "lesson_id").unwrap();
+    let native_revision = native_row.try_get::<i32>("", "revision").unwrap();
+    let native_preview_path =
+        format!("/api/v2/operator/lessons/{native_id}/revisions/{native_revision}");
+    let (status, native_preview) = request(
+        &content_app,
+        "GET",
+        &native_preview_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{native_preview}");
+    assert_eq!(native_preview["targetLanguage"], "fr-FR");
+    assert_eq!(native_preview["schemaVersion"], "2.0");
+    assert!(native_preview.get("serverOnly").is_none());
+    assert!(native_preview.get("editorial").is_none());
+    for asset in native_preview["audio"].as_array().unwrap() {
+        assert!(
+            asset["url"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("{native_preview_path}/audio/"))
+        );
+        let response = content_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(asset["url"].as_str().unwrap())
+                    .header("cookie", &cookie)
+                    .header("range", "bytes=0-43")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 206);
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+    }
+    assert_eq!(
+        request(
+            &content_app,
+            "GET",
+            &format!("{native_preview_path}?product=hargow"),
+            None,
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
     assert_eq!(
         alignment_calls_before,
         [

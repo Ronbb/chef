@@ -1,9 +1,9 @@
 import { Form, Link, data } from "react-router";
 import { useLayoutEffect, useRef } from "react";
-import type { PublicLesson } from "@brioche/contracts/PublicLesson";
+import type { NeutralLesson } from "@brioche/contracts/NeutralLesson";
 import type { AdminLessonAudioStatus } from "@brioche/contracts/AdminLessonAudioStatus";
 import { LessonAudioReview } from "../components/admin-lesson-audio-review";
-import type { PreviewRelease } from "@brioche/contracts/PreviewRelease";
+import type { NeutralPreviewRelease } from "@brioche/contracts/NeutralPreviewRelease";
 import { getIdentity, getPrivate } from "../lib/api.server";
 import { ReadingBlock } from "../components/reading-block";
 import { TeachingBlock } from "../components/teaching-block";
@@ -19,16 +19,16 @@ export async function loader({ request }: Route.LoaderArgs) {
   const id = query.get("lessonId") ?? "",
     revision = query.get("revision") ?? "";
   const releaseId = query.get("releaseId") ?? "";
-  let release: PreviewRelease | null = null;
+  let release: NeutralPreviewRelease | null = null;
   if (releaseId) {
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(releaseId))
       throw new Response("发布批次编号无效。", { status: 400 });
-    release = await getPrivate<PreviewRelease>(
+    release = await getPrivate<NeutralPreviewRelease>(
       request,
-      `/api/v1/operator/releases/${releaseId}`,
+      `/api/v2/operator/releases/${releaseId}`,
     );
   }
-  let lesson: PublicLesson | null = null;
+  let lesson: NeutralLesson | null = null;
   if (id || revision) {
     if (
       !/^[A-Za-z0-9_-]{1,100}$/.test(id) ||
@@ -48,9 +48,9 @@ export async function loader({ request }: Route.LoaderArgs) {
       )
     )
       throw new Response("这堂课不属于所选发布批次。", { status: 404 });
-    lesson = await getPrivate<PublicLesson>(
+    lesson = await getPrivate<NeutralLesson>(
       request,
-      `/api/v1/operator/lessons/${id}/revisions/${revision}`,
+      `/api/v2/operator/lessons/${id}/revisions/${revision}`,
     );
   }
   const audioReview = lesson?.audio?.length
@@ -146,7 +146,9 @@ export default function AuthorPreview({
                           >
                             <span>
                               {item.title.zh}
-                              <small lang="fr">{item.title.fr}</small>
+                              <small lang={item.targetLanguage}>
+                                {item.title.target}
+                              </small>
                             </span>
                             <span>第 {item.revision} 版</span>
                           </Link>
@@ -193,8 +195,8 @@ export default function AuthorPreview({
       {lesson && (
         <div key={lesson.id + ":" + lesson.revision}>
           <div className="lesson-header">
-            <h2 lang="fr" ref={lessonHeading} tabIndex={-1}>
-              {lesson.title.fr}
+            <h2 lang={lesson.targetLanguage} ref={lessonHeading} tabIndex={-1}>
+              {lesson.title.target}
             </h2>
             <p>
               {lesson.title.zh} · 第 {lesson.revision} 版

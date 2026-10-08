@@ -35,7 +35,8 @@ import type { AdminLessonAudioStatus } from "@brioche/contracts/AdminLessonAudio
 import Practice from "../app/routes/practice";
 import type { Block } from "@brioche/contracts/Block";
 import { Scrollbar } from "../app/components/scrollbar";
-import type { PreviewRelease } from "@brioche/contracts/PreviewRelease";
+import type { NeutralPreviewRelease } from "@brioche/contracts/NeutralPreviewRelease";
+import { neutralFixture } from "../test-neutral.mjs";
 import type { ReviewHistoryPage } from "@brioche/contracts/ReviewHistoryPage";
 import type { Catalog } from "@brioche/contracts/Catalog";
 import type { StudyDashboard } from "@brioche/contracts/StudyDashboard";
@@ -293,7 +294,7 @@ window.fetch = async (input, init) => {
     );
   }
   if (
-    String(input).startsWith("/api/v1/operator/lessons/") &&
+    /^\/api\/v[12]\/operator\/lessons\//.test(String(input)) &&
     init?.method === "POST"
   ) {
     return new Promise<Response>((resolve) => {
@@ -904,10 +905,10 @@ function ScrollHarness() {
 }
 function AuthorHarness() {
   const loaderData = useLoaderData() as {
-    lesson: typeof lesson | null;
+    lesson: NeutralLesson | null;
     id: string;
     revision: string;
-    release: PreviewRelease | null;
+    release: NeutralPreviewRelease | null;
     releaseId: string;
   };
   const [user, setUser] = useState({
@@ -1398,7 +1399,11 @@ const router = createMemoryRouter(
                         {
                           id: lesson.unitId,
                           titleZh: "日常对话",
-                          lessons: [summary, second],
+                          lessons: [summary, second].map((item) => ({
+                            ...neutralFixture(lesson),
+                            ...item,
+                            title: { target: item.title.fr, zh: item.title.zh },
+                          })),
                         },
                       ],
                     },
@@ -1408,7 +1413,7 @@ const router = createMemoryRouter(
               }
             : null,
           lesson: id
-            ? {
+            ? neutralFixture({
                 ...lesson,
                 id,
                 revision: Number(revision),
@@ -1457,7 +1462,7 @@ const router = createMemoryRouter(
                     ],
                   },
                 ],
-              }
+              })
             : null,
         };
       },

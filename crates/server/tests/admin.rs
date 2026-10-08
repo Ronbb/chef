@@ -16,6 +16,249 @@ struct Browser {
     cookie: String,
     csrf: String,
 }
+#[tokio::test]
+#[ignore = "set TEST_DATABASE_URL to a dedicated PostgreSQL database"]
+async fn neutral_private_preview_grades_without_learning_writes_and_protects_media() {
+    use sha2::{Digest, Sha256};
+    let url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let admin = Database::connect(&url).await.unwrap();
+    let schema = format!(
+        "preview_neutral_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    admin
+        .execute_unprepared(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let mut options = ConnectOptions::new(url);
+    options.set_schema_search_path(&schema).sqlx_logging(false);
+    let db = Database::connect(options).await.unwrap();
+    brioche_migration::Migrator::up(&db, None).await.unwrap();
+    let root = assets::fixture_assets(&db, &schema).await;
+    let backend = Backend::new(db.clone()).await.unwrap();
+    let app = identity::router_with_media_root(
+        backend.clone(),
+        CsrfPolicy::new(["http://localhost:5173".into()]).unwrap(),
+        false,
+        root.clone(),
+    );
+    let mut operator = Browser::new(app.clone()).await;
+    operator
+        .register(&backend, "preview-operator@example.test", true)
+        .await;
+    let mut learner = Browser::new(app.clone()).await;
+    learner
+        .register(&backend, "preview-learner@example.test", false)
+        .await;
+    let mut visitor = Browser::new(app.clone()).await;
+    let source: Value =
+        serde_json::from_str(include_str!("fixtures/neutral-cantonese.lesson.json")).unwrap();
+    let checked = chef_engine::author_source::check_any_source(&source).unwrap();
+    let mut public = checked.public_document().unwrap();
+    let asset: Value = db.query_one_raw(Statement::from_string(DbBackend::Postgres, "SELECT descriptor FROM media_assets WHERE asset_id='art-bakery-morning' AND revision=1")).await.unwrap().unwrap().try_get("", "descriptor").unwrap();
+    public["media"] = json!([asset]);
+    let mut wav = vec![0u8; 4844];
+    wav[..4].copy_from_slice(b"RIFF");
+    wav[4..8].copy_from_slice(&4836u32.to_le_bytes());
+    wav[8..16].copy_from_slice(b"WAVEfmt ");
+    wav[16..20].copy_from_slice(&16u32.to_le_bytes());
+    wav[20..24].copy_from_slice(&[1, 0, 1, 0]);
+    wav[24..28].copy_from_slice(&24000u32.to_le_bytes());
+    wav[28..32].copy_from_slice(&48000u32.to_le_bytes());
+    wav[32..36].copy_from_slice(&[2, 0, 16, 0]);
+    wav[36..40].copy_from_slice(b"data");
+    wav[40..44].copy_from_slice(&4800u32.to_le_bytes());
+    let hash = format!("{:x}", Sha256::digest(&wav));
+    std::fs::write(root.join(format!("{hash}.wav")), &wav).unwrap();
+    let audio = json!({"assetId":"synthetic-preview","revision":1,"sha256":hash,"mimeType":"audio/wav","durationMs":100,"creditZh":"仅协议测试","url":format!("/api/audio/{hash}.wav")});
+    public["audio"] = json!([audio]);
+    public["knowledge"]["vocabulary"][0]["recording"] =
+        json!({"asset":audio,"startMs":0,"endMs":100});
+    brioche_course_contract::neutral::decode_public(public.clone()).unwrap();
+    let id = checked.id();
+    db.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres, "INSERT INTO lesson_revisions(lesson_id,revision,published,public_document,server_document) VALUES($1,1,false,$2,$3)", [id.into(),public.into(),source.into()])).await.unwrap();
+    let manifest = json!({"id":"neutral-preview-release","schemaVersion":"1.0","levels":[{"id":checked.level_id(),"label":"协议测试","units":[{"id":checked.unit_id(),"titleZh":"测试","lessons":[{"lessonId":id,"revision":1}]}]}]});
+    db.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO content_releases(id,manifest,content_hash) VALUES('neutral-preview-release',$1,repeat('a',64))",[manifest.into()])).await.unwrap();
+    db.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO release_entries(release_id,lesson_id,revision,position) VALUES('neutral-preview-release',$1,1,0)",[id.into()])).await.unwrap();
+    let path = format!("/api/v2/operator/lessons/{id}/revisions/1");
+    let (status, preview) = operator.send("GET", &path, None, true).await;
+    assert_eq!(status, 200, "{preview}");
+    assert_eq!(preview["title"]["target"], "你好");
+    assert_eq!(preview["targetLanguage"], "yue-Hant-HK");
+    for forbidden in [
+        "serverOnly",
+        "editorial",
+        "correctOptionId",
+        "templateFr",
+        "\"fr\"",
+    ] {
+        assert!(!preview.to_string().contains(forbidden));
+    }
+    let recording = preview["audio"][0]["url"].as_str().unwrap();
+    assert_eq!(
+        preview["knowledge"]["vocabulary"][0]["recording"]["asset"]["url"],
+        recording
+    );
+    for url in [
+        &path,
+        preview["media"][0]["url"].as_str().unwrap(),
+        recording,
+        "/api/v2/operator/releases/neutral-preview-release",
+    ] {
+        assert_eq!(visitor.send("GET", url, None, true).await.0, 401);
+        assert_eq!(learner.send("GET", url, None, true).await.0, 403);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(url)
+                    .header("cookie", &operator.cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{url}");
+        assert!(
+            response.headers()["cache-control"]
+                .to_str()
+                .unwrap()
+                .contains("no-store")
+        );
+    }
+    let ranged = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(recording)
+                .header("cookie", &operator.cookie)
+                .header("range", "bytes=0-43")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ranged.status(), 206);
+    assert_eq!(
+        ranged
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        &wav[..44]
+    );
+    for (exercise, answer, correct) in [
+        (
+            "choice",
+            json!({"kind":"choice","optionId":"greeting"}),
+            true,
+        ),
+        ("text", json!({"kind":"text","text":"點心"}), true),
+        ("text", json!({"kind":"text","text":"点心"}), false),
+        (
+            "order",
+            json!({"kind":"order","tokenIds":["first","bye","second"]}),
+            true,
+        ),
+    ] {
+        let body = json!({"revision":1,"exerciseId":exercise,"answer":answer});
+        let (status, result) = operator
+            .send("POST", &format!("{path}/grade"), Some(body.clone()), true)
+            .await;
+        assert_eq!(status, 200, "{result}");
+        assert_eq!(result["correct"], correct);
+        assert_eq!(
+            learner
+                .send("POST", &format!("{path}/grade"), Some(body), true)
+                .await
+                .0,
+            403
+        );
+    }
+    assert_eq!(
+        operator
+            .send(
+                "POST",
+                &format!("{path}/grade"),
+                Some(
+                    json!({"revision":2,"exerciseId":"text","answer":{"kind":"text","text":"點心"}})
+                ),
+                true
+            )
+            .await
+            .0,
+        400
+    );
+    assert_eq!(operator.send("POST", &format!("{path}/grade"), Some(json!({"revision":1,"exerciseId":"choice","answer":{"kind":"choice","optionId":"forged"}})), true).await.0, 400);
+    assert_eq!(
+        operator
+            .send("GET", &path.replace("/v2/", "/v1/"), None, true)
+            .await
+            .0,
+        409
+    );
+    let (_, release) = operator
+        .send(
+            "GET",
+            "/api/v2/operator/releases/neutral-preview-release",
+            None,
+            true,
+        )
+        .await;
+    assert_eq!(
+        release["catalog"]["levels"][0]["units"][0]["lessons"][0]["title"]["target"],
+        "你好"
+    );
+    let n = db
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM learning_sessions",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "n")
+        .unwrap();
+    assert_eq!(n, 0, "private preview must never start a learning session");
+    let legacy_source = chef_engine::development_source().unwrap();
+    let legacy = chef_engine::project_source(legacy_source.clone()).unwrap();
+    db.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres, "INSERT INTO lesson_revisions(lesson_id,revision,published,public_document,server_document) VALUES($1,$2,false,$3,$4)", [legacy.id.clone().into(), (legacy.revision as i32).into(), serde_json::to_value(&legacy).unwrap().into(), legacy_source.into()])).await.unwrap();
+    let legacy_path = format!(
+        "/api/v2/operator/lessons/{}/revisions/{}",
+        legacy.id, legacy.revision
+    );
+    let (status, french) = operator.send("GET", &legacy_path, None, true).await;
+    assert_eq!(status, 200);
+    assert_eq!(french["title"]["target"], legacy.title.fr);
+    assert_eq!(french["targetLanguage"], "fr-FR");
+    assert_eq!(
+        operator
+            .send("GET", &legacy_path.replace("/v2/", "/v1/"), None, true)
+            .await
+            .0,
+        200
+    );
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "INSERT INTO content_withdrawals(lesson_id,revision) VALUES($1,1)",
+        [id.into()],
+    ))
+    .await
+    .unwrap();
+    assert_eq!(operator.send("GET", &path, None, true).await.0, 410);
+    assert_eq!(operator.send("GET", recording, None, true).await.0, 410);
+    db.close().await.unwrap();
+    admin
+        .execute_unprepared(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
 #[derive(Default)]
 struct MockQwen {
     calls: std::sync::Mutex<Vec<Value>>,

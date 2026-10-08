@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { createRequestHandler } from "react-router";
 import { productWebUrl, browserCliUrl } from "../test-product.mjs";
+import { neutralFixture } from "../test-neutral.mjs";
 const build = await import(productWebUrl("build/server/index.js"));
 
 const source = JSON.parse(
@@ -264,7 +265,7 @@ const server = createServer((request, response) => {
   } else if (
     authenticated &&
     profile.role === "operator" &&
-    request.url === "/api/v1/operator/releases/ssr-release"
+    request.url === "/api/v2/operator/releases/ssr-release"
   ) {
     response.end(
       JSON.stringify({
@@ -279,7 +280,7 @@ const server = createServer((request, response) => {
                 {
                   id: lesson.unitId,
                   titleZh: "早餐与面包店",
-                  lessons: [lesson],
+                  lessons: [neutralPublicLesson ?? neutralFixture(lesson)],
                 },
               ],
             },
@@ -292,9 +293,9 @@ const server = createServer((request, response) => {
     authenticated &&
     profile.role === "operator" &&
     request.url ===
-      `/api/v1/operator/lessons/${lesson.id}/revisions/${lesson.revision}`
+      `/api/v2/operator/lessons/${(neutralPublicLesson ?? lesson).id}/revisions/${(neutralPublicLesson ?? lesson).revision}`
   ) {
-    response.end(JSON.stringify(lesson));
+    response.end(JSON.stringify(neutralPublicLesson ?? neutralFixture(lesson)));
   } else if (
     request.url === "/api/catalog" ||
     request.url === "/api/v2/catalog"
@@ -544,13 +545,13 @@ test("author SSR requires an operator and reads only the selected release member
     assert.match(response.headers.get("Cache-Control"), /private, no-store/);
     assert.match(response.headers.get("Vary"), /Cookie/);
     const privateReads = requests.filter((entry) =>
-      entry.path.startsWith("/api/v1/operator/"),
+      entry.path.startsWith("/api/v2/operator/"),
     );
     assert.deepEqual(
       privateReads.map((entry) => entry.path),
       [
-        "/api/v1/operator/releases/ssr-release",
-        `/api/v1/operator/lessons/${lesson.id}/revisions/${lesson.revision}`,
+        "/api/v2/operator/releases/ssr-release",
+        `/api/v2/operator/lessons/${lesson.id}/revisions/${lesson.revision}`,
       ],
     );
     assert.ok(
@@ -565,7 +566,7 @@ test("author SSR requires an operator and reads only the selected release member
     assert.equal(response.status, 404);
     assert.equal(
       requests.filter((entry) =>
-        entry.path.startsWith("/api/v1/operator/lessons/"),
+        entry.path.startsWith("/api/v2/operator/lessons/"),
       ).length,
       0,
     );
@@ -1342,20 +1343,91 @@ test("public reading exposes every body, including multiple dialogues", async ()
   }
 });
 
-test("native Cantonese speech options SSR preserves cast and uses the v2 endpoint", async () => {
-  const native = JSON.parse(await readFile(new URL("../../../crates/server/tests/fixtures/neutral-cantonese.lesson.json", import.meta.url), "utf8"));
-  neutralPublicLesson = Object.fromEntries([...fields, "targetLanguage", "explanationLanguage"].map((key) => [key, native[key]]));
+test("native private course preview preserves Jyutping and never requests legacy French data", async () => {
+  const native = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../crates/server/tests/fixtures/neutral-cantonese.lesson.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  neutralPublicLesson = Object.fromEntries(
+    [...fields, "targetLanguage", "explanationLanguage"].map((key) => [
+      key,
+      native[key],
+    ]),
+  );
   neutralPublicLesson.media = [];
   authenticated = true;
   profile.role = "operator";
   requests.length = 0;
   try {
-    const response = await request(`/admin/speech-plans?lessonId=${native.id}&revision=1`);
+    const response = await request(
+      `/author-preview?releaseId=ssr-release&lessonId=${native.id}&revision=1`,
+    );
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.ok(html.includes(native.title.target));
+    assert.ok(html.includes("nei5 hou2"));
+    assert.ok(html.includes('lang="yue-Hant-HK"'));
+    assert.ok(!html.includes("[object Object]"));
+    assert.ok(!html.includes("correctOptionId"));
+    assert.ok(!html.includes("serverOnly"));
+    assert.match(response.headers.get("Cache-Control"), /private, no-store/);
+    assert.ok(
+      requests.some(
+        (r) => r.path === `/api/v2/operator/lessons/${native.id}/revisions/1`,
+      ),
+    );
+    assert.ok(
+      requests.every(
+        (r) => r.method === "GET" && !r.path.startsWith("/api/v1/operator/"),
+      ),
+    );
+  } finally {
+    neutralPublicLesson = null;
+    authenticated = false;
+    profile.role = "learner";
+  }
+});
+
+test("native Cantonese speech options SSR preserves cast and uses the v2 endpoint", async () => {
+  const native = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../crates/server/tests/fixtures/neutral-cantonese.lesson.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  neutralPublicLesson = Object.fromEntries(
+    [...fields, "targetLanguage", "explanationLanguage"].map((key) => [
+      key,
+      native[key],
+    ]),
+  );
+  neutralPublicLesson.media = [];
+  authenticated = true;
+  profile.role = "operator";
+  requests.length = 0;
+  try {
+    const response = await request(
+      `/admin/speech-plans?lessonId=${native.id}&revision=1`,
+    );
     assert.equal(response.status, 200);
     const html = await response.text();
     assert.ok(html.includes(native.cast[0].displayName));
     assert.ok(!html.includes("[object Object]"));
-    assert.ok(requests.some((r) => r.path === `/api/v2/operator/lessons/${native.id}/revisions/1/speech-options`));
+    assert.ok(
+      requests.some(
+        (r) =>
+          r.path ===
+          `/api/v2/operator/lessons/${native.id}/revisions/1/speech-options`,
+      ),
+    );
     assert.ok(requests.every((r) => r.method === "GET"));
   } finally {
     neutralPublicLesson = null;

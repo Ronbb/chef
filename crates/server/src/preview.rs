@@ -2,6 +2,7 @@
 use crate::{
     AppError,
     admin_auth::AdminAuth,
+    author_source::CheckedLesson,
     learning::{field, one, product_filter},
 };
 use axum::{
@@ -10,7 +11,8 @@ use axum::{
     routing::{get, post},
 };
 use brioche_course_contract::{
-    Catalog, GradeRequest, GradeResult, Level, PreviewRelease, PublicLesson, Unit,
+    GradeRequest, GradeResult, PreviewRelease, PublicLesson,
+    neutral::{NeutralLesson, NeutralPreviewRelease},
 };
 use sea_orm::{ConnectionTrait, DbBackend, IsolationLevel, Statement, TransactionTrait};
 
@@ -31,6 +33,23 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
 ) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/releases/{id}", get(release))
+        .route("/api/v2/operator/releases/{id}", get(release_neutral))
+        .route(
+            "/api/v2/operator/lessons/{id}/revisions/{revision}",
+            get(lesson_neutral),
+        )
+        .route(
+            "/api/v2/operator/lessons/{id}/revisions/{revision}/grade",
+            post(grade_neutral),
+        )
+        .route(
+            "/api/v2/operator/lessons/{id}/revisions/{revision}/media/{name}",
+            get(media),
+        )
+        .route(
+            "/api/v2/operator/lessons/{id}/revisions/{revision}/audio/{name}",
+            get(audio),
+        )
         .route(
             "/api/v1/operator/lessons/{id}/revisions/{revision}/grade",
             post(grade),
@@ -47,11 +66,23 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
             "/api/v1/operator/lessons/{id}/revisions/{revision}/audio/{name}",
             get(audio),
         )
+        .route_layer(axum::middleware::from_fn(reject_query))
         .layer(axum::Extension(PreviewMedia {
             root,
             permits: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         }))
         .with_state(Store { db, product })
+}
+
+// Product comes only from trusted service configuration, never preview URLs.
+async fn reject_query(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, AppError> {
+    if request.uri().query().is_some() {
+        return Err(AppError::InvalidInput);
+    }
+    Ok(next.run(request).await)
 }
 
 fn valid_id(id: &str) -> bool {
@@ -68,6 +99,27 @@ async fn release(
     Path(id): Path<String>,
 ) -> Result<Json<PreviewRelease>, AppError> {
     auth.require_operator().await?;
+    Ok(Json(
+        serde_json::from_value(read_release(&backend, id, false).await?)
+            .map_err(|_| AppError::Unavailable)?,
+    ))
+}
+async fn release_neutral(
+    auth: AdminAuth,
+    State(backend): State<Store>,
+    Path(id): Path<String>,
+) -> Result<Json<NeutralPreviewRelease>, AppError> {
+    auth.require_operator().await?;
+    Ok(Json(
+        serde_json::from_value(read_release(&backend, id, true).await?)
+            .map_err(|_| AppError::Unavailable)?,
+    ))
+}
+async fn read_release(
+    backend: &Store,
+    id: String,
+    neutral: bool,
+) -> Result<serde_json::Value, AppError> {
     if !valid_id(&id) {
         return Err(AppError::InvalidInput);
     }
@@ -104,47 +156,33 @@ async fn release(
             let mut lessons = Vec::new();
             for entry in unit.lessons {
                 let row = rows.next().ok_or(AppError::Unavailable)?;
-                let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
+                let lesson = CheckedLesson::from_public_document(field(&row, "public_document")?)
                     .map_err(|_| AppError::Unavailable)?;
-                lesson.validate().map_err(|_| AppError::Unavailable)?;
-                if lesson.id != entry.lesson_id
-                    || lesson.revision != entry.revision
-                    || lesson.level_id != level.id
-                    || lesson.unit_id != unit.id
+                if lesson.id() != entry.lesson_id
+                    || lesson.revision() != entry.revision
+                    || lesson.level_id() != level.id
+                    || lesson.unit_id() != unit.id
                 {
                     return Err(AppError::Unavailable);
                 }
                 if field::<bool>(&row, "withdrawn")? {
-                    withdrawn.push(lesson.id.clone());
+                    withdrawn.push(lesson.id().to_owned());
                 }
-                lessons.push(lesson.summary());
+                lessons.push(lesson.summary_document(neutral)?);
             }
-            units.push(Unit {
-                id: unit.id,
-                title_zh: unit.title_zh,
-                lessons,
-            });
+            units.push(serde_json::json!({"id":unit.id,"titleZh":unit.title_zh,"lessons":lessons}));
         }
-        levels.push(Level {
-            id: level.id,
-            label: level.label,
-            units,
-        });
+        levels.push(serde_json::json!({"id":level.id,"label":level.label,"units":units}));
     }
     if rows.next().is_some() {
         return Err(AppError::Unavailable);
     }
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
-    Ok(Json(PreviewRelease {
-        id,
-        catalog: Catalog {
-            levels,
-            development_fixture: false,
-        },
-        withdrawn_lesson_ids: withdrawn,
-    }))
+    Ok(
+        serde_json::json!({"id":id,"catalog":{"levels":levels,"developmentFixture":false},"withdrawnLessonIds":withdrawn}),
+    )
 }
-async fn read(backend: &Store, id: &str, revision: u32) -> Result<PublicLesson, AppError> {
+async fn read_checked(backend: &Store, id: &str, revision: u32) -> Result<CheckedLesson, AppError> {
     if !valid_id(id) || revision == 0 || revision > i32::MAX as u32 {
         return Err(AppError::InvalidInput);
     }
@@ -154,13 +192,43 @@ async fn read(backend: &Store, id: &str, revision: u32) -> Result<PublicLesson, 
     if field::<bool>(&row, "withdrawn")? {
         return Err(AppError::Gone);
     }
-    let mut lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
+    let lesson = CheckedLesson::from_public_document(field(&row, "public_document")?)
         .map_err(|_| AppError::Unavailable)?;
-    lesson.validate().map_err(|_| AppError::Unavailable)?;
-    if lesson.id != id || lesson.revision != revision {
+    if lesson.id() != id || lesson.revision() != revision {
         return Err(AppError::Unavailable);
     }
-    for asset in &mut lesson.media {
+    Ok(lesson)
+}
+async fn read(backend: &Store, id: &str, revision: u32) -> Result<PublicLesson, AppError> {
+    let CheckedLesson::Legacy(mut lesson) = read_checked(backend, id, revision).await? else {
+        return Err(AppError::Conflict);
+    };
+    rewrite_assets(&mut lesson.media, &mut lesson.audio, id, revision, "v1")?;
+    rewrite_recordings(
+        lesson
+            .knowledge
+            .vocabulary
+            .iter_mut()
+            .filter_map(|v| v.recording.as_mut())
+            .chain(
+                lesson
+                    .knowledge
+                    .grammar
+                    .iter_mut()
+                    .flat_map(|g| g.examples.iter_mut().filter_map(|e| e.recording.as_mut())),
+            ),
+        &lesson.audio,
+    )?;
+    Ok(lesson)
+}
+fn rewrite_assets(
+    media: &mut [brioche_course_contract::MediaAsset],
+    audio: &mut [brioche_course_contract::AudioAsset],
+    id: &str,
+    revision: u32,
+    version: &str,
+) -> Result<(), AppError> {
+    for asset in media {
         let name = asset
             .url
             .strip_prefix("/api/media/")
@@ -168,9 +236,10 @@ async fn read(backend: &Store, id: &str, revision: u32) -> Result<PublicLesson, 
         if name.contains('/') || name.contains('?') || name.contains('#') {
             return Err(AppError::Unavailable);
         }
-        asset.url = format!("/api/v1/operator/lessons/{id}/revisions/{revision}/media/{name}");
+        asset.url =
+            format!("/api/{version}/operator/lessons/{id}/revisions/{revision}/media/{name}");
     }
-    for asset in &mut lesson.audio {
+    for asset in audio {
         let name = asset
             .url
             .strip_prefix("/api/audio/")
@@ -178,29 +247,54 @@ async fn read(backend: &Store, id: &str, revision: u32) -> Result<PublicLesson, 
         if name.contains('/') || name.contains('?') || name.contains('#') {
             return Err(AppError::Unavailable);
         }
-        asset.url = format!("/api/v1/operator/lessons/{id}/revisions/{revision}/audio/{name}");
+        asset.url =
+            format!("/api/{version}/operator/lessons/{id}/revisions/{revision}/audio/{name}");
     }
-    for recording in lesson
-        .knowledge
-        .vocabulary
-        .iter_mut()
-        .filter_map(|v| v.recording.as_mut())
-        .chain(
-            lesson
-                .knowledge
-                .grammar
-                .iter_mut()
-                .flat_map(|g| g.examples.iter_mut().filter_map(|e| e.recording.as_mut())),
-        )
-    {
-        let asset = lesson
-            .audio
+    Ok(())
+}
+fn rewrite_recordings<'a>(
+    recordings: impl Iterator<Item = &'a mut brioche_course_contract::KnowledgeRecording>,
+    audio: &[brioche_course_contract::AudioAsset],
+) -> Result<(), AppError> {
+    for recording in recordings {
+        let asset = audio
             .iter()
             .find(|asset| asset.asset_id == recording.asset.asset_id)
             .ok_or(AppError::Unavailable)?;
         recording.asset.url = asset.url.clone();
     }
-    Ok(lesson)
+    Ok(())
+}
+async fn lesson_neutral(
+    auth: AdminAuth,
+    State(backend): State<Store>,
+    Path((id, revision)): Path<(String, u32)>,
+) -> Result<Json<NeutralLesson>, AppError> {
+    auth.require_operator().await?;
+    let checked = read_checked(&backend, &id, revision).await?;
+    let mut lesson = brioche_course_contract::neutral::decode_public(
+        checked
+            .public_document()
+            .map_err(|_| AppError::Unavailable)?,
+    )
+    .map_err(|_| AppError::Unavailable)?;
+    rewrite_assets(&mut lesson.media, &mut lesson.audio, &id, revision, "v2")?;
+    rewrite_recordings(
+        lesson
+            .knowledge
+            .vocabulary
+            .iter_mut()
+            .filter_map(|v| v.recording.as_mut())
+            .chain(
+                lesson
+                    .knowledge
+                    .grammar
+                    .iter_mut()
+                    .flat_map(|g| g.examples.iter_mut().filter_map(|e| e.recording.as_mut())),
+            ),
+        &lesson.audio,
+    )?;
+    Ok(Json(lesson))
 }
 async fn lesson(
     auth: AdminAuth,
@@ -216,6 +310,24 @@ async fn grade(
     State(backend): State<Store>,
     Path((id, revision)): Path<(String, u32)>,
     Json(request): Json<GradeRequest>,
+) -> Result<Json<GradeResult>, AppError> {
+    grade_checked(auth, backend, id, revision, request, false).await
+}
+async fn grade_neutral(
+    auth: AdminAuth,
+    State(backend): State<Store>,
+    Path((id, revision)): Path<(String, u32)>,
+    Json(request): Json<GradeRequest>,
+) -> Result<Json<GradeResult>, AppError> {
+    grade_checked(auth, backend, id, revision, request, true).await
+}
+async fn grade_checked(
+    auth: AdminAuth,
+    backend: Store,
+    id: String,
+    revision: u32,
+    request: GradeRequest,
+    neutral: bool,
 ) -> Result<Json<GradeResult>, AppError> {
     let operator = auth.require_operator().await?;
     if !valid_id(&id) || revision == 0 || revision > i32::MAX as u32 || request.revision != revision
@@ -234,17 +346,17 @@ async fn grade(
     if field::<bool>(&row, "withdrawn")? {
         return Err(AppError::Gone);
     }
-    let lesson: PublicLesson = serde_json::from_value(field(&row, "public_document")?)
+    let lesson = CheckedLesson::from_public_document(field(&row, "public_document")?)
         .map_err(|_| AppError::Unavailable)?;
-    lesson.validate().map_err(|_| AppError::Unavailable)?;
-    if lesson.id != id || lesson.revision != revision {
+    if lesson.id() != id || lesson.revision() != revision {
         return Err(AppError::Unavailable);
     }
+    if !neutral && !matches!(lesson, CheckedLesson::Legacy(_)) {
+        return Err(AppError::Conflict);
+    }
     let source: serde_json::Value = field(&row, "server_document")?;
-    let grader =
-        crate::grading::Grader::from_source(&lesson, &source).map_err(|_| AppError::Unavailable)?;
-    let result = grader
-        .grade(&lesson, &request.exercise_id, &request.answer)
+    let result = lesson
+        .grade(&source, &request.exercise_id, &request.answer)
         .map_err(|error| match error {
             crate::grading::GradeError::InvalidContent => AppError::Unavailable,
             crate::grading::GradeError::UnknownExercise => AppError::NotFound,
@@ -260,13 +372,13 @@ async fn media(
     Path((id, revision, name)): Path<(String, u32, String)>,
 ) -> Result<axum::response::Response, AppError> {
     auth.require_operator().await?;
-    let lesson = read(&backend, &id, revision).await?;
+    let lesson = read_checked(&backend, &id, revision).await?;
     let asset = lesson
-        .media
-        .into_iter()
+        .media()
+        .iter()
         .find(|asset| asset.url.rsplit('/').next() == Some(name.as_str()))
         .ok_or(AppError::NotFound)?;
-    crate::media::asset_response(config.root, asset, config.permits).await
+    crate::media::asset_response(config.root, asset.clone(), config.permits).await
 }
 
 async fn audio(
@@ -277,11 +389,11 @@ async fn audio(
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     auth.require_operator().await?;
-    let lesson = read(&backend, &id, revision).await?;
+    let lesson = read_checked(&backend, &id, revision).await?;
     let asset = lesson
-        .audio
-        .into_iter()
+        .audio()
+        .iter()
         .find(|asset| asset.url.rsplit('/').next() == Some(name.as_str()))
         .ok_or(AppError::NotFound)?;
-    crate::recording::asset_response(config.root, asset, config.permits, headers).await
+    crate::recording::asset_response(config.root, asset.clone(), config.permits, headers).await
 }
