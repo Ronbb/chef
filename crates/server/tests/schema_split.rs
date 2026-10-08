@@ -3403,6 +3403,45 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(status, 200, "{filtered}");
     assert!(filtered["lessons"].as_array().unwrap().is_empty());
     assert!(filtered["releases"].as_array().unwrap().is_empty());
+    let foreign_preview = format!(
+        "/api/v1/operator/lessons/{}/revisions/{}",
+        h_lesson.id, h_lesson.revision
+    );
+    let mut private_paths = vec![
+        foreign_preview.clone(),
+        "/api/v1/operator/releases/hargow-catalog-release".to_owned(),
+    ];
+    for asset in &h_lesson.media {
+        private_paths.push(format!(
+            "{foreign_preview}/media/{}",
+            asset.url.rsplit('/').next().unwrap()
+        ));
+    }
+    for asset in &h_lesson.audio {
+        private_paths.push(format!(
+            "{foreign_preview}/audio/{}",
+            asset.url.rsplit('/').next().unwrap()
+        ));
+    }
+    // Include both transports even when the synthetic source has no audio.
+    private_paths.push(format!("{foreign_preview}/audio/unknown.wav"));
+    for path in private_paths {
+        let (status, body) =
+            request(&content_app, "GET", &path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 404, "{path}: {body}");
+    }
+    let mut foreign_grade = grade_request.clone();
+    foreign_grade["revision"] = h_lesson.revision.into();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        &format!("{foreign_preview}/grade"),
+        Some(foreign_grade),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
     let foreign_review = format!(
         "/api/v1/operator/lessons/{}/revisions/{}/review",
         h_lesson.id, h_lesson.revision

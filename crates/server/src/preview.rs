@@ -2,7 +2,7 @@
 use crate::{
     AppError,
     admin_auth::AdminAuth,
-    learning::{field, one},
+    learning::{field, one, product_filter},
 };
 use axum::{
     Json, Router,
@@ -22,10 +22,12 @@ struct PreviewMedia {
 #[derive(Clone)]
 struct Store {
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     root: std::path::PathBuf,
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/releases/{id}", get(release))
@@ -49,7 +51,7 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
             root,
             permits: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         }))
-        .with_state(Store { db })
+        .with_state(Store { db, product })
 }
 
 fn valid_id(id: &str) -> bool {
@@ -76,7 +78,10 @@ async fn release(
         .map_err(|_| AppError::Unavailable)?;
     let row = one(
         &tx,
-        "SELECT manifest FROM content_releases WHERE id=$1",
+        &format!(
+            "SELECT manifest FROM content_releases WHERE id=$1{}",
+            product_filter(backend.product, "product_id")
+        ),
         vec![id.clone().into()],
     )
     .await?
@@ -88,7 +93,7 @@ async fn release(
         return Err(AppError::Unavailable);
     }
     let rows = tx.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-        "SELECT r.public_document,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision)) AS withdrawn FROM release_entries e JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision) WHERE e.release_id=$1 ORDER BY e.position",
+        format!("SELECT r.public_document,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) AS withdrawn FROM release_entries e JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision) WHERE e.release_id=$1{}{} ORDER BY e.position", product_filter(backend.product, "w.product_id"), product_filter(backend.product, "e.product_id"), product_filter(backend.product, "r.product_id")),
         [id.clone().into()])).await.map_err(|_| AppError::Unavailable)?;
     let mut rows = rows.into_iter();
     let mut levels = Vec::new();
@@ -144,7 +149,7 @@ async fn read(backend: &Store, id: &str, revision: u32) -> Result<PublicLesson, 
         return Err(AppError::InvalidInput);
     }
     let row = one(&backend.db,
-        "SELECT public_document,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision)) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2",
+        &format!("SELECT public_document,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2{}", product_filter(backend.product, "w.product_id"), product_filter(backend.product, "r.product_id")),
         vec![id.into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     if field::<bool>(&row, "withdrawn")? {
         return Err(AppError::Gone);
@@ -224,7 +229,7 @@ async fn grade(
         .map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
     let row = one(&tx,
-        "SELECT public_document,server_document,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision)) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2",
+        &format!("SELECT public_document,server_document,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2{}", product_filter(backend.product, "w.product_id"), product_filter(backend.product, "r.product_id")),
         vec![id.clone().into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     if field::<bool>(&row, "withdrawn")? {
         return Err(AppError::Gone);

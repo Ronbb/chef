@@ -83,7 +83,7 @@ pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
         .merge(crate::speech_package::router(db.clone()))
         .merge(crate::speech_automatic::router(db.clone()))
         .merge(crate::lesson_audio_reviews::router(db.clone()))
-        .merge(crate::preview::router(root.clone(), db.clone()))
+        .merge(crate::preview::router(root.clone(), db.clone(), product))
         .route("/api/v1/operator/overview", get(overview))
         .route("/api/v1/operator/history", get(history))
         .route(
