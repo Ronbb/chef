@@ -1,5 +1,7 @@
 //! Version 2 public course document. Never project Cantonese into a French API response.
 use super::*;
+#[path = "neutral_legacy.rs"]
+mod legacy;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, TS)]
 pub enum ExplanationLanguage {
@@ -105,6 +107,27 @@ dto!(NeutralLesson {
     #[serde(default,skip_serializing_if="Vec::is_empty")] audio:Vec<AudioAsset>,
     #[serde(default,skip_serializing_if="Vec::is_empty")] audio_tracks:Vec<AudioTrack>
 });
+
+/// Read a public document without private author fields or an implicit v2-to-v1 downgrade.
+pub fn decode_public(value: serde_json::Value) -> Result<NeutralLesson, String> {
+    match value
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("1.0") => {
+            let legacy: PublicLesson =
+                serde_json::from_value(value).map_err(|_| "invalid public v1 document")?;
+            NeutralLesson::try_from(&legacy)
+        }
+        Some("2.0") => {
+            let lesson: NeutralLesson =
+                serde_json::from_value(value).map_err(|_| "invalid public v2 document")?;
+            lesson.validate()?;
+            Ok(lesson)
+        }
+        _ => Err("unsupported public course version".into()),
+    }
+}
 
 impl NeutralLesson {
     fn readings(&self) -> Vec<(&ReadingText, String)> {

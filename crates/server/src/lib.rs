@@ -182,6 +182,7 @@ fn build_router(
         )
         .route("/api/catalog", get(catalog))
         .route("/api/lessons/{id}", get(lesson))
+        .route("/api/v2/lessons/{id}", get(lesson_v2))
         .route("/api/demo/lessons/{id}/grade", post(demo_grade))
         .fallback(|| async { AppError::NotFound })
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
@@ -335,22 +336,45 @@ async fn lesson(
     Path(id): Path<String>,
     Query(query): Query<LessonQuery>,
 ) -> Result<Json<PublicLesson>, AppError> {
-    if state.fixture.is_some() && product.0 == Some(product::ProductId::Hargow) {
+    let value = public_lesson_document(&state, product.0, id, query.revision).await?;
+    let lesson: PublicLesson = serde_json::from_value(value).map_err(|_| AppError::Unavailable)?;
+    lesson.validate().map_err(|_| AppError::Unavailable)?;
+    Ok(Json(lesson))
+}
+async fn lesson_v2(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(product): axum::Extension<ContentProduct>,
+    Path(id): Path<String>,
+    Query(query): Query<LessonQuery>,
+) -> Result<Json<brioche_course_contract::neutral::NeutralLesson>, AppError> {
+    let value = public_lesson_document(&state, product.0, id, query.revision).await?;
+    let lesson = brioche_course_contract::neutral::decode_public(value)
+        .map_err(|_| AppError::Unavailable)?;
+    Ok(Json(lesson))
+}
+// Shared availability query for both public wire versions. Product is trusted deployment context.
+async fn public_lesson_document(
+    state: &AppState,
+    product: Option<product::ProductId>,
+    id: String,
+    revision: Option<u32>,
+) -> Result<serde_json::Value, AppError> {
+    if state.fixture.is_some() && product == Some(product::ProductId::Hargow) {
         return Err(AppError::NotFound);
     }
-    if let Some(revision) = query.revision {
+    if let Some(revision) = revision {
         if revision == 0 || revision > i32::MAX as u32 {
             return Err(AppError::InvalidInput);
         }
         if let Some(fixture) = &state.fixture {
             return if fixture.id == id && fixture.revision == revision {
-                Ok(Json(fixture.clone()))
+                serde_json::to_value(fixture).map_err(|_| AppError::Unavailable)
             } else {
                 Err(AppError::NotFound)
             };
         }
         let db = state.db.as_ref().ok_or(AppError::Unavailable)?;
-        let row=learning::one(db,&format!("SELECT public_document,published,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2{}",if product.0.is_some(){" AND w.product_id=r.product_id"}else{""},learning::product_filter(product.0,"r.product_id")),vec![id.into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
+        let row=learning::one(db,&format!("SELECT public_document,published,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2{}",if product.is_some(){" AND w.product_id=r.product_id"}else{""},learning::product_filter(product,"r.product_id")),vec![id.into(),(revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
         if !learning::field::<bool>(&row, "published")?
             || learning::field::<bool>(&row, "withdrawn")?
         {
@@ -360,15 +384,11 @@ async fn lesson(
                 AppError::NotFound
             });
         }
-        let lesson: PublicLesson =
-            serde_json::from_value(learning::field(&row, "public_document")?)
-                .map_err(|_| AppError::Unavailable)?;
-        lesson.validate().map_err(|_| AppError::Unavailable)?;
-        return Ok(Json(lesson));
+        return learning::field(&row, "public_document");
     }
     if let Some(fixture) = &state.fixture {
         return if fixture.id == id {
-            Ok(Json(fixture.clone()))
+            serde_json::to_value(fixture).map_err(|_| AppError::Unavailable)
         } else {
             Err(AppError::NotFound)
         };
@@ -376,12 +396,10 @@ async fn lesson(
     let db = state.db.as_ref().ok_or(AppError::Unavailable)?;
     // Read only the requested revision, together with the current release pointer.
     // Old published revisions remain available only through the explicit revision path.
-    let row = learning::one(db, &format!("SELECT r.public_document FROM content_state s JOIN release_entries e ON e.release_id=s.active_release{} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision){} WHERE {} AND e.lesson_id=$1 AND r.published AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){})",if product.0.is_some(){" AND e.product_id=s.product_id"}else{""},if product.0.is_some(){" AND r.product_id=e.product_id"}else{""},product.0.map_or_else(||"s.singleton".to_owned(),|p|format!("s.product_id='{}'",p.as_str())),if product.0.is_some(){" AND w.product_id=r.product_id"}else{""}), vec![id.into()]).await?.ok_or(AppError::NotFound)?;
-    let lesson: PublicLesson = serde_json::from_value(learning::field(&row, "public_document")?)
-        .map_err(|_| AppError::Unavailable)?;
-    lesson.validate().map_err(|_| AppError::Unavailable)?;
-    Ok(Json(lesson))
+    let row = learning::one(db, &format!("SELECT r.public_document FROM content_state s JOIN release_entries e ON e.release_id=s.active_release{} JOIN lesson_revisions r ON (r.lesson_id,r.revision)=(e.lesson_id,e.revision){} WHERE {} AND e.lesson_id=$1 AND r.published AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){})",if product.is_some(){" AND e.product_id=s.product_id"}else{""},if product.is_some(){" AND r.product_id=e.product_id"}else{""},product.map_or_else(||"s.singleton".to_owned(),|p|format!("s.product_id='{}'",p.as_str())),if product.is_some(){" AND w.product_id=r.product_id"}else{""}), vec![id.into()]).await?.ok_or(AppError::NotFound)?;
+    learning::field(&row, "public_document")
 }
+
 fn project_source_types(source: serde_json::Value) -> anyhow::Result<PublicLesson> {
     let source = author_source::public_projection(source)?;
     let object = source.as_object().expect("validated author object");
@@ -530,6 +548,102 @@ mod tests {
             "editorial",
         ] {
             assert!(!text.contains(key));
+        }
+    }
+    #[tokio::test]
+    async fn versioned_detail_adapts_legacy_without_changing_old_wire_or_product_boundaries() {
+        let fixture = development_fixture().unwrap();
+        let legacy = serde_json::to_value(&fixture).unwrap();
+        let app = independent_product_router(
+            AppState {
+                db: None,
+                fixture: Some(fixture.clone()),
+            },
+            product::ProductId::Brioche,
+        );
+        for (path, status) in [
+            ("/api/v2/lessons/a1-bakery-buy-breakfast", StatusCode::OK),
+            (
+                "/api/v2/lessons/a1-bakery-buy-breakfast?revision=1",
+                StatusCode::OK,
+            ),
+            (
+                "/api/v2/lessons/a1-bakery-buy-breakfast?revision=0",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/api/v2/lessons/a1-bakery-buy-breakfast?revision=2",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "/api/v2/lessons/a1-bakery-buy-breakfast?product=hargow",
+                StatusCode::BAD_REQUEST,
+            ),
+            ("/api/v2/lessons/missing", StatusCode::NOT_FOUND),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .header("x-product", "hargow")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{path}");
+            if status == StatusCode::OK {
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(value["schemaVersion"], "2.0");
+                assert_eq!(value["targetLanguage"], "fr-FR");
+                assert_eq!(value["id"], legacy["id"]);
+                assert_eq!(value["revision"], legacy["revision"]);
+                assert_eq!(value["title"]["target"], legacy["title"]["fr"]);
+                for key in ["serverOnly", "editorial", "assetRefs", "audioRefs"] {
+                    assert!(value.get(key).is_none());
+                }
+                brioche_course_contract::neutral::decode_public(value).unwrap();
+            }
+        }
+        let old = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/lessons/a1-bakery-buy-breakfast")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = old.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            legacy
+        );
+        let hargow = independent_product_router(
+            AppState {
+                db: None,
+                fixture: Some(fixture),
+            },
+            product::ProductId::Hargow,
+        );
+        for suffix in ["", "?revision=1"] {
+            let response = hargow
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/api/v2/lessons/a1-bakery-buy-breakfast{suffix}"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "French demo must not leak into Hargow"
+            );
         }
     }
     #[tokio::test]

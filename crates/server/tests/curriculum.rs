@@ -353,6 +353,24 @@ fn check_catalog(file: &str, expected_units: &[&str]) {
             chef_engine::validate_source_schema(source.clone()).unwrap();
             let lesson = chef_engine::project_source(source.clone()).unwrap();
             let grader = Grader::from_author_source(&lesson, &source).unwrap();
+            let neutral =
+                brioche_course_contract::neutral::NeutralLesson::try_from(&lesson).unwrap();
+            let neutral_grader = Grader::from_neutral_author_source(&neutral, &source).unwrap();
+            assert_eq!(neutral.id, lesson.id);
+            assert_eq!(neutral.revision, lesson.revision);
+            assert_eq!(
+                serde_json::to_value(&neutral.cast).unwrap(),
+                serde_json::to_value(&lesson.cast).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&neutral.steps).unwrap(),
+                serde_json::to_value(&lesson.steps).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&neutral.audio_tracks).unwrap(),
+                serde_json::to_value(&lesson.audio_tracks).unwrap()
+            );
+
             let public = serde_json::to_value(&lesson).unwrap();
             for character in source["cast"].as_array().unwrap() {
                 let key = (
@@ -396,6 +414,12 @@ fn check_catalog(file: &str, expected_units: &[&str]) {
                     kind => panic!("unknown rule {kind}"),
                 };
                 assert!(grader.grade(&lesson, exercise_id, &answer).unwrap().correct);
+                assert!(
+                    neutral_grader
+                        .grade_neutral(&neutral, exercise_id, &answer)
+                        .unwrap()
+                        .correct
+                );
                 let wrong = match answer {
                     ExerciseAnswer::Choice { option_id } => {
                         let block = source["blocks"]
@@ -423,6 +447,12 @@ fn check_catalog(file: &str, expected_units: &[&str]) {
                     }
                 };
                 assert!(!grader.grade(&lesson, exercise_id, &wrong).unwrap().correct);
+                assert!(
+                    !neutral_grader
+                        .grade_neutral(&neutral, exercise_id, &wrong)
+                        .unwrap()
+                        .correct
+                );
             }
             checked += 1;
         }

@@ -282,6 +282,29 @@ mod neutral_tests {
             field::<i64>(&row, "releases").unwrap()
         ])
     }
+    async fn public_request(app: axum::Router, path: &str) -> (axum::http::StatusCode, Value) {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(path)
+                    .header("x-product", "brioche")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value = if status.is_success() {
+            serde_json::from_slice(&bytes).unwrap()
+        } else {
+            serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+        };
+        (status, value)
+    }
     #[tokio::test]
     #[ignore = "set TEST_DATABASE_URL to a dedicated PostgreSQL database"]
     async fn neutral_import_hydrates_owned_registries_preserves_wire_and_is_atomic() {
@@ -630,6 +653,49 @@ mod neutral_tests {
             .unwrap(),
             1
         );
+        let hargow_app = crate::independent_product_router(
+            crate::AppState {
+                db: Some(db.clone()),
+                fixture: None,
+            },
+            ProductId::Hargow,
+        );
+        let brioche_app = crate::independent_product_router(
+            crate::AppState {
+                db: Some(db.clone()),
+                fixture: None,
+            },
+            ProductId::Brioche,
+        );
+        for suffix in ["", "?revision=1"] {
+            let path = format!("/api/v2/lessons/neutral-publish{suffix}");
+            let (status, public) = public_request(hargow_app.clone(), &path).await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            assert_eq!(public["targetLanguage"], "yue-Hant-HK");
+            assert_eq!(
+                public["blocks"][0]["paragraphs"][0]["segments"][0]["reading"],
+                private["blocks"][0]["paragraphs"][0]["segments"][0]["reading"]
+            );
+            assert!(public.get("serverOnly").is_none() && public["title"].get("fr").is_none());
+            let (status, _) = public_request(brioche_app.clone(), &path).await;
+            assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        }
+        let (status, _) = public_request(
+            hargow_app.clone(),
+            "/api/v2/lessons/neutral-protocol?revision=1",
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::NOT_FOUND,
+            "unpublished source"
+        );
+        let (status, _) = public_request(
+            hargow_app.clone(),
+            "/api/v2/lessons/neutral-publish?product=brioche",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
         let state = one(
             &db,
             "SELECT generation,active_release FROM content_state WHERE product_id='hargow'",
@@ -712,6 +778,19 @@ mod neutral_tests {
         .unwrap()
         .unwrap();
         assert_eq!(field::<i64>(&state, "generation").unwrap(), 2);
+        for (suffix, expected) in [
+            ("", axum::http::StatusCode::NOT_FOUND),
+            ("?revision=1", axum::http::StatusCode::GONE),
+        ] {
+            let (status, _) = public_request(
+                hargow_app.clone(),
+                &format!("/api/v2/lessons/neutral-publish{suffix}"),
+            )
+            .await;
+            assert_eq!(status, expected);
+        }
+        drop(hargow_app);
+        drop(brioche_app);
         db.close().await.unwrap();
         admin
             .execute_unprepared(&format!(
