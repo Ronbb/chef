@@ -67,3 +67,21 @@ pub(crate) async fn operator(product: ProductId, expected_email: &str) -> Result
         .operator()
         .map_err(|_| anyhow::anyhow!("Maintenance product operator required"))
 }
+
+pub(crate) fn save_private_archive(path: &str, bytes: &[u8]) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    use std::io::Write;
+    let mut file = options
+        .open(path)
+        .map_err(|_| anyhow::anyhow!("Private output must be a new writable file"))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| anyhow::anyhow!("Private output was not saved completely"))?;
+    Ok(())
+}

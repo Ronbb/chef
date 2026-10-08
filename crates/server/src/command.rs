@@ -237,6 +237,7 @@ pub async fn run() -> Result<()> {
             | "audio-import"
             | "speech-plan-export"
             | "speech-plan-export-direct"
+            | "speech-package-automatic"
     );
     let author_product = if author_command {
         crate::schema_split::author_scope(db.as_ref().unwrap(), product).await
@@ -273,23 +274,42 @@ pub async fn run() -> Result<()> {
         )
         .await
         .map_err(|_| anyhow::anyhow!("Private scoped export failed; output is not confirmed"))?;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        use std::io::Write;
-        let mut file = options
-            .open(&args[2])
-            .map_err(|_| anyhow::anyhow!("Private output must be a new writable file"))?;
-        file.write_all(&bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|_| anyhow::anyhow!("Private output was not saved completely"))?;
+        crate::maintenance_auth::save_private_archive(&args[2], &bytes)?;
         println!(
             "{}",
             serde_json::json!({"planId":args[0],"byteLength":bytes.len(),"reviewRequired":reviewed,"published":false})
+        );
+        return Ok(());
+    }
+    if let Some(scope) = author_product
+        && command == "speech-package-automatic"
+    {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        anyhow::ensure!(
+            args.len() == 4,
+            "usage: speech-package-automatic <report.json> <package-request.json> <operator-email> <new-private-output.tar>"
+        );
+        let operator = crate::maintenance_auth::operator(scope, &args[2]).await?;
+        let report = crate::author_json::Document::load(&args[0])?;
+        let request = crate::author_json::Document::load(&args[1])?;
+        let bytes = crate::speech_automatic::assemble_author(
+            db.as_ref().unwrap(),
+            scope,
+            &operator,
+            crate::media::media_root(),
+            report.value,
+            crate::author_json::from_value(request.value, "")?,
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Automatic scoped package not confirmed; inspect fixed report and sources"
+            )
+        })?;
+        crate::maintenance_auth::save_private_archive(&args[3], &bytes)?;
+        println!(
+            "{}",
+            serde_json::json!({"byteLength":bytes.len(),"humanListeningAsserted":false,"published":false})
         );
         return Ok(());
     }

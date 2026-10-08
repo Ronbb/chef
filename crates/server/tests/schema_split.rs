@@ -48,16 +48,42 @@ impl ExportCli {
         session: &str,
         output: &str,
     ) -> std::process::Output {
+        self.execute(
+            vec![
+                command.to_owned(),
+                id.to_owned(),
+                email.to_owned(),
+                output.to_owned(),
+            ],
+            session,
+        )
+        .await
+    }
+    async fn automatic(
+        &self,
+        report: &str,
+        request: &str,
+        email: &str,
+        session: &str,
+        output: &str,
+    ) -> std::process::Output {
+        self.execute(
+            vec![
+                "speech-package-automatic".to_owned(),
+                report.to_owned(),
+                request.to_owned(),
+                email.to_owned(),
+                output.to_owned(),
+            ],
+            session,
+        )
+        .await
+    }
+    async fn execute(&self, args: Vec<String>, session: &str) -> std::process::Output {
         let db_url = self.db_url.clone();
         let schema = self.schema.clone();
         let root = self.root.clone();
         let identity_url = self.identity_url.clone();
-        let args = [
-            command.to_owned(),
-            id.to_owned(),
-            email.to_owned(),
-            output.to_owned(),
-        ];
         let session = session.to_owned();
         tokio::task::spawn_blocking(move || {
             let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_chef-server"));
@@ -5123,12 +5149,34 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             &content_app,
             "POST",
             automatic_path,
-            Some(body),
+            Some(body.clone()),
             &mut cookie,
             &mut csrf,
         )
         .await;
         assert_eq!(status, expected, "{result}");
+        std::fs::write(
+            root.join("cli-foreign-automatic-report.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("cli-foreign-automatic-package.json"),
+            serde_json::to_vec(&body["package"]).unwrap(),
+        )
+        .unwrap();
+        let name = format!("cli-foreign-automatic-{expected}.tar");
+        let result = export_cli
+            .automatic(
+                "cli-foreign-automatic-report.json",
+                "cli-foreign-automatic-package.json",
+                "split@example.test",
+                "operator-session.json",
+                &name,
+            )
+            .await;
+        assert!(!result.status.success());
+        assert!(!root.join(name).exists());
     }
     let response = content_app
         .clone()
@@ -5143,6 +5191,78 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["cache-control"], "private, no-store");
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    std::fs::write(
+        root.join("cli-automatic-report.json"),
+        serde_json::to_vec(&own_automatic).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("cli-automatic-package.json"),
+        serde_json::to_vec(&own_automatic_request["package"]).unwrap(),
+    )
+    .unwrap();
+    let result = export_cli
+        .automatic(
+            "cli-automatic-report.json",
+            "cli-automatic-package.json",
+            "split@example.test",
+            "operator-session.json",
+            "cli-automatic.tar",
+        )
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let receipt: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(receipt["humanListeningAsserted"], false);
+    assert_eq!(receipt["published"], false);
+    assert!(
+        std::fs::read(root.join("cli-automatic.tar"))
+            .unwrap()
+            .as_slice()
+            == bytes.as_ref(),
+        "Automatic CLI archive must match verified HTTP package"
+    );
+    for secret in [&cookie, &csrf] {
+        assert!(!String::from_utf8_lossy(&result.stderr).contains(secret));
+    }
+    let result = export_cli
+        .automatic(
+            "cli-automatic-report.json",
+            "cli-automatic-package.json",
+            "split@example.test",
+            "operator-session.json",
+            "cli-automatic.tar",
+        )
+        .await;
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("new writable file"));
+    assert!(
+        std::fs::read(root.join("cli-automatic.tar"))
+            .unwrap()
+            .as_slice()
+            == bytes.as_ref()
+    );
+    for (email, session, name) in [
+        ("other@example.test", "operator-session.json", "wrong-actor"),
+        ("next@example.test", "learner-session.json", "learner"),
+        ("split@example.test", "bad-csrf-session.json", "csrf"),
+    ] {
+        let name = format!("cli-automatic-{name}.tar");
+        let result = export_cli
+            .automatic(
+                "cli-automatic-report.json",
+                "cli-automatic-package.json",
+                email,
+                session,
+                &name,
+            )
+            .await;
+        assert!(!result.status.success());
+        assert!(!root.join(name).exists());
+    }
     let members = tar_members(&bytes);
     let output: serde_json::Value = serde_json::from_slice(&members["manifest.json"]).unwrap();
     assert_eq!(output["planId"], plan_id);
@@ -6937,6 +7057,17 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .await;
     assert!(!result.status.success());
     assert!(!root.join("identity-offline.tar").exists());
+    let result = export_cli
+        .automatic(
+            "cli-automatic-report.json",
+            "cli-automatic-package.json",
+            "split@example.test",
+            "operator-session.json",
+            "automatic-identity-offline.tar",
+        )
+        .await;
+    assert!(!result.status.success());
+    assert!(!root.join("automatic-identity-offline.tar").exists());
 
     assert_eq!(
         content_app

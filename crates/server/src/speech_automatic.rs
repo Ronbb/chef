@@ -350,6 +350,26 @@ pub async fn assemble_for_actor(
     )
     .await
 }
+pub(crate) async fn assemble_author(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    operator: &crate::product_memberships::Operator,
+    root: PathBuf,
+    report: Value,
+    request: AdminSpeechPackageRequest,
+) -> Result<Vec<u8>, AppError> {
+    assemble_authorized(
+        &Store {
+            db: db.clone(),
+            product: Some(product),
+        },
+        operator,
+        root,
+        report,
+        request,
+    )
+    .await
+}
 async fn assemble_authorized(
     b: &Store,
     operator: &crate::product_memberships::Operator,
