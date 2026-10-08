@@ -41,6 +41,12 @@ LEFT JOIN voice_audition_reviews r ON r.audition_id=a.id{}"#,
         same("r.product_id")
     )
 }
+async fn local_audition_keys(db: &impl ConnectionTrait) -> Result<bool, AppError> {
+    let row=one(db,r#"SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.contype='p' AND c.conrelid='voice_auditions'::regclass
+        AND (SELECT array_agg(a.attname::text ORDER BY k.position) FROM unnest(c.conkey) WITH ORDINALITY k(column_number,position) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.column_number)=ARRAY['product_id','id']::text[]) AS ready"#,vec![]).await?.ok_or(AppError::Unavailable)?;
+    field(&row, "ready")
+}
+
 #[derive(Clone)]
 struct Store {
     product: Option<crate::product::ProductId>,
@@ -269,8 +275,9 @@ async fn create_for_actor(
         vec![format!("voice-audition:{}", request.id).into()],
     )
     .await?;
-    // Global IDs remain until the later key migration. Never read a foreign attempt for an exact retry.
-    if let Some(product) = b.product
+    // Only a verified product primary key permits local IDs; old layouts retain the collision guard.
+    let local_ids = b.product.is_some() && local_audition_keys(&tx).await?;
+    if let Some(product) = b.product.filter(|_| !local_ids)
         && one(
             &tx,
             "SELECT 1 FROM voice_auditions WHERE id=$1 AND product_id<>$2",

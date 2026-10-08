@@ -678,6 +678,35 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .execute_unprepared("ALTER TABLE audio_assets DROP CONSTRAINT chef_local_recording_primary")
         .await
         .unwrap();
+    owner.execute_unprepared("CREATE TABLE extra_voice_work_edge(id TEXT,FOREIGN KEY(id) REFERENCES voice_clone_jobs(id))").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let error = brioche_migration::layout::up(&owner, &source, &target)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Unverified legacy voice work dependency"),
+        "{error}"
+    );
+    assert_eq!(
+        product_voice_work::snapshot(&owner).await,
+        voice_work_snapshot
+    );
+    owner.execute_unprepared("DROP TABLE extra_voice_work_edge; ALTER TABLE voice_audition_reviews ADD CONSTRAINT chef_local_audition_review_primary CHECK(true)").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='voice_auditions' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(
+        product_voice_work::snapshot(&owner).await,
+        voice_work_snapshot
+    );
+    owner
+        .execute_unprepared(
+            "ALTER TABLE voice_audition_reviews DROP CONSTRAINT chef_local_audition_review_primary",
+        )
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -685,7 +714,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=22 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=23 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -715,6 +744,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         voice_work_snapshot
     );
     product_voice_work::verify(&owner).await;
+    product_voice_work::verify_local_keys(&owner).await;
     assert_eq!(
         product_speech_work::snapshot(&owner).await,
         speech_work_snapshot
@@ -4967,6 +4997,8 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let foreign_system_request = serde_json::json!({"id":format!("{:032x}",302),"candidate":{"characterId":"aaa-foreign-character-1","characterRevision":1,"expectedVoiceRevision":1,"profile":system_profile},"text":"Bonjour !","emotion":"Friendly.","costConfirmed":true,"reason":"Must not synthesize foreign character"});
     let mut foreign_retry = audition_request.clone();
     foreign_retry["id"] = foreign_audition.clone().into();
+    // Old/partial layouts still refuse an ID owned by a different product.
+    owner.execute_unprepared("ALTER TABLE voice_auditions DROP CONSTRAINT chef_local_audition_primary; ALTER TABLE voice_auditions ADD CONSTRAINT legacy_audition_primary_fixture PRIMARY KEY(id)").await.unwrap();
     for body in [foreign_clone_request, foreign_system_request, foreign_retry] {
         let (status, result) = request(
             &content_app,
@@ -4979,6 +5011,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .await;
         assert_eq!(status, 404, "{result}");
     }
+    owner.execute_unprepared("ALTER TABLE voice_auditions DROP CONSTRAINT legacy_audition_primary_fixture; ALTER TABLE voice_auditions ADD CONSTRAINT chef_local_audition_primary PRIMARY KEY(product_id,id)").await.unwrap();
     let (status,body)=request(&content_app,"POST",&format!("{foreign_path}/review"),Some(serde_json::json!({"accepted":true,"heard":true,"expectedVoiceRevision":0,"reason":"Synthetic foreign adoption rejected"})),&mut cookie,&mut csrf).await;
     assert_eq!(status, 404, "{body}");
     let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_auditions)+(SELECT count(*) FROM voice_audition_events)+(SELECT count(*) FROM voice_audition_reviews)+(SELECT count(*) FROM character_voice_profiles) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
@@ -6219,6 +6252,88 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         bytes.as_ref(),
         &include_bytes!("fixtures/audio/synthetic.mp3")[..12]
     );
+    let h_audition_hash=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT md5(jsonb_build_array(to_jsonb(a),(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.version) FROM voice_audition_events e WHERE e.product_id=a.product_id AND e.audition_id=a.id),(SELECT to_jsonb(r) FROM voice_audition_reviews r WHERE r.product_id=a.product_id AND r.audition_id=a.id))::text) AS hash FROM voice_auditions a WHERE product_id='hargow' AND id=$1",[foreign_audition.clone().into()])).await.unwrap().unwrap().try_get::<String>("", "hash").unwrap();
+    let calls_before = enrollment
+        .syntheses
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let own_audition_request = serde_json::json!({"id":foreign_audition,"candidate":{"characterId":"aaa-foreign-character-1","characterRevision":1,"expectedVoiceRevision":1,"profile":system_profile},"text":"Bonjour !","emotion":"Friendly.","costConfirmed":true,"reason":"Product-local synthetic audition"});
+    let (status, submitted_local) = request(
+        &content_app,
+        "POST",
+        audition_route,
+        Some(own_audition_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{submitted_local}");
+    let settled_local = settled_job(&content_app, &foreign_path, &mut cookie, &mut csrf).await;
+    assert_eq!(settled_local["status"], "ready", "{settled_local}");
+    assert!(
+        settled_local["accepted"].is_null(),
+        "Foreign review must not enter own audition"
+    );
+    let (status, retried_local) = request(
+        &content_app,
+        "POST",
+        audition_route,
+        Some(own_audition_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{retried_local}");
+    assert_eq!(retried_local, settled_local);
+    let mut changed = own_audition_request;
+    changed["text"] = "Au revoir !".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            audition_route,
+            Some(changed),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    assert_eq!(
+        enrollment
+            .syntheses
+            .load(std::sync::atomic::Ordering::SeqCst),
+        calls_before + 1
+    );
+    let review_local = serde_json::json!({"accepted":false,"heard":true,"expectedVoiceRevision":1,"reason":"Synthetic local rejection; no real listening claim"});
+    let (status, reviewed_local) = request(
+        &content_app,
+        "POST",
+        &format!("{foreign_path}/review"),
+        Some(review_local.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{reviewed_local}");
+    assert_eq!(reviewed_local["accepted"], false);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &format!("{foreign_path}/review"),
+            Some(review_local),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT md5(jsonb_build_array(to_jsonb(a),(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.version) FROM voice_audition_events e WHERE e.product_id=a.product_id AND e.audition_id=a.id),(SELECT to_jsonb(r) FROM voice_audition_reviews r WHERE r.product_id=a.product_id AND r.audition_id=a.id))::text) AS hash,(SELECT count(*) FROM voice_auditions WHERE product_id='brioche' AND id=$1)::bigint AS own,(SELECT count(*) FROM voice_audition_events WHERE product_id='brioche' AND audition_id=$1)::bigint AS events FROM voice_auditions a WHERE product_id='hargow' AND id=$1",[foreign_audition.clone().into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_audition_hash);
+    assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "events").unwrap(), 2);
     task.abort();
     let _ = task.await;
     assert_eq!(
