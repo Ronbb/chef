@@ -106,6 +106,11 @@ pub fn compile(lesson: &PublicLesson, source: &Value, config: &Config) -> Result
             "items: character snapshot must match the fixed lesson cast"
         );
         ensure!(voice.profile.is_some(), "items: voice profile is missing");
+        crate::character_voices::validate_for_character(
+            voice.profile.as_ref().unwrap(),
+            &voice.character,
+        )
+        .map_err(|_| anyhow!("items: invalid profile or character speech locale mismatch"))?;
         ensure!(
             voices.insert(k, voice).is_none(),
             "items: duplicate fixed voice"

@@ -155,7 +155,7 @@ pub fn validate(profile: &CharacterVoiceProfile) -> Result<(), AppError> {
             return Err(AppError::InvalidInput);
         }
     }
-    if profile.locale != "fr-FR"
+    if !["fr-FR", "yue-Hant-HK"].contains(&profile.locale.as_str())
         || !profile.rate.is_finite()
         || !(0.5..=2.0).contains(&profile.rate)
         || !["system", "cloned"].contains(&profile.voice_kind.as_str())
@@ -171,6 +171,16 @@ pub fn validate(profile: &CharacterVoiceProfile) -> Result<(), AppError> {
             }
         }
     } else if profile.voice_kind == "cloned" {
+        return Err(AppError::InvalidInput);
+    }
+    Ok(())
+}
+pub(crate) fn validate_for_character(
+    profile: &CharacterVoiceProfile,
+    character: &brioche_course_contract::Character,
+) -> Result<(), AppError> {
+    validate(profile)?;
+    if profile.locale != character.speech_locale {
         return Err(AppError::InvalidInput);
     }
     Ok(())
@@ -304,6 +314,9 @@ async fn append_profile_body(
         .ok_or(AppError::InvalidInput)?;
     id_revision(&request.character_id, next)?;
     let row=one(tx,&format!("SELECT snapshot,avatar_revision FROM character_revisions WHERE character_id=$1 AND revision=$2{}",product_filter(product,"product_id")),vec![request.character_id.clone().into(),(request.character_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
+    let character =
+        serde_json::from_value(field(&row, "snapshot")?).map_err(|_| AppError::Unavailable)?;
+    validate_for_character(&request.profile, &character)?;
     let latest=one(tx,&format!("SELECT COALESCE(max(revision),0) AS revision FROM character_voice_profiles WHERE character_id=$1 AND character_revision=$2{}",product_filter(product,"product_id")),vec![request.character_id.clone().into(),(request.character_revision as i32).into()]).await?.ok_or(AppError::Unavailable)?;
     if field::<i32>(&latest, "revision")? as u32 != request.expected_voice_revision {
         return Err(AppError::Conflict);
@@ -345,8 +358,7 @@ async fn append_profile_body(
     };
     exec(tx, sql, values).await?;
     let result = AdminCharacterVoice {
-        character: serde_json::from_value(field(&row, "snapshot")?)
-            .map_err(|_| AppError::Unavailable)?,
+        character,
         avatar_revision: field::<i32>(&row, "avatar_revision")? as u32,
         voice_revision: next,
         profile: Some(request.profile),

@@ -29,14 +29,17 @@ pub fn normalize_text(text: &str, case_sensitive: bool) -> String {
 /// Current registered character voice policy; regional voices need an explicit content revision.
 pub const CHARACTER_SPEECH_LOCALE: &str = "fr-FR";
 
-/// French-supported Flash voices, verified against the official list on 2026-10-07.
+/// Flash 3.1 voices supporting both French and Cantonese, verified on 2026-10-08.
 /// https://help.aliyun.com/zh/model-studio/qwen-audio-tts-voice-list
-pub const QWEN_FRENCH_SYSTEM_VOICES: &[(&str, &str)] = &[
+pub const QWEN_MULTILINGUAL_SYSTEM_VOICES: &[(&str, &str)] = &[
     ("longanlingxin_v3.1", "龙安灵心"),
     ("xunanchuan_v3.1", "许南川"),
     ("longanhuan_v3.1", "龙安欢"),
     ("longanfengyue_v3.1", "龙安风悦"),
 ];
+
+/// Compatibility name for existing French voice pickers and fixed plans.
+pub const QWEN_FRENCH_SYSTEM_VOICES: &[(&str, &str)] = QWEN_MULTILINGUAL_SYSTEM_VOICES;
 
 /// HTML maxlength and JavaScript string length count UTF-16 code units.
 pub const MAX_TEXT_ANSWER_UTF16_UNITS: usize = 1024;

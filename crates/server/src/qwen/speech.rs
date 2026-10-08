@@ -30,17 +30,36 @@ impl SpeechRequest {
             || !bounded_text(&self.emotion, 1000)
             || (p.voice_kind == "cloned" && !p.voice_id.starts_with(&format!("{MODEL}-")))
             || (p.voice_kind == "system"
-                && !brioche_course_contract::QWEN_FRENCH_SYSTEM_VOICES
+                && !brioche_course_contract::QWEN_MULTILINGUAL_SYSTEM_VOICES
                     .iter()
                     .any(|(id, _)| *id == p.voice_id))
         {
             return Err(ProviderError::Rejected);
         }
-        Ok(json!({"model":MODEL,"input":{
+        let direction = match p.locale.as_str() {
+            "fr-FR" => {
+                "Speak only the supplied French text, with clear natural French pronunciation for an A1 learner. Do not add words or read these instructions."
+            }
+            "yue-Hant-HK" => {
+                "请用自然的香港粤语朗读提供的原文，保持粤语声调和口语节奏，适合粤语初学者。不要用普通话，不要翻译，不要添加内容或朗读这些指令。"
+            }
+            _ => return Err(ProviderError::Rejected),
+        };
+        let mut parameters = json!({"model":MODEL,"input":{
             "text":self.text,"voice":p.voice_id,"format":"wav","sample_rate":24000,
             "language_hints":["fr"],"rate":p.rate,"seed":0,"enable_aigc_tag":true,
-            "instruction":format!("Speak only the supplied French text, with clear natural French pronunciation for an A1 learner. Do not add words or read these instructions. Character: {} Speaking style: {} Default emotion: {} Scene emotion: {}",p.personality,p.speaking_style,p.default_emotion,self.emotion)
-        }}))
+            "instruction":format!("{direction} Character: {} Speaking style: {} Default emotion: {} Scene emotion: {}",p.personality,p.speaking_style,p.default_emotion,self.emotion)
+        }});
+        // The provider documents dialect selection through instruction. Do not invent
+        // a language_hints enum or send French hints for Cantonese. Keep French wire
+        // bytes unchanged so existing immutable generation/cache keys remain valid.
+        if p.locale == "yue-Hant-HK" {
+            parameters["input"]
+                .as_object_mut()
+                .unwrap()
+                .remove("language_hints");
+        }
+        Ok(parameters)
     }
 }
 fn bounded_text(text: &str, bytes: usize) -> bool {
@@ -321,6 +340,41 @@ mod tests {
         assert!(r.parameters().is_err());
         r.profile.voice_kind = "cloned".into();
         assert!(r.parameters().is_err());
+    }
+    #[test]
+    fn cantonese_uses_dialect_instruction_and_supported_multilingual_voices() {
+        let mut r = request();
+        r.profile.locale = "yue-Hant-HK".into();
+        r.profile.speaking_style = "亲切自然的香港粤语。".into();
+        r.text = "早晨！兩位？".into();
+        for (voice, _) in brioche_course_contract::QWEN_MULTILINGUAL_SYSTEM_VOICES {
+            r.profile.voice_id = (*voice).into();
+            let body = r.parameters().unwrap();
+            assert_eq!(body["input"]["text"], r.text);
+            assert!(body["input"].get("language_hints").is_none());
+            let direction = body["input"]["instruction"].as_str().unwrap();
+            assert!(direction.contains("香港粤语"));
+            assert!(direction.contains("不要用普通话"));
+            assert!(!direction.contains("French"));
+            assert!(direction.contains(&r.emotion));
+        }
+        r.profile.voice_id = "yuxiaoyun_v3.1".into();
+        assert!(r.parameters().is_err());
+        r.profile.voice_id = "longanhuan_v3.1".into();
+        let mut character = brioche_course_contract::Character {
+            character_id: "cantonese-fixture".into(),
+            revision: 1,
+            display_name: "测试角色".into(),
+            avatar_id: "fixture-avatar".into(),
+            speech_locale: "yue-Hant-HK".into(),
+        };
+        assert!(crate::character_voices::validate_for_character(&r.profile, &character).is_ok());
+        character.speech_locale = "fr-FR".into();
+        assert!(crate::character_voices::validate_for_character(&r.profile, &character).is_err());
+        for locale in ["zh-CN", "yue", "en-US", ""] {
+            r.profile.locale = locale.into();
+            assert!(r.parameters().is_err());
+        }
     }
     #[test]
     fn receipt_pins_oss_tls_and_retains_only_safe_fields() {
