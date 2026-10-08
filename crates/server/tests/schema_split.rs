@@ -959,6 +959,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(registry["items"][0]["asset"]["assetId"], "split-recording");
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT product_id,(SELECT count(*) FROM audio_import_audit WHERE product_id='brioche' AND target='split-recording v1')::bigint AS n FROM audio_assets WHERE asset_id='split-recording' AND revision=1")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "product_id").unwrap(), "brioche");
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
     let response = content_app
         .clone()
         .oneshot(
@@ -3542,6 +3545,96 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     );
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM lesson_revisions WHERE lesson_id='brioche-foreign-cast-source')+(SELECT count(*) FROM lesson_import_audit WHERE lesson_id='brioche-foreign-cast-source') AS n")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    let (status, recordings_before) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/recordings",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{recordings_before}");
+    owner.execute_unprepared("INSERT INTO audio_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels) SELECT 'hargow','aaa-foreign-recording-'||i,1,'{}',provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels FROM audio_assets CROSS JOIN generate_series(1,25) i WHERE asset_id='layout-recording-fixture' AND revision=1").await.unwrap();
+    let (status, recordings_after) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/recordings",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{recordings_after}");
+    assert_eq!(recordings_before, recordings_after);
+    let (status, filtered) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/recordings?q=foreign-recording",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{filtered}");
+    assert!(filtered["items"].as_array().unwrap().is_empty());
+    assert!(filtered["next"].is_null());
+    let (status, body) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/recordings/aaa-foreign-recording-1/1/file",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(
+        request(
+            &content_app,
+            "GET",
+            "/api/v1/operator/recordings?product=hargow",
+            None,
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
+    );
+    let before = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM audio_import_audit",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "n")
+        .unwrap();
+    let recording_collision = content_app
+        .clone()
+        .oneshot(recording_upload("aaa-foreign-recording-1", &cookie, &csrf))
+        .await
+        .unwrap();
+    assert_eq!(recording_collision.status().as_u16(), 409);
+    let after = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM audio_import_audit",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "n")
+        .unwrap();
+    assert_eq!(before, after);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT product_id,descriptor FROM audio_assets WHERE asset_id='aaa-foreign-recording-1' AND revision=1")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "product_id").unwrap(), "hargow");
+    assert_eq!(
+        row.try_get::<serde_json::Value>("", "descriptor").unwrap(),
+        serde_json::json!({})
+    );
     let mut h_lesson = lesson.clone();
     let (status, admin_before) = request(
         &content_app,

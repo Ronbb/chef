@@ -2,7 +2,7 @@
 use crate::{
     AppError,
     admin_auth::AdminAuth,
-    learning::{field, one},
+    learning::{field, one, product_filter},
 };
 use axum::{
     Json, Router,
@@ -16,9 +16,11 @@ use sea_orm::{ConnectionTrait, DbBackend, Statement};
 #[derive(Clone)]
 struct Store {
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route(
@@ -31,7 +33,7 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
             "/api/v1/operator/recordings/{id}/{revision}/file",
             get(file),
         )
-        .with_state(Store { db })
+        .with_state(Store { db, product })
 }
 async fn upload(
     auth: AdminAuth,
@@ -123,6 +125,7 @@ async fn upload(
     bundle.assets[0] = spec;
     crate::recording::import_operator_bundle(
         &backend.db,
+        backend.product,
         bundle,
         &scratch.0,
         &root,
@@ -177,14 +180,14 @@ async fn list(
 ) -> Result<Json<AdminRecordings>, AppError> {
     auth.require_operator().await?;
     query.validate()?;
-    let rows=backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, r#"
+    let rows=backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, format!(r#"
         SELECT descriptor,provenance->>'source' AS source,provenance->>'license' AS license,
         provenance->>'creator' AS creator,(provenance->>'rightsConfirmed')::boolean AS rights_confirmed,
         byte_size,sample_rate,channels FROM audio_assets
         WHERE (asset_id,revision)>($1,$2)
         AND ($3='' OR strpos(lower(asset_id),lower($3))>0 OR strpos(lower(descriptor->>'creditZh'),lower($3))>0)
-        ORDER BY asset_id,revision LIMIT 21
-    "#,vec![query.after_id.unwrap_or_default().into(),(query.after_revision.unwrap_or(0) as i32).into(),query.q.unwrap_or_default().trim().to_owned().into()])).await.map_err(|_|AppError::Unavailable)?;
+        {} ORDER BY asset_id,revision LIMIT 21
+    "#,product_filter(backend.product,"product_id")),vec![query.after_id.unwrap_or_default().into(),(query.after_revision.unwrap_or(0) as i32).into(),query.q.unwrap_or_default().trim().to_owned().into()])).await.map_err(|_|AppError::Unavailable)?;
     let more = rows.len() > 20;
     let items = rows
         .into_iter()
@@ -235,7 +238,10 @@ async fn file(
     }
     let row = one(
         &backend.db,
-        "SELECT descriptor FROM audio_assets WHERE asset_id=$1 AND revision=$2",
+        &format!(
+            "SELECT descriptor FROM audio_assets WHERE asset_id=$1 AND revision=$2{}",
+            product_filter(backend.product, "product_id")
+        ),
         vec![id.into(), (revision as i32).into()],
     )
     .await?

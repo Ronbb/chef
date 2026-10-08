@@ -152,19 +152,24 @@ pub async fn import_bundle(
     store: &Path,
     actor: &str,
 ) -> Result<()> {
-    import_bundle_impl(db, bundle, source_root, store, actor, None).await
+    import_bundle_impl(db, None, bundle, source_root, store, actor, None).await
 }
 pub(crate) async fn import_operator_bundle(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     bundle: AudioBundle,
     source_root: &Path,
     store: &Path,
     operator: &crate::product_memberships::Operator,
     reason: &str,
 ) -> Result<()> {
+    if product.is_some_and(|product| product != operator.product) {
+        return Err(crate::AppError::Forbidden.into());
+    }
     crate::admin::reason(reason)?;
     import_bundle_impl(
         db,
+        product,
         bundle,
         source_root,
         store,
@@ -175,6 +180,7 @@ pub(crate) async fn import_operator_bundle(
 }
 async fn import_bundle_impl(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     bundle: AudioBundle,
     source_root: &Path,
     store: &Path,
@@ -198,14 +204,21 @@ async fn import_bundle_impl(
     }
     one(
         &tx,
-        "SELECT generation FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            product.map_or_else(
+                || "singleton".to_owned(),
+                |p| format!("product_id='{}'", p.as_str())
+            )
+        ),
         vec![],
     )
     .await
     .map_err(anyhow::Error::msg)?
     .context("content state missing")?;
-    register_transaction(
+    register_product_transaction(
         &tx,
+        product,
         &bundle,
         recordings,
         actor,
@@ -256,13 +269,41 @@ pub(crate) async fn register_transaction(
     operator: Option<(i64, &str)>,
     reuse_identical: bool,
 ) -> Result<()> {
+    register_product_transaction(
+        db,
+        None,
+        bundle,
+        recordings,
+        actor,
+        operator,
+        reuse_identical,
+    )
+    .await
+}
+async fn register_product_transaction(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    bundle: &AudioBundle,
+    recordings: PreparedRecordings,
+    actor: &str,
+    operator: Option<(i64, &str)>,
+    reuse_identical: bool,
+) -> Result<()> {
     bundle.validate_author(actor)?;
     let bundle_hash = hash(bundle).map_err(anyhow::Error::msg)?;
     let mut reused = BTreeSet::new();
     for (index, (spec, _, _, _)) in recordings.iter().enumerate() {
+        // Keep the old global key until dependent speech tables are migrated,
+        // but never load a foreign descriptor or provenance for retries.
+        if let Some(product) = product {
+            let foreign = one(db,"SELECT 1 AS collision FROM audio_assets WHERE asset_id=$1 AND revision=$2 AND product_id<>$3",vec![spec.asset_id.clone().into(),(spec.revision as i32).into(),product.as_str().into()]).await?;
+            if foreign.is_some() {
+                return Err(crate::AppError::Conflict.into());
+            }
+        }
         let existing = one(
             db,
-            "SELECT descriptor,provenance,byte_size,sample_rate,channels FROM audio_assets WHERE asset_id=$1 AND revision=$2",
+            &format!("SELECT descriptor,provenance,byte_size,sample_rate,channels FROM audio_assets WHERE asset_id=$1 AND revision=$2{}",crate::learning::product_filter(product,"product_id")),
             vec![spec.asset_id.clone().into(), (spec.revision as i32).into()],
         )
         .await
@@ -298,26 +339,50 @@ pub(crate) async fn register_transaction(
         if reused.contains(&(spec.asset_id.clone(), spec.revision)) {
             continue;
         }
-        exec(db, "INSERT INTO audio_assets(asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", vec![
-            spec.asset_id.clone().into(), (spec.revision as i32).into(), serde_json::to_value(descriptor)?.into(),
-            serde_json::to_value(&spec)?.into(), spec.sha256.into(), audio::extension(&spec.mime_type)?.into(),
-            (size as i64).into(), (info.duration_ms as i32).into(), (info.sample_rate as i32).into(), (info.channels as i32).into(),
-        ]).await.map_err(anyhow::Error::msg)?;
+        let mut values = vec![
+            spec.asset_id.clone().into(),
+            (spec.revision as i32).into(),
+            serde_json::to_value(descriptor)?.into(),
+            serde_json::to_value(&spec)?.into(),
+            spec.sha256.into(),
+            audio::extension(&spec.mime_type)?.into(),
+            (size as i64).into(),
+            (info.duration_ms as i32).into(),
+            (info.sample_rate as i32).into(),
+            (info.channels as i32).into(),
+        ];
+        let sql = if let Some(product) = product {
+            values.push(product.as_str().into());
+            "INSERT INTO audio_assets(asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels,product_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"
+        } else {
+            "INSERT INTO audio_assets(asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"
+        };
+        exec(db, sql, values).await.map_err(anyhow::Error::msg)?;
     }
-    exec(
-        db,
-        "INSERT INTO audio_import_audit(actor,bundle_hash,asset_count,actor_id,reason,target) VALUES($1,$2,$3,$4,$5,$6)",
-        vec![
-            actor.into(),
-            bundle_hash.into(),
-            (bundle.assets.len() as i32).into(),
-            operator.map(|(actor,_)|actor).into(),
-            operator.map(|(_,reason)|reason.to_owned()).into(),
-            operator.map(|_|bundle.assets.iter().map(|s|format!("{} v{}",s.asset_id,s.revision)).collect::<Vec<_>>().join(", ")).into(),
-        ],
-    )
-    .await
-    .map_err(anyhow::Error::msg)?;
+    let mut values = vec![
+        actor.into(),
+        bundle_hash.into(),
+        (bundle.assets.len() as i32).into(),
+        operator.map(|(actor, _)| actor).into(),
+        operator.map(|(_, reason)| reason.to_owned()).into(),
+        operator
+            .map(|_| {
+                bundle
+                    .assets
+                    .iter()
+                    .map(|s| format!("{} v{}", s.asset_id, s.revision))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .into(),
+    ];
+    let sql = if let Some(product) = product {
+        values.push(product.as_str().into());
+        "INSERT INTO audio_import_audit(actor,bundle_hash,asset_count,actor_id,reason,target,product_id) VALUES($1,$2,$3,$4,$5,$6,$7)"
+    } else {
+        "INSERT INTO audio_import_audit(actor,bundle_hash,asset_count,actor_id,reason,target) VALUES($1,$2,$3,$4,$5,$6)"
+    };
+    exec(db, sql, values).await.map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
