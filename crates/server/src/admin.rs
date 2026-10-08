@@ -48,10 +48,6 @@ pub fn independent_router(
     client: crate::learning_identity::Client,
     root: std::path::PathBuf,
 ) -> anyhow::Result<Router> {
-    anyhow::ensure!(
-        client.product() == crate::product::ProductId::Brioche,
-        "Content tenant migration incomplete"
-    );
     let delivery = crate::voice_references::delivery_router(db.clone(), Some(client.clone()))
         .layer(axum::Extension(root.clone()))
         .layer(axum::Extension(std::sync::Arc::new(

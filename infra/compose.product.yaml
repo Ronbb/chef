@@ -1,4 +1,4 @@
-name: ${CHEF_PRODUCT:?Set the trusted product}
+name: chef-${CHEF_PRODUCT:?Set the trusted product}
 x-runtime: &runtime
   restart: unless-stopped
   security_opt: [no-new-privileges:true]
