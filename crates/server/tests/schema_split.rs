@@ -652,6 +652,32 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         )
         .await
         .unwrap();
+    owner.execute_unprepared("CREATE TABLE extra_recording_edge(asset_id TEXT,revision INTEGER,FOREIGN KEY(asset_id,revision) REFERENCES audio_assets(asset_id,revision))").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let dependency_error = brioche_migration::layout::up(&owner, &source, &target)
+        .await
+        .unwrap_err();
+    assert!(
+        dependency_error
+            .to_string()
+            .contains("Unverified legacy recording dependency")
+    );
+    assert_eq!(
+        product_recordings::snapshot(&owner).await,
+        recording_snapshot
+    );
+    owner.execute_unprepared("DROP TABLE extra_recording_edge; ALTER TABLE audio_assets ADD CONSTRAINT chef_local_recording_primary CHECK(true)").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='audio_assets' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(
+        product_recordings::snapshot(&owner).await,
+        recording_snapshot
+    );
+    owner
+        .execute_unprepared("ALTER TABLE audio_assets DROP CONSTRAINT chef_local_recording_primary")
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -659,7 +685,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=21 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=22 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -3922,12 +3948,14 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .unwrap()
         .try_get::<i64>("", "n")
         .unwrap();
+    owner.execute_unprepared("ALTER TABLE audio_assets DROP CONSTRAINT chef_local_recording_primary; ALTER TABLE audio_assets ADD CONSTRAINT legacy_recording_primary_fixture PRIMARY KEY(asset_id,revision)").await.unwrap();
     let recording_collision = content_app
         .clone()
         .oneshot(recording_upload("aaa-foreign-recording-1", &cookie, &csrf))
         .await
         .unwrap();
     assert_eq!(recording_collision.status().as_u16(), 409);
+    owner.execute_unprepared("ALTER TABLE audio_assets DROP CONSTRAINT legacy_recording_primary_fixture; ALTER TABLE audio_assets ADD CONSTRAINT chef_local_recording_primary PRIMARY KEY(product_id,asset_id,revision)").await.unwrap();
     let after = owner
         .query_one_raw(Statement::from_string(
             DbBackend::Postgres,
@@ -6140,6 +6168,57 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(v)::text) AS hash,(SELECT count(*) FROM character_voice_profiles WHERE product_id='brioche' AND character_id='aaa-foreign-character-1' AND character_revision=1)::bigint AS own FROM character_voice_profiles v WHERE product_id='hargow' AND character_id='aaa-foreign-character-1' AND character_revision=1 AND revision=1")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_voice_hash);
     assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
+    let h_recording_hash=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(a)::text) AS hash FROM audio_assets a WHERE product_id='hargow' AND asset_id='aaa-foreign-recording-1' AND revision=1")).await.unwrap().unwrap().try_get::<String>("", "hash").unwrap();
+    let audit_before = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM audio_import_audit WHERE product_id='brioche'",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "n")
+        .unwrap();
+    let uploaded = content_app
+        .clone()
+        .oneshot(recording_upload("aaa-foreign-recording-1", &cookie, &csrf))
+        .await
+        .unwrap();
+    assert_eq!(uploaded.status().as_u16(), 200);
+    let repeated = content_app
+        .clone()
+        .oneshot(recording_upload("aaa-foreign-recording-1", &cookie, &csrf))
+        .await
+        .unwrap();
+    assert_eq!(repeated.status().as_u16(), 409);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(a)::text) AS hash,(SELECT count(*) FROM audio_assets WHERE product_id='brioche' AND asset_id='aaa-foreign-recording-1' AND revision=1)::bigint AS own,(SELECT count(*) FROM audio_import_audit WHERE product_id='brioche')::bigint AS audit FROM audio_assets a WHERE product_id='hargow' AND asset_id='aaa-foreign-recording-1' AND revision=1")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_recording_hash);
+    assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "audit").unwrap(), audit_before + 1);
+    let audio_file = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/operator/recordings/aaa-foreign-recording-1/1/file")
+                .header("cookie", &cookie)
+                .header("range", "bytes=0-11")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(audio_file.status().as_u16(), 206);
+    assert!(
+        audio_file.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("no-store")
+    );
+    let bytes = audio_file.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        bytes.as_ref(),
+        &include_bytes!("fixtures/audio/synthetic.mp3")[..12]
+    );
     task.abort();
     let _ = task.await;
     assert_eq!(

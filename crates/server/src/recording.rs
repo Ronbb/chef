@@ -260,6 +260,13 @@ pub(crate) fn prepare_recordings(
     }
     Ok(result)
 }
+async fn local_recording_keys(db: &impl ConnectionTrait) -> Result<bool, crate::AppError> {
+    let row=one(db,r#"SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint c
+        WHERE c.contype='p' AND c.conrelid='audio_assets'::regclass
+        AND (SELECT array_agg(a.attname::text ORDER BY k.position) FROM unnest(c.conkey) WITH ORDINALITY k(column_number,position) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.column_number)=ARRAY['product_id','asset_id','revision']::text[]) AS ready"#,vec![]).await?.ok_or(crate::AppError::Unavailable)?;
+    field(&row, "ready")
+}
+
 // Caller must hold the product content lock and reauthorize its operator.
 pub(crate) async fn register_product_transaction(
     db: &impl ConnectionTrait,
@@ -272,11 +279,12 @@ pub(crate) async fn register_product_transaction(
 ) -> Result<()> {
     bundle.validate_author(actor)?;
     let bundle_hash = hash(bundle).map_err(anyhow::Error::msg)?;
+    let local_ids = product.is_some() && local_recording_keys(db).await?;
     let mut reused = BTreeSet::new();
     for (index, (spec, _, _, _)) in recordings.iter().enumerate() {
-        // Keep the old global key until dependent speech tables are migrated,
-        // but never load a foreign descriptor or provenance for retries.
-        if let Some(product) = product {
+        // Old/partial layouts retain global protection; complete product keys allow own IDs.
+        // Never load a foreign descriptor or provenance for retries.
+        if let Some(product) = product.filter(|_| !local_ids) {
             let foreign = one(db,"SELECT 1 AS collision FROM audio_assets WHERE asset_id=$1 AND revision=$2 AND product_id<>$3",vec![spec.asset_id.clone().into(),(spec.revision as i32).into(),product.as_str().into()]).await?;
             if foreign.is_some() {
                 return Err(crate::AppError::Conflict.into());
