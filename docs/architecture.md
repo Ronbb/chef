@@ -1,5 +1,7 @@
 # 学习框架、多语言产品与课程拆分
 
+> 当前部署状态与剩余验收以 [current-status.md](current-status.md) 为准。下文保留阶段实现记录，其中旧的未部署/产品关闭状态属于历史，不是当前生产操作指令。
+
 共享 Web 客户端隔离已由 Chef 统一：固定产品 namespace 贯通 SSR Cookie、标签页草稿、身份通知及恢复/清理；Brioche旧键保持，Hargow不借用Brioche数据。产品无新增页面副本，实际测试与剩余范围见 [共享 Web 的产品范围](product-web-isolation.md)。
 
 可信启动产品配置：应用使用CHEF_PRODUCT，独立身份进程使用IDENTITY_PRODUCT，共用精确brioche/hargow解析；缺省brioche只兼容旧部署，非法/非Unicode配置报固定错误、不回显。应用把同一产品传身份客户端、公共课程及图片/音频装配。Hargow旧写CLI和serve提前拒绝，仍需局部编号、布局CLI与语言中立契约验收后开放，不能依靠新变量绕过剩余门槛。实际子进程边界及作者CLI/库/check/Clippy通过，产品只记录链接，生产/pin保持。
