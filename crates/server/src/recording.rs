@@ -431,15 +431,22 @@ pub(crate) async fn hydrate_source_for_product<C: ConnectionTrait>(
 }
 
 // Drafts with embedded audio bypass audioRefs hydration; check ownership too.
-pub(crate) async fn validate_product_references<C: ConnectionTrait>(
+pub(crate) async fn validate_checked_product_references<C: ConnectionTrait>(
     db: &C,
     product: Option<crate::product::ProductId>,
-    lesson: &PublicLesson,
+    lesson: &crate::author_source::CheckedLesson,
+) -> Result<()> {
+    validate_audio_product_references(db, product, lesson.audio()).await
+}
+async fn validate_audio_product_references<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    assets: &[AudioAsset],
 ) -> Result<()> {
     let Some(product) = product else {
         return Ok(());
     };
-    for (index, asset) in lesson.audio.iter().enumerate() {
+    for (index, asset) in assets.iter().enumerate() {
         let row=one(db,"SELECT 1 AS registered FROM audio_assets WHERE product_id=$1 AND asset_id=$2 AND revision=$3",vec![product.as_str().into(),asset.asset_id.clone().into(),(asset.revision as i32).into()]).await?;
         ensure!(
             row.is_some(),
@@ -472,7 +479,23 @@ pub(crate) async fn validate_lesson_detailed<C: ConnectionTrait>(
     lesson: &PublicLesson,
     root: &Path,
 ) -> Result<(), media::PublicationFailure> {
-    for (index, asset) in lesson.audio.iter().enumerate() {
+    validate_audio_detailed(db, product, &lesson.audio, root).await
+}
+pub(crate) async fn validate_checked_lesson_detailed<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    lesson: &crate::author_source::CheckedLesson,
+    root: &Path,
+) -> Result<(), media::PublicationFailure> {
+    validate_audio_detailed(db, product, lesson.audio(), root).await
+}
+async fn validate_audio_detailed<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    assets: &[AudioAsset],
+    root: &Path,
+) -> Result<(), media::PublicationFailure> {
+    for (index, asset) in assets.iter().enumerate() {
         let pointer = format!("/audio/{index}");
         let row = one(db, &format!("SELECT descriptor,provenance,byte_size,sample_rate,channels FROM audio_assets WHERE asset_id=$1 AND revision=$2{}",crate::learning::product_filter(product,"product_id")), vec![asset.asset_id.clone().into(), (asset.revision as i32).into()]).await?.ok_or_else(|| media::PublicationFailure::at(&format!("{pointer}/revision"), "recording revision is not registered"))?;
         if field::<serde_json::Value>(&row, "descriptor")?

@@ -288,7 +288,7 @@ async fn import_lesson(
     let _permit = permits.try_acquire().map_err(|_| AppError::RateLimited)?;
     let source = tokio::task::spawn_blocking(move || {
         let source = crate::author_json::parse_document(request.document.as_bytes())?;
-        crate::validate_source_schema(source.clone())?;
+        crate::author_source::validate_any_source_schema(source.clone())?;
         Ok::<_, anyhow::Error>(source)
     })
     .await

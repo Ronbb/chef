@@ -146,7 +146,7 @@ pub async fn run() -> Result<()> {
             .map_err(|error| document.semantic(error))?;
         crate::grading::Grader::validate_author_schema(&document.value)
             .map_err(|error| document.semantic(error))?;
-        crate::validate_source_schema(document.value.clone())
+        crate::author_source::validate_any_source_schema(document.value.clone())
             .map_err(|error| document.semantic(error))?;
         Some(document)
     } else {

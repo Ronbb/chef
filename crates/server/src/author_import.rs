@@ -52,11 +52,13 @@ pub(crate) async fn check_registered(
         Ok(source) => source,
         Err(error) => return issue(document, error, "录音未登记，或引用版本不存在。"),
     };
-    let lesson = match crate::author_source::check_source(&source) {
+    let lesson = match crate::author_source::check_any_source(&source) {
         Ok(lesson) => lesson,
         Err(error) => return issue(document, error, "登记素材与课程结构或引用不匹配。"),
     };
-    if let Err(error) = crate::media::validate_lesson_detailed(db, product, &lesson, root).await {
+    if let Err(error) =
+        crate::media::validate_checked_lesson_detailed(db, product, &lesson, root).await
+    {
         match error.runtime {
             AppError::InvalidInput => {
                 let pointer = error
@@ -162,27 +164,29 @@ pub(crate) async fn import_product_transaction(
         !reason.trim().is_empty() && reason.len() <= 1000 && !reason.chars().any(char::is_control),
         "/: invalid import reason"
     );
-    crate::validate_source_schema(source.clone())?;
+    crate::author_source::validate_any_source_schema(source.clone())?;
     check_owner(db, product, &source).await?;
     crate::media::source_asset_refs(&source)?;
     crate::recording::source_audio_refs(&source)?;
     let source = crate::media::hydrate_source_for_product(db, product, source).await?;
     let source = crate::recording::hydrate_source_for_product(db, product, source).await?;
-    let lesson = crate::project_source(source.clone())?;
-    crate::grading::Grader::from_author_source(&lesson, &source)?;
-    crate::media::validate_product_references(db, product, &lesson).await?;
-    crate::recording::validate_product_references(db, product, &lesson).await?;
+    let lesson = crate::author_source::check_any_source(&source)?;
+    crate::media::validate_checked_product_references(db, product, &lesson).await?;
+    crate::recording::validate_checked_product_references(db, product, &lesson).await?;
     // Serialize import retries by their immutable identity, independent of the directory lock.
     exec(
         db,
         "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-        vec![format!("lesson-import:{}:{}", lesson.id, lesson.revision).into()],
+        vec![format!("lesson-import:{}:{}", lesson.id(), lesson.revision()).into()],
     )
     .await?;
     // Conservative shared identity lock also serializes legacy-layout imports.
     // Recheck the legacy guard; local layouts read retries only in their product.
     check_owner(db, product, &source).await?;
-    let identity = vec![lesson.id.clone().into(), (lesson.revision as i32).into()];
+    let identity = vec![
+        lesson.id().to_owned().into(),
+        (lesson.revision() as i32).into(),
+    ];
     if let Some(existing) = one(
         db,
         &format!(
@@ -198,9 +202,9 @@ pub(crate) async fn import_product_transaction(
         }
     } else {
         let mut values = vec![
-            lesson.id.clone().into(),
-            (lesson.revision as i32).into(),
-            serde_json::to_value(&lesson)?.into(),
+            lesson.id().to_owned().into(),
+            (lesson.revision() as i32).into(),
+            lesson.public_document()?.into(),
             source.into(),
         ];
         let sql = if let Some(product) = product {
@@ -211,8 +215,8 @@ pub(crate) async fn import_product_transaction(
         };
         exec(db, sql, values).await?;
         let mut values = vec![
-            lesson.id.clone().into(),
-            (lesson.revision as i32).into(),
+            lesson.id().to_owned().into(),
+            (lesson.revision() as i32).into(),
             actor.into(),
             reason.into(),
         ];
@@ -225,8 +229,8 @@ pub(crate) async fn import_product_transaction(
         exec(db, sql, values).await?;
     }
     Ok(brioche_course_contract::AdminImportResult {
-        lesson_id: lesson.id,
-        revision: lesson.revision,
+        lesson_id: lesson.id().to_owned(),
+        revision: lesson.revision(),
     })
 }
 
@@ -260,4 +264,286 @@ async fn check_owner(
         return Err(AppError::NotFound);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod neutral_tests {
+    use super::*;
+    use sea_orm::{ConnectOptions, Database};
+    use sea_orm_migration::MigratorTrait;
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+
+    async fn totals(db: &DatabaseConnection) -> Value {
+        let row = one(db, "SELECT (SELECT count(*) FROM lesson_revisions) AS lessons,(SELECT count(*) FROM lesson_import_audit) AS audits,(SELECT count(*) FROM content_releases) AS releases", vec![]).await.unwrap().unwrap();
+        json!([
+            field::<i64>(&row, "lessons").unwrap(),
+            field::<i64>(&row, "audits").unwrap(),
+            field::<i64>(&row, "releases").unwrap()
+        ])
+    }
+    #[tokio::test]
+    #[ignore = "set TEST_DATABASE_URL to a dedicated PostgreSQL database"]
+    async fn neutral_import_hydrates_owned_registries_preserves_wire_and_is_atomic() {
+        use crate::product::ProductId;
+        let base = std::env::var("TEST_DATABASE_URL").unwrap();
+        let admin = Database::connect(&base).await.unwrap();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let schema = format!("neutral_import_{stamp}");
+        let identity = format!("neutral_identity_{stamp}");
+        admin
+            .execute_unprepared(&format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        let mut options = ConnectOptions::new(base);
+        options
+            .set_schema_search_path(&schema)
+            .sqlx_logging(false)
+            .max_connections(1);
+        let db = Database::connect(options).await.unwrap();
+        brioche_migration::Migrator::up(&db, None).await.unwrap();
+        crate::schema_split::relocate(&db, &schema, &identity)
+            .await
+            .unwrap();
+        brioche_migration::layout::up(&db, &schema, &identity)
+            .await
+            .unwrap();
+        db.execute_unprepared(
+            "INSERT INTO content_state(product_id,singleton) VALUES('hargow',false)",
+        )
+        .await
+        .unwrap();
+        let root = std::env::temp_dir().join(format!("chef-neutral-import-{stamp}"));
+        std::fs::create_dir(&root).unwrap();
+        let visual_root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/visuals");
+        let avatar = std::fs::read(visual_root.join("avatars/camille.svg")).unwrap();
+        let avatar_sha = format!("{:x}", Sha256::digest(&avatar));
+        let mut source: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/neutral-cantonese.lesson.json"
+        ))
+        .unwrap();
+        source["cast"][0]["characterId"] = json!("neutral-character");
+        source["cast"][0]["avatarId"] = json!("neutral-avatar");
+        source["blocks"][0]["narratorId"] = json!("neutral-character");
+        let bundle = json!({"schemaVersion":"1.0","assets":[{"assetId":"neutral-avatar","revision":1,"sha256":avatar_sha,"mimeType":"image/svg+xml","width":96,"height":96,"altZh":"合成协议头像","creditZh":"仅隔离测试","file":"avatars/camille.svg","status":"ready","source":"repository SVG fixture","license":"LicenseRef-TestOnly","creator":"protocol-test","rightsConfirmed":true}],"characters":[{"snapshot":source["cast"][0],"avatarRevision":1}]});
+        // Exact locale aliases stay rejected at the registry boundary.
+        for locale in ["yue", "zh-HK", "en-US", ""] {
+            let mut bad = bundle.clone();
+            bad["characters"][0]["snapshot"]["speechLocale"] = json!(locale);
+            let bad: crate::media::AssetBundle = serde_json::from_value(bad).unwrap();
+            assert!(
+                bad.validate_author("protocol-test")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("/characters/0/snapshot/speechLocale")
+            );
+        }
+        crate::media::import_author_bundle(
+            &db,
+            Some(ProductId::Hargow),
+            serde_json::from_value(bundle).unwrap(),
+            &visual_root,
+            &root,
+            "protocol-test",
+        )
+        .await
+        .unwrap();
+        let recording = include_bytes!("../tests/fixtures/audio/synthetic.mp3");
+        std::fs::write(root.join("synthetic.mp3"), recording).unwrap();
+        let info = crate::audio::inspect(recording, "audio/mpeg").unwrap();
+        let audio_sha = format!("{:x}", Sha256::digest(recording));
+        let bundle = json!({"schemaVersion":"1.0","assets":[{"assetId":"neutral-audio","revision":1,"sha256":audio_sha,"mimeType":"audio/mpeg","durationMs":info.duration_ms,"creditZh":"仅合成协议测试","file":"synthetic.mp3","status":"ready","source":"synthetic protocol fixture","license":"LicenseRef-TestOnly","creator":"protocol-test","rightsConfirmed":true}]});
+        crate::recording::import_author_bundle(
+            &db,
+            Some(ProductId::Hargow),
+            serde_json::from_value(bundle).unwrap(),
+            &root,
+            &root,
+            "protocol-test",
+        )
+        .await
+        .unwrap();
+        source["assetRefs"] = json!([{"assetId":"neutral-avatar","revision":1}]);
+        source["audioRefs"] = json!([{"assetId":"neutral-audio","revision":1}]);
+        source["media"] = json!("hydrated registry descriptors");
+        source["audio"] = json!("hydrated registry descriptors");
+        // Synthetic cues exercise descriptor plumbing only, never real alignment quality.
+        source["audioTracks"] = json!([{"blockId":"reading","assetId":"neutral-audio","cues":[
+            {"entryId":"paragraph-greeting","segmentId":"segment-greeting","wordRange":{"start":0,"end":2},"startMs":0,"endMs":info.duration_ms},
+            {"entryId":"paragraph-greeting","segmentId":"segment-greeting","startMs":0,"endMs":info.duration_ms},
+            {"entryId":"paragraph-greeting","startMs":0,"endMs":info.duration_ms}
+        ]}]);
+        crate::author_source::validate_any_source_schema(source.clone()).unwrap();
+        let file = root.join("lesson.json");
+        std::fs::write(&file, serde_json::to_vec_pretty(&source).unwrap()).unwrap();
+        let document = crate::author_json::Document::load(&file).unwrap();
+        assert!(crate::author_json::check_uploaded(&std::fs::read(&file).unwrap(), false).valid);
+        let before = totals(&db).await;
+        let check = check_registered(&db, Some(ProductId::Hargow), &document, &root)
+            .await
+            .unwrap();
+        assert!(check.valid, "{:?}", check.issue);
+        assert_eq!(totals(&db).await, before, "registered check is read-only");
+        let foreign = check_registered(&db, Some(ProductId::Brioche), &document, &root)
+            .await
+            .unwrap();
+        assert!(!foreign.valid);
+        assert!(
+            import_author_product(
+                &db,
+                Some(ProductId::Brioche),
+                source.clone(),
+                "protocol-test",
+                "foreign refs"
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(totals(&db).await, before);
+        let result = import_author_product(
+            &db,
+            Some(ProductId::Hargow),
+            source.clone(),
+            "protocol-test",
+            "synthetic neutral import",
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.lesson_id, "neutral-protocol");
+        assert_eq!(totals(&db).await, json!([1, 1, 0]));
+        let row = one(&db,"SELECT public_document,server_document,published FROM lesson_revisions WHERE product_id='hargow' AND lesson_id='neutral-protocol' AND revision=1",vec![]).await.unwrap().unwrap();
+        let public: Value = field(&row, "public_document").unwrap();
+        let private: Value = field(&row, "server_document").unwrap();
+        assert_eq!(public["schemaVersion"], "2.0");
+        assert_eq!(public["targetLanguage"], "yue-Hant-HK");
+        assert_eq!(
+            public["blocks"][0]["paragraphs"][0]["segments"][0]["reading"],
+            source["blocks"][0]["paragraphs"][0]["segments"][0]["reading"]
+        );
+        assert_eq!(public["audio"][0]["durationMs"], info.duration_ms);
+        assert_eq!(public["media"][0]["sha256"], avatar_sha);
+        assert!(public.get("serverOnly").is_none() && public["title"].get("fr").is_none());
+        assert!(private.get("serverOnly").is_some());
+        assert!(!field::<bool>(&row, "published").unwrap());
+        // Embedded descriptors cannot bypass product ownership by omitting refs.
+        let mut embedded = source.clone();
+        embedded.as_object_mut().unwrap().remove("assetRefs");
+        embedded.as_object_mut().unwrap().remove("audioRefs");
+        embedded["media"] = public["media"].clone();
+        embedded["audio"] = public["audio"].clone();
+        let error = import_author_product(
+            &db,
+            Some(ProductId::Brioche),
+            embedded.clone(),
+            "protocol-test",
+            "embedded foreign refs",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().starts_with("/media/0/revision:"),
+            "{error}"
+        );
+        let checked = crate::author_source::check_any_source(&embedded).unwrap();
+        let error = crate::recording::validate_checked_product_references(
+            &db,
+            Some(ProductId::Brioche),
+            &checked,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().starts_with("/audio/0/revision:"),
+            "{error}"
+        );
+        let mut without_visuals = embedded;
+        without_visuals["media"] = json!([]);
+        let checked = crate::author_source::check_any_source(&without_visuals).unwrap();
+        let error = crate::media::validate_checked_product_references(
+            &db,
+            Some(ProductId::Brioche),
+            &checked,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().starts_with("/cast/0/revision:"),
+            "{error}"
+        );
+        assert_eq!(totals(&db).await, json!([1, 1, 0]));
+
+        import_impl(
+            &db,
+            Some(ProductId::Hargow),
+            source.clone(),
+            "protocol-test",
+            "identical retry",
+            true,
+        )
+        .await
+        .unwrap();
+        let mut changed = source.clone();
+        changed["title"]["zh"] = json!("different immutable source");
+        assert!(
+            import_impl(
+                &db,
+                Some(ProductId::Hargow),
+                changed,
+                "protocol-test",
+                "conflict",
+                true
+            )
+            .await
+            .unwrap_err()
+            .is::<RevisionConflict>()
+        );
+        assert_eq!(totals(&db).await, json!([1, 1, 0]));
+        // Registration is not sufficient if the actual stored object changed.
+        let object = root.join(format!("{audio_sha}.mp3"));
+        std::fs::write(&object, b"broken").unwrap();
+        let check = check_registered(&db, Some(ProductId::Hargow), &document, &root)
+            .await
+            .unwrap();
+        assert!(!check.valid);
+        assert_eq!(check.issue.unwrap().pointer, "/audioRefs/0");
+        std::fs::write(&object, recording).unwrap();
+        assert!(
+            check_registered(&db, Some(ProductId::Hargow), &document, &root)
+                .await
+                .unwrap()
+                .valid
+        );
+        // Failing the final audit insert rolls back the new immutable revision.
+        db.execute_unprepared("CREATE FUNCTION fail_neutral_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic audit failure'; END $$; CREATE TRIGGER fail_neutral_audit BEFORE INSERT ON lesson_import_audit FOR EACH ROW EXECUTE FUNCTION fail_neutral_audit()").await.unwrap();
+        let mut next = source;
+        next["revision"] = json!(2);
+        assert!(
+            import_author_product(
+                &db,
+                Some(ProductId::Hargow),
+                next,
+                "protocol-test",
+                "audit rollback"
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(totals(&db).await, json!([1, 1, 0]));
+        db.close().await.unwrap();
+        admin
+            .execute_unprepared(&format!(
+                "DROP SCHEMA {schema} CASCADE; DROP SCHEMA {identity} CASCADE"
+            ))
+            .await
+            .unwrap();
+        admin.close().await.unwrap();
+        for entry in std::fs::read_dir(&root).unwrap() {
+            std::fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        std::fs::remove_dir(root).unwrap();
+    }
 }

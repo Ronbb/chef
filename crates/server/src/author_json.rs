@@ -178,7 +178,7 @@ pub(crate) fn prepare_uploaded(
     } else {
         crate::media::source_asset_refs(&document.value)
             .and_then(|_| crate::recording::source_audio_refs(&document.value))
-            .and_then(|_| crate::validate_source_schema(document.value.clone()))
+            .and_then(|_| crate::author_source::validate_any_source_schema(document.value.clone()))
     };
     match validation {
         Ok(()) => Ok(document),

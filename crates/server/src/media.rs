@@ -13,6 +13,12 @@ use std::{
     io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
+fn supported_character_locale(locale: &str) -> bool {
+    use brioche_course_contract::TargetLanguage;
+    [TargetLanguage::French, TargetLanguage::Cantonese]
+        .iter()
+        .any(|language| language.locale() == locale)
+}
 const MAX_BYTES: u64 = 32 * 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -128,9 +134,8 @@ impl AssetBundle {
                 "{p}/snapshot/displayName: expected nonempty name"
             );
             ensure!(
-                snapshot.speech_locale == brioche_course_contract::CHARACTER_SPEECH_LOCALE,
-                "{p}/snapshot/speechLocale: expected {}",
-                brioche_course_contract::CHARACTER_SPEECH_LOCALE
+                supported_character_locale(&snapshot.speech_locale),
+                "{p}/snapshot/speechLocale: expected fr-FR or yue-Hant-HK"
             );
             ensure!(
                 valid_id(&snapshot.avatar_id),
@@ -750,7 +755,7 @@ async fn import_bundle_impl(
             valid_id(&snapshot.character_id)
                 && brioche_course_contract::valid_content_revision(snapshot.revision)
                 && text(&snapshot.display_name)
-                && snapshot.speech_locale == brioche_course_contract::CHARACTER_SPEECH_LOCALE
+                && supported_character_locale(&snapshot.speech_locale)
                 && brioche_course_contract::valid_content_revision(character.avatar_revision)
                 && ids.insert((&snapshot.character_id, snapshot.revision)),
             "invalid or duplicate character"
@@ -891,22 +896,30 @@ pub(crate) async fn hydrate_source_for_product<C: ConnectionTrait>(
 }
 // Draft imports may embed descriptors rather than assetRefs. Verify their
 // product ownership too, without requiring draft publication/file checks.
-pub(crate) async fn validate_product_references<C: ConnectionTrait>(
+pub(crate) async fn validate_checked_product_references<C: ConnectionTrait>(
     db: &C,
     product: Option<crate::product::ProductId>,
-    lesson: &PublicLesson,
+    lesson: &crate::author_source::CheckedLesson,
+) -> Result<()> {
+    validate_asset_product_references(db, product, lesson.media(), lesson.cast()).await
+}
+async fn validate_asset_product_references<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    assets: &[MediaAsset],
+    cast: &[Character],
 ) -> Result<()> {
     let Some(product) = product else {
         return Ok(());
     };
-    for (index, asset) in lesson.media.iter().enumerate() {
+    for (index, asset) in assets.iter().enumerate() {
         let row = one(db,"SELECT 1 AS registered FROM media_assets WHERE product_id=$1 AND asset_id=$2 AND revision=$3",vec![product.as_str().into(),asset.asset_id.clone().into(),(asset.revision as i32).into()]).await?;
         ensure!(
             row.is_some(),
             "/media/{index}/revision: visual asset revision is not registered for product"
         );
     }
-    for (index, character) in lesson.cast.iter().enumerate() {
+    for (index, character) in cast.iter().enumerate() {
         let row = one(db,"SELECT 1 AS registered FROM character_revisions WHERE product_id=$1 AND character_id=$2 AND revision=$3",vec![product.as_str().into(),character.character_id.clone().into(),(character.revision as i32).into()]).await?;
         ensure!(
             row.is_some(),
@@ -958,10 +971,51 @@ pub(crate) async fn validate_lesson_detailed<C: ConnectionTrait>(
         .validate()
         .map_err(|_| PublicationFailure::at("/", "public lesson validation failed"))?;
     crate::recording::validate_lesson_detailed(db, product, lesson, root).await?;
+    let scenes = lesson
+        .blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| match b {
+            Block::Scene {
+                illustration_id, ..
+            } => Some((i, illustration_id.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    validate_assets_detailed(db, product, &lesson.media, &lesson.cast, &scenes, root).await
+}
+pub(crate) async fn validate_checked_lesson_detailed<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    lesson: &crate::author_source::CheckedLesson,
+    root: &Path,
+) -> Result<(), PublicationFailure> {
+    lesson
+        .validate_public()
+        .map_err(|_| PublicationFailure::at("/", "public lesson validation failed"))?;
+    crate::recording::validate_checked_lesson_detailed(db, product, lesson, root).await?;
+    validate_assets_detailed(
+        db,
+        product,
+        lesson.media(),
+        lesson.cast(),
+        &lesson.scene_references(),
+        root,
+    )
+    .await
+}
+async fn validate_assets_detailed<C: ConnectionTrait>(
+    db: &C,
+    product: Option<crate::product::ProductId>,
+    assets: &[MediaAsset],
+    cast: &[Character],
+    scenes: &[(usize, &str)],
+    root: &Path,
+) -> Result<(), PublicationFailure> {
     let mut ids = BTreeSet::new();
-    for (index, asset) in lesson.media.iter().enumerate() {
+    for (index, asset) in assets.iter().enumerate() {
         let pointer = format!("/media/{index}");
-        if !ids.insert(&asset.asset_id) {
+        if !ids.insert(asset.asset_id.as_str()) {
             return Err(PublicationFailure::at(
                 &format!("{pointer}/assetId"),
                 "duplicate visual asset ID",
@@ -1014,19 +1068,15 @@ pub(crate) async fn validate_lesson_detailed<C: ConnectionTrait>(
         .map_err(|_| AppError::Unavailable)?
         .map_err(|message| PublicationFailure::at(&format!("{pointer}/sha256"), message))?;
     }
-    for (index, block) in lesson.blocks.iter().enumerate() {
-        if let Block::Scene {
-            illustration_id, ..
-        } = block
-            && !ids.contains(illustration_id)
-        {
+    for (index, illustration_id) in scenes {
+        if !ids.contains(*illustration_id) {
             return Err(PublicationFailure::at(
                 &format!("/blocks/{index}/illustrationId"),
                 "scene illustration is absent from registered lesson media",
             ));
         }
     }
-    for (index, character) in lesson.cast.iter().enumerate() {
+    for (index, character) in cast.iter().enumerate() {
         let pointer = format!("/cast/{index}");
         if !brioche_course_contract::valid_content_revision(character.revision) {
             return Err(PublicationFailure::at(
@@ -1045,7 +1095,7 @@ pub(crate) async fn validate_lesson_detailed<C: ConnectionTrait>(
                 "character snapshot does not match registered revision",
             ));
         }
-        if !lesson.media.iter().any(|asset| {
+        if !assets.iter().any(|asset| {
             asset.asset_id == character.avatar_id && asset.revision == avatar_revision as u32
         }) {
             return Err(PublicationFailure::at(
