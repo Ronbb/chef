@@ -630,6 +630,28 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         )
         .await
         .unwrap();
+    owner.execute_unprepared("CREATE TABLE extra_voice_edge(character_id TEXT,character_revision INTEGER,revision INTEGER,FOREIGN KEY(character_id,character_revision,revision) REFERENCES character_voice_profiles(character_id,character_revision,revision))").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let dependency_error = brioche_migration::layout::up(&owner, &source, &target)
+        .await
+        .unwrap_err();
+    assert!(
+        dependency_error
+            .to_string()
+            .contains("Unverified legacy voice dependency")
+    );
+    assert_eq!(product_voices::snapshot(&owner).await, voice_snapshot);
+    owner.execute_unprepared("DROP TABLE extra_voice_edge; ALTER TABLE character_voice_profiles ADD CONSTRAINT chef_local_voice_primary CHECK(true)").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='character_voice_profiles' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_voices::snapshot(&owner).await, voice_snapshot);
+    owner
+        .execute_unprepared(
+            "ALTER TABLE character_voice_profiles DROP CONSTRAINT chef_local_voice_primary",
+        )
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -637,7 +659,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=20 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=21 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -6073,6 +6095,50 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     );
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(c)::text) AS hash,(SELECT count(*) FROM character_revisions WHERE product_id='brioche' AND character_id='aaa-foreign-character-1')::bigint AS own FROM character_revisions c WHERE product_id='hargow' AND character_id='aaa-foreign-character-1' AND revision=1")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_character_hash);
+    assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
+    // Same fixed character/voice revision in two products, through the real operator endpoint.
+    let h_voice_hash=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(v)::text) AS hash FROM character_voice_profiles v WHERE product_id='hargow' AND character_id='aaa-foreign-character-1' AND character_revision=1 AND revision=1")).await.unwrap().unwrap().try_get::<String>("", "hash").unwrap();
+    let mut own_voice = voice.clone();
+    own_voice["characterId"] = "aaa-foreign-character-1".into();
+    own_voice["characterRevision"] = 1.into();
+    own_voice["expectedVoiceRevision"] = 0.into();
+    let (status, created_voice) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/characters",
+        Some(own_voice.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{created_voice}");
+    assert_eq!(created_voice["voiceRevision"], 1);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/characters",
+            Some(own_voice),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let (status, read_voice) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/characters/aaa-foreign-character-1/1/voices/1",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{read_voice}");
+    assert_eq!(read_voice, created_voice);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(v)::text) AS hash,(SELECT count(*) FROM character_voice_profiles WHERE product_id='brioche' AND character_id='aaa-foreign-character-1' AND character_revision=1)::bigint AS own FROM character_voice_profiles v WHERE product_id='hargow' AND character_id='aaa-foreign-character-1' AND character_revision=1 AND revision=1")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_voice_hash);
     assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
     task.abort();
     let _ = task.await;
