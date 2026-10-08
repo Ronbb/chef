@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+分离配音交付 CLI：alignment import、package import、lesson direct publication 先完整 author_scope 与真实 maintenance_auth，Some(product) 复用报告导入/打包快照与登记/授权事务，身份停止拒绝。package import 新 CLI 仅完整 split；原 HTTP 抽取同一内核，不复制逻辑。固定归档/哈希/实文件、不可变重试与产品范围保持，登记或授权不激活目录、不伪造 heard/timingsChecked。仅 Chef 合成隔离验证，生产/pin 不动。
+
 分离角色声音/评价 CLI：character-voice-import、audition/clip review 先 author_scope 与 maintenance_auth 真实本产品管理员核验，再复用 append_profile_authorized_for_product / review_for_actor。声音追加、参考录音边界、试听采纳同事务、heard 显式声明、试听重复冲突/片段精确重试保持；不自动发布或伪造审听。实现和隔离合成测试只 Chef，身份停止拒绝，生产和产品 pin 保持。
 
 分离语音生成 CLI：clip/audition generate 使用 author_scope 和真实 maintenance_auth，Some(product) Store 复用创建内核及同产品完成轮询，不构建身份 Backend 或按邮箱/全局 role 授权。local-cli 标记、成本确认、未知重试、精确重放与缓存音频验证保留；不发布或声明审听。测试只用合成供应商及无付费配置的实际 CLI 缓存/重放，生产和产品 pin 保持。

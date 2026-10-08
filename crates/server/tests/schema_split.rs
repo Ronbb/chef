@@ -7155,6 +7155,59 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let mut local_alignment_request = alignment_request.clone();
     local_alignment_request["id"] = "4".repeat(32).into();
     local_alignment_request["reportJson"] = local_report.to_string().into();
+    std::fs::write(
+        root.join("cli-alignment.json"),
+        serde_json::to_vec(&local_alignment_request).unwrap(),
+    )
+    .unwrap();
+    let alignment_args = vec![
+        "speech-alignment-import".to_owned(),
+        "4".repeat(32),
+        "split@example.test".to_owned(),
+        "cli-alignment.json".to_owned(),
+    ];
+    for session in [
+        "learner-session.json",
+        "bad-csrf-session.json",
+        "other-product-session.json",
+    ] {
+        assert!(
+            !export_cli
+                .execute(alignment_args.clone(), session)
+                .await
+                .status
+                .success()
+        );
+    }
+    let result = export_cli
+        .execute(alignment_args.clone(), "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let cli_alignment: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(cli_alignment["id"], "4".repeat(32));
+    assert_eq!(cli_alignment["reviewRequired"], true);
+    assert_eq!(cli_alignment["published"], false);
+    let result = export_cli
+        .execute(alignment_args, "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
+        cli_alignment
+    );
+    local_alignment_request["reason"] = format!(
+        "[local-cli] {}",
+        local_alignment_request["reason"].as_str().unwrap()
+    )
+    .into();
     let (status, local_alignment) = request(
         &content_app,
         "POST",
@@ -7196,6 +7249,41 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(read, local_alignment);
     let mut changed = local_alignment_request;
     changed["reason"] = "Changed product-local alignment".into();
+    std::fs::write(
+        root.join("cli-changed-alignment.json"),
+        serde_json::to_vec(&changed).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "speech-alignment-import".to_owned(),
+                    "4".repeat(32),
+                    "split@example.test".to_owned(),
+                    "cli-changed-alignment.json".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "speech-alignment-import".to_owned(),
+                    "3".repeat(32),
+                    "split@example.test".to_owned(),
+                    "cli-alignment.json".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
     assert_eq!(
         request(
             &content_app,
@@ -7244,6 +7332,53 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     local_package_request["package"]["expectedReportHash"] = local_alignment["reportHash"].clone();
     local_package_request["package"]["lessonRevision"] = next_revision.into();
     let local_package_path = format!("{foreign_alignment_path}/package/import");
+    std::fs::write(
+        root.join("cli-package-import.json"),
+        serde_json::to_vec(&local_package_request).unwrap(),
+    )
+    .unwrap();
+    let package_args = vec![
+        "speech-package-import".to_owned(),
+        "4".repeat(32),
+        "split@example.test".to_owned(),
+        "cli-package-import.json".to_owned(),
+    ];
+    for session in [
+        "learner-session.json",
+        "bad-csrf-session.json",
+        "other-product-session.json",
+    ] {
+        assert!(
+            !export_cli
+                .execute(package_args.clone(), session)
+                .await
+                .status
+                .success()
+        );
+    }
+    let result = export_cli
+        .execute(package_args.clone(), "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let cli_package: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(cli_package["published"], false);
+    assert_eq!(cli_package["revision"], next_revision);
+    let result = export_cli
+        .execute(package_args, "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
+        cli_package
+    );
     let (status, local_package) = request(
         &content_app,
         "POST",
@@ -7268,6 +7403,26 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(retry, local_package);
     let mut changed = local_package_request;
     changed["package"]["reason"] = "Changed product-local package".into();
+    std::fs::write(
+        root.join("cli-changed-package.json"),
+        serde_json::to_vec(&changed).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "speech-package-import".to_owned(),
+                    "4".repeat(32),
+                    "split@example.test".to_owned(),
+                    "cli-changed-package.json".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
     assert_eq!(
         request(
             &content_app,
@@ -7296,6 +7451,101 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(row.try_get::<i64>("", "alignments").unwrap(), 1);
     assert_eq!(row.try_get::<i64>("", "packages").unwrap(), 1);
     assert_eq!(row.try_get::<i64>("", "imports").unwrap(), 1);
+    let audio_path = format!(
+        "/api/v1/operator/lessons/{}/revisions/{next_revision}/audio-review",
+        lesson.id
+    );
+    let (status, package_audio) = request(
+        &content_app,
+        "GET",
+        &audio_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{package_audio}");
+    let direct_request_cli = serde_json::json!({"expectedLessonHash":package_audio["lessonHash"],"reason":"Synthetic split CLI owner authorization; no listening assertion","evidence":{"kind":"isolated-cli-test-only"}});
+    std::fs::write(
+        root.join("cli-direct-publication.json"),
+        serde_json::to_vec(&direct_request_cli).unwrap(),
+    )
+    .unwrap();
+    let direct_args = vec![
+        "lesson-direct-publication".to_owned(),
+        lesson.id.clone(),
+        next_revision.to_string(),
+        "split@example.test".to_owned(),
+        "cli-direct-publication.json".to_owned(),
+    ];
+    for session in [
+        "learner-session.json",
+        "bad-csrf-session.json",
+        "other-product-session.json",
+    ] {
+        assert!(
+            !export_cli
+                .execute(direct_args.clone(), session)
+                .await
+                .status
+                .success()
+        );
+    }
+    let result = export_cli
+        .execute(direct_args.clone(), "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let authorized: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let direct_path = format!(
+        "/api/v1/operator/lessons/{}/revisions/{next_revision}/direct-publication",
+        lesson.id
+    );
+    let (status, direct_http) = request(
+        &content_app,
+        "POST",
+        &direct_path,
+        Some(direct_request_cli.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{direct_http}");
+    assert_eq!(authorized, direct_http);
+    let result = export_cli
+        .execute(direct_args, "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
+        authorized
+    );
+    let row = owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres, "SELECT (SELECT count(*) FROM lesson_direct_publications WHERE product_id='brioche' AND lesson_id=$1 AND revision=$2)::bigint AS authorizations,(SELECT count(*) FROM lesson_audio_reviews WHERE product_id='brioche' AND lesson_id=$1 AND revision=$2)::bigint AS reviews,(SELECT published FROM lesson_revisions WHERE product_id='brioche' AND lesson_id=$1 AND revision=$2) AS published", [lesson.id.clone().into(), next_revision.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "authorizations").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "reviews").unwrap(), 0);
+    assert!(!row.try_get::<bool>("", "published").unwrap());
+    let row = owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres, "SELECT actor_id,reason,request FROM lesson_direct_publications WHERE product_id='brioche' AND lesson_id=$1 AND revision=$2", [lesson.id.clone().into(), next_revision.into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "actor_id").unwrap(), account);
+    assert_eq!(
+        row.try_get::<String>("", "reason").unwrap(),
+        format!(
+            "[owner-direct-publish] {}",
+            direct_request_cli["reason"].as_str().unwrap()
+        )
+    );
+    assert!(
+        row.try_get::<serde_json::Value>("", "request")
+            .unwrap()
+            .get("heard")
+            .is_none()
+    );
     assert_eq!(
         owner
             .query_one_raw(Statement::from_string(DbBackend::Postgres, h_delivery_sql))
@@ -7594,6 +7844,42 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     );
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
+    for (command, input) in [
+        ("speech-alignment-import", "cli-alignment.json"),
+        ("speech-package-import", "cli-package-import.json"),
+    ] {
+        assert!(
+            !export_cli
+                .execute(
+                    vec![
+                        command.to_owned(),
+                        "4".repeat(32),
+                        "split@example.test".to_owned(),
+                        input.to_owned()
+                    ],
+                    "operator-session.json"
+                )
+                .await
+                .status
+                .success()
+        );
+    }
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "lesson-direct-publication".to_owned(),
+                    lesson.id.clone(),
+                    next_revision.to_string(),
+                    "split@example.test".to_owned(),
+                    "cli-direct-publication.json".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
     for (command, id, input) in [
         (
             "voice-audition-review",

@@ -449,6 +449,27 @@ pub async fn import_local(
     .await
 }
 
+pub(crate) async fn import_author(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    operator: &crate::product_memberships::Operator,
+    root: PathBuf,
+    mut request: AdminAlignmentImport,
+) -> Result<AdminAlignment, AppError> {
+    request.reason = format!("[local-cli] {}", request.reason);
+    import_for_actor(
+        &Store {
+            db: db.clone(),
+            product: Some(product),
+        },
+        operator,
+        root,
+        Arc::new(tokio::sync::Semaphore::new(2)),
+        request,
+    )
+    .await
+}
+
 async fn import_for_actor(
     b: &Store,
     operator: &crate::product_memberships::Operator,

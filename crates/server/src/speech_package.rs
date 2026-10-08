@@ -118,6 +118,41 @@ async fn import(
     Json(request): Json<AdminSpeechPackageImport>,
 ) -> Result<Json<AdminSpeechPackageResult>, AppError> {
     let operator = auth.require_operator().await?;
+    Ok(Json(
+        import_for_operator(&b, &operator, id, root, permits, request).await?,
+    ))
+}
+
+pub(crate) async fn import_author(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    operator: &crate::product_memberships::Operator,
+    id: String,
+    root: PathBuf,
+    request: AdminSpeechPackageImport,
+) -> Result<AdminSpeechPackageResult, AppError> {
+    import_for_operator(
+        &Store {
+            db: db.clone(),
+            product: Some(product),
+        },
+        operator,
+        id,
+        root,
+        Arc::new(tokio::sync::Semaphore::new(2)),
+        request,
+    )
+    .await
+}
+
+async fn import_for_operator(
+    b: &Store,
+    operator: &crate::product_memberships::Operator,
+    id: String,
+    root: PathBuf,
+    permits: Arc<tokio::sync::Semaphore>,
+    request: AdminSpeechPackageImport,
+) -> Result<AdminSpeechPackageResult, AppError> {
     settings(&request.package)?;
     if !hex(&id, 32) || !hex(&request.id, 32) {
         return Err(AppError::InvalidInput);
@@ -133,7 +168,7 @@ async fn import(
     operator.lock_content(&tx).await?;
     if let Some(result) = replay(&tx, b.product, &id, actor, &request).await? {
         tx.commit().await.map_err(|_| AppError::Unavailable)?;
-        return Ok(Json(result));
+        return Ok(result);
     }
     let original = snapshot(&tx, b.product, &id, &request.package).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
@@ -179,7 +214,7 @@ async fn import(
     .await?;
     if let Some(result) = replay(&tx, b.product, &id, actor, &request).await? {
         tx.commit().await.map_err(|_| AppError::Unavailable)?;
-        return Ok(Json(result));
+        return Ok(result);
     }
     if snapshot(&tx, b.product, &id, &request.package).await? != expected {
         return Err(AppError::Conflict);
@@ -235,7 +270,7 @@ async fn import(
     };
     exec(&tx, sql, values).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
-    Ok(Json(result))
+    Ok(result)
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]

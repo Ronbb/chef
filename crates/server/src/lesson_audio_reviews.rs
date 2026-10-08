@@ -127,6 +127,29 @@ pub async fn authorize_local(
     )
     .await
 }
+pub(crate) async fn authorize_author(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    operator: &crate::product_memberships::Operator,
+    id: &str,
+    revision: u32,
+    root: &std::path::Path,
+    request: DirectPublication,
+) -> Result<AdminLessonAudioStatus, AppError> {
+    authorize_for_operator(
+        &Store {
+            db: db.clone(),
+            product: Some(product),
+        },
+        operator,
+        id,
+        revision,
+        root,
+        request,
+    )
+    .await
+}
+
 async fn authorize(
     auth: AdminAuth,
     State(b): State<Store>,
@@ -151,6 +174,9 @@ async fn authorize_for_operator(
     root: &std::path::Path,
     mut request: DirectPublication,
 ) -> Result<AdminLessonAudioStatus, AppError> {
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let actor = operator.actor;
     crate::admin::revision(id, revision)?;
     crate::admin::reason(&request.reason)?;

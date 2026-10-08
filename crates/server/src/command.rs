@@ -245,6 +245,9 @@ pub async fn run() -> Result<()> {
             | "voice-audition-review"
             | "speech-clip-review"
             | "character-voice-import"
+            | "speech-alignment-import"
+            | "speech-package-import"
+            | "lesson-direct-publication"
     );
     let author_product = if author_command {
         crate::schema_split::author_scope(db.as_ref().unwrap(), product).await
@@ -258,6 +261,95 @@ pub async fn run() -> Result<()> {
         }
         None
     };
+    if command == "speech-package-import" && author_product.is_none() {
+        bail!("Speech package maintenance requires the complete split layout");
+    }
+    if let Some(scope) = author_product
+        && matches!(
+            command.as_str(),
+            "speech-alignment-import" | "speech-package-import"
+        )
+    {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        anyhow::ensure!(
+            args.len() == 3,
+            "usage: {command} <id> <operator-email> <request.json>"
+        );
+        let operator = crate::maintenance_auth::operator(scope, &args[1]).await?;
+        let document = crate::author_json::Document::load(&args[2])?;
+        if command == "speech-alignment-import" {
+            let request: brioche_course_contract::AdminAlignmentImport =
+                crate::author_json::from_value(document.value, "")?;
+            anyhow::ensure!(
+                request.id == args[0],
+                "Alignment id must match the fixed request"
+            );
+            let result = crate::speech_alignments::import_author(
+                db.as_ref().unwrap(),
+                scope,
+                &operator,
+                crate::media::media_root(),
+                request,
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("Scoped alignment not confirmed; inspect the fixed report")
+            })?;
+            println!(
+                "{}",
+                serde_json::json!({"id":result.id,"reportHash":result.report_hash,"reviewRequired":true,"published":false})
+            );
+        } else {
+            let result = crate::speech_package::import_author(
+                db.as_ref().unwrap(),
+                scope,
+                &operator,
+                args[0].clone(),
+                crate::media::media_root(),
+                crate::author_json::from_value(document.value, "")?,
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Scoped package import not confirmed; inspect fixed sources and receipt"
+                )
+            })?;
+            println!(
+                "{}",
+                serde_json::json!({"id":result.id,"lessonId":result.lesson_id,"revision":result.revision,"recordingCount":result.recording_count,"published":false})
+            );
+        }
+        return Ok(());
+    }
+    if let Some(scope) = author_product
+        && command == "lesson-direct-publication"
+    {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        anyhow::ensure!(
+            args.len() == 4,
+            "usage: lesson-direct-publication <lesson-id> <revision> <operator-email> <authorization.json>"
+        );
+        let revision: u32 = args[1]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid lesson revision"))?;
+        let operator = crate::maintenance_auth::operator(scope, &args[2]).await?;
+        let document = crate::author_json::Document::load(&args[3])?;
+        let result = crate::lesson_audio_reviews::authorize_author(
+            db.as_ref().unwrap(),
+            scope,
+            &operator,
+            &args[0],
+            revision,
+            &crate::media::media_root(),
+            crate::author_json::from_value(document.value, "")?,
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("Scoped publication authorization not confirmed; inspect fixed sources")
+        })?;
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
     if let Some(scope) = author_product
         && matches!(
             command.as_str(),

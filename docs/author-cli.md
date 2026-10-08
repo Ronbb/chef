@@ -95,3 +95,15 @@ chef-server speech-package-automatic report.json package-request.json operator@e
 评价复用后台事务，理由加 `[local-cli]` 标记；heard 必须由操作者明确提供，不由命令默认补齐。试听评价保留一次决定及 expectedVoiceRevision，重复拒绝；采纳声音与评价同事务。片段评价保留相同操作者、决定、理由的精确重试，不同请求拒绝。输出仅编号、决定与 published=false。用户直接发布授权不等于人工审听，这些可选评价命令不会自动声明审听或作为额外用户审批门槛。
 
 实际隔离 CLI 使用受限作者连接与真实身份服务，覆盖同编号声音登记、试听与片段评价、固定版本冲突、片段精确重试及另一产品行指纹保持；普通成员/错误 CSRF/另一产品 Cookie/邮箱不匹配/未听过与身份服务停止拒绝。拒绝请求零新增本产品评价；成功审计记录真实账号与 local-cli 理由。测试 heard=true 只针对明确标注的合成试听，不是生产审听或粤语质量证据。
+
+## 分离后的对齐、打包导入与直接发布授权
+
+完整 split 布局支持 `speech-alignment-import <id> <operator-email> <request.json>`、`speech-package-import <alignment-id> <operator-email> <request.json>` 与 `lesson-direct-publication <lesson-id> <revision> <operator-email> <authorization.json>`。它们使用作者连接、真实私有管理员会话与可信产品配置，严格读取请求；不查询身份表或以邮箱授权。旧组合对齐/授权 CLI 保持兼容；新打包导入 CLI 仅支持完整 split，不能静默回退到组合身份。
+
+对齐导入的编号须与请求一致，理由标记 local-cli；固定报告、来源归档哈希、计划、片段与音频重新验证。它只登记真实模型报告，不宣布时序审听合格。
+
+打包导入复用 HTTP 的快照/组装/登记事务：先验证固定对齐报告与既有明确评价，组装后再复核身份和来源；录音、课程新版本及包导入回执同事务写入。相同操作者与精确请求重试复用回执，不覆盖版本；输出包含登记编号、课程版本和录音数量，published=false。未满足时序条件拒绝，不自动补齐 heard/timingsChecked。现有无需人工审批的自动打包路径保留自己的自动报告规则。
+
+直接发布授权复用后台独立授权事件与实文件验证，不添加人工审听声明，也不自动激活目录。固定课程哈希、来源与理由保持，精确请求重试不重复授权；变更请求拒绝。真正上架继续使用目录 stage/activate 的原子发布流程，用户已授权直接发布，无须额外审批。实现与测试仅位于 Chef，产品无业务副本。
+
+实际隔离 CLI 使用专用作者角色和真实身份服务，验证双产品同编号对齐/包首次导入与 HTTP 精确重试一致、改参冲突及另一产品交付图指纹保持；普通成员/CSRF/另一产品 Cookie/身份停止拒绝。直接授权与 HTTP 一致、精确重试仅一条授权，审计保留真实账号与理由；新课程仍 published=false，人工录音评价零新增，request 不含 heard。模型报告/时序与录音均为合成协议测试，不是实际人工审听或粤语质量证明。
