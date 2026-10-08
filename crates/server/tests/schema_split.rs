@@ -24,6 +24,8 @@ mod product_facts;
 mod product_recordings;
 #[path = "support/product_visuals.rs"]
 mod product_visuals;
+#[path = "support/product_voices.rs"]
+mod product_voices;
 mod support;
 const KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const ORIGIN: &str = "http://brioche.example.test";
@@ -337,6 +339,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     support::fixture_release(&owner).await;
     let root = assets::fixture_assets(&owner, &source).await;
     product_recordings::seed(&owner, &root).await;
+    product_voices::seed(&owner, account).await;
+    let voice_snapshot = product_voices::snapshot(&owner).await;
+    assert!(voice_snapshot.iter().all(|(n, _)| *n > 0));
     let recording_snapshot = product_recordings::snapshot(&owner).await;
     assert!(recording_snapshot.iter().all(|(n, _)| *n > 0));
     let visual_snapshot = product_visuals::snapshot(&owner).await;
@@ -460,6 +465,17 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .execute_unprepared("DROP INDEX chef_recording_product")
         .await
         .unwrap();
+    owner.execute_unprepared("ALTER TABLE voice_reference_reads ADD CONSTRAINT chef_reference_read_product_grant CHECK(true)").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name IN ('character_voice_profiles','voice_reference_grants','voice_reference_reads','audio_assets','learning_sessions') AND column_name IN ('product_id','reference_asset_id','reference_asset_revision')) AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_voices::snapshot(&owner).await, voice_snapshot);
+    owner
+        .execute_unprepared(
+            "ALTER TABLE voice_reference_reads DROP CONSTRAINT chef_reference_read_product_grant",
+        )
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -467,7 +483,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=13 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=14 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -480,6 +496,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         recording_snapshot
     );
     product_recordings::verify(&owner).await;
+    assert_eq!(product_voices::snapshot(&owner).await, voice_snapshot);
+    product_voices::verify(&owner).await;
+    assert_eq!(product_voices::snapshot(&owner).await, voice_snapshot);
     assert_eq!(
         product_recordings::snapshot(&owner).await,
         recording_snapshot
@@ -3238,7 +3257,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let row = owner
         .query_one_raw(Statement::from_string(
             DbBackend::Postgres,
-            "SELECT count(*)::bigint AS n FROM voice_reference_grants",
+            "SELECT count(*)::bigint AS n FROM voice_reference_grants WHERE character_id='split-character'",
         ))
         .await
         .unwrap()
@@ -3247,7 +3266,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let row = owner
         .query_one_raw(Statement::from_string(
             DbBackend::Postgres,
-            "SELECT count(*)::bigint AS n FROM voice_reference_revocations",
+            "SELECT count(*)::bigint AS n FROM voice_reference_revocations r JOIN voice_reference_grants g ON g.id=r.grant_id WHERE g.character_id='split-character'",
         ))
         .await
         .unwrap()
