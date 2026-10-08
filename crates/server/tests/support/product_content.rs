@@ -88,3 +88,27 @@ pub async fn verify(db: &DatabaseConnection, lesson: &str, revision: i32) {
     );
     tx.rollback().await.unwrap();
 }
+
+// Schema proof only: public/runtime duplicate-ID imports remain a separate migration.
+pub async fn verify_local_lesson_keys(db: &DatabaseConnection, lesson: &str, revision: i32) {
+    let row=db.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT array_agg(a.attname::text ORDER BY k.position) FROM pg_catalog.pg_constraint c CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY k(column_number,position) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.column_number WHERE c.conrelid='lesson_revisions'::regclass AND c.contype='p')=ARRAY['product_id','lesson_id','revision']::text[] AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint WHERE confrelid='lesson_revisions'::regclass AND contype='f' AND array_length(confkey,1)=2) AS correct")).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "correct").unwrap());
+    let tx = db.begin().await.unwrap();
+    tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) SELECT 'hargow',lesson_id,revision,false,public_document,server_document FROM lesson_revisions WHERE product_id='brioche' AND lesson_id=$1 AND revision=$2",[lesson.into(),revision.into()])).await.unwrap();
+    let row = tx
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT count(*)::bigint AS n FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2",
+            [lesson.into(), revision.into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 2);
+    tx.execute_unprepared("INSERT INTO content_releases(product_id,id,manifest,content_hash) VALUES('hargow','local-lesson-fixture','{}',repeat('f',64))").await.unwrap();
+    tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO release_entries(product_id,release_id,lesson_id,revision,position) VALUES('hargow','local-lesson-fixture',$1,$2,0)",[lesson.into(),revision.into()])).await.unwrap();
+    // Same-product duplicates still fail; dropping the legacy global key is not dropping uniqueness.
+    let error=tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) SELECT product_id,lesson_id,revision,published,public_document,server_document FROM lesson_revisions WHERE product_id='hargow' AND lesson_id=$1 AND revision=$2",[lesson.into(),revision.into()])).await.unwrap_err();
+    assert!(error.to_string().contains("duplicate key"), "{error}");
+    tx.rollback().await.unwrap();
+}

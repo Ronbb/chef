@@ -537,6 +537,30 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         )
         .await
         .unwrap();
+    // An unrecognized legacy dependency must fail the final step atomically.
+    owner.execute_unprepared("CREATE TABLE extra_lesson_edge(lesson_id TEXT,revision INTEGER,FOREIGN KEY(lesson_id,revision) REFERENCES lesson_revisions(lesson_id,revision))").await.unwrap();
+    let rejected = invoke(&["migrate-layout", &source]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("Layout migration not confirmed"));
+    let dependency_error = brioche_migration::layout::up(&owner, &source, &target)
+        .await
+        .unwrap_err();
+    assert!(
+        dependency_error
+            .to_string()
+            .contains("Unverified legacy lesson dependency")
+    );
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='lesson_revisions' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_content::snapshot(&owner).await, content_snapshot);
+    assert_eq!(
+        product_speech_work::snapshot(&owner).await,
+        speech_work_snapshot
+    );
+    owner
+        .execute_unprepared("DROP TABLE extra_lesson_edge")
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -544,12 +568,13 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=16 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=17 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
     assert_eq!(product_content::snapshot(&owner).await, content_snapshot);
     product_content::verify(&owner, &lesson.id, lesson.revision as i32).await;
+    product_content::verify_local_lesson_keys(&owner, &lesson.id, lesson.revision as i32).await;
     assert_eq!(product_visuals::snapshot(&owner).await, visual_snapshot);
     product_visuals::verify(&owner).await;
     assert_eq!(
