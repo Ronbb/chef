@@ -1,5 +1,23 @@
 # 身份与学习schema分离
 
+## 从无 ACL 备份恢复后的权限步骤
+
+`scripts/backup.mjs restore` 使用 `--no-owner --no-acl`，新目标保持离线。这不会恢复生产角色及授权；特别是 PostgreSQL 会给恢复的函数默认 PUBLIC EXECUTE，包含四个 SECURITY DEFINER 内容锁函数。不能仅启动服务就视为权限恢复。
+
+所有者先对两个恢复的应用 schema 执行 `infra/database/restore-boundaries.sql`，移除 PUBLIC 对 schema、表、序列和函数的权限，然后创建独立非所有者运行登录并应用相应模板：
+
+```text
+psql -v identity_schema=chef_identity -v learning_schema=public -f infra/database/restore-boundaries.sql
+psql -v schema=chef_identity -v learning_schema=public -v role=<identity-login> -f infra/database/identity-grants.sql
+psql -v schema=public -v identity_schema=chef_identity -v role=<learning-login> -f infra/database/learning-grants.sql
+psql -v schema=public -v role=<learning-login> -f infra/database/learning-product-grants.sql
+psql -v schema=public -v identity_schema=chef_identity -v role=<content-login> -f infra/database/content-grants.sql
+```
+
+这里的 schema 是本次生产布局示例，必须使用实际恢复目标；不要对系统或其他应用 schema 执行。私有配置与身份内部凭据另行装配；作者权限仅按需要单独授予。无需修改不可变迁移定义或账本。
+
+真实 Docker 回归证明原本拒绝 PUBLIC 的安全定义者函数在 no-acl 恢复后重新可执行，执行边界模板后普通角色被拒绝、所有者维护仍可用。最新双产品恢复副本已用三类受限角色启动实际身份/学习服务，共用测试账号登录、48/1课目录、学习启动重放/步骤保存/续学及跨产品会话404通过，原有账号和全部课源指纹保持。合成测试身份仅存在恢复副本，不使用生产用户密码，不证明真实设备或完整容量验收。
+
 > 当前部署状态与剩余验收以 [current-status.md](current-status.md) 为准。下文保留阶段实现记录，其中旧的未部署/产品关闭状态属于历史，不是当前生产操作指令。
 
 素材与录音作者命令布局适配：`assets-import`、`audio-import` 共用固定产品与完整账本 readiness，薄封装直接进入原素材和录音导入内核，不创建产品实现副本。文件路径/哈希/图片解码与尺寸/音频解码与时长/来源授权及不可变登记保持，角色必须引用本产品头像，写记录和审计显式归属。实际非所有者 CLI 验证 H 已有同头像/角色/录音编号时 B 自身登记成功且描述/来源和真实存储字节匹配；重复导入拒绝，跨产品头像和重复成员导致全批数据库 rollback，错误哈希拒绝，H五张素材/角色/录音/审计表完整指纹保持。缺失/未知/漂移账本下两个命令均拒绝，零新成员和审计。物理哈希对象与原规则一致，不把物理文件存在当注册成功。只有合成SVG/MP3，没有供应商调用；配音工作/账号CLI、H实际入口、语言中立及完整部署验收继续，产品pin与生产不变。旧作者运行、新非所有者作者回归、独立身份两项、完整 schema_split、26项离线作者CLI、全目标 Clippy（-D warnings）、fmt 和 diff 检查通过。

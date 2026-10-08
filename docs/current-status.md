@@ -24,7 +24,7 @@
 | 共用账号，产品学习数据隔离，产品仓库轻量 | 独立身份服务、固定产品上下文、schema/角色及客户端 namespace | 生产已拆分；隔离测试证明跨产品拒绝。不同域名使用独立产品会话，共用身份不表示浏览器自动跨域登录 |
 | 实际 Docker 生产启动 | Chef 共享 Compose + 产品根装配 | 八服务健康、两个产品 HTTPS 实际访问；数据库和原发布状态保持 |
 | GitHub Actions | 各仓库 workflow 与精确提交 run | 旧启动断言和身份夹具问题已修复；只能以对应提交 completed/success 为通过，新运行不能借用旧结果 |
-| 备份与恢复 | `scripts/backup.mjs`、`scripts/backup-seal.mjs` | 数据库及媒体完整备份、哈希和恢复演练；完整双产品最新快照正在另行验证。恢复使用 no-owner/no-acl，需要重新装配专用数据库授权与私有配置 |
+| 备份与恢复 | `scripts/backup.mjs`、`scripts/backup-seal.mjs`、`infra/database/restore-boundaries.sql` | 双产品最新快照与1504媒体恢复/hash、密文verify、账号/课源/发布/layout指纹、受限身份与学习服务登录/启动重放/步骤续学均通过。恢复使用 no-owner/no-acl，先收紧PUBLIC函数权限，再装配专用数据库授权与私有配置 |
 
 ## 尚不能宣称完成
 

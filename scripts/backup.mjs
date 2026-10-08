@@ -561,7 +561,7 @@ export async function restore(options) {
     }
   });
   console.log(
-    "Restore finished. Targets remain offline; verify migrations, release, login and learning before switching the application.",
+    "Restore finished. Targets remain offline; reapply schema/function boundaries and dedicated runtime grants, then verify migrations, release, login and learning before switching the application.",
   );
 }
 async function main() {

@@ -139,6 +139,10 @@ test(
         "backup_source",
         `CREATE TABLE media_assets(descriptor jsonb); CREATE TABLE audio_assets(descriptor jsonb); INSERT INTO media_assets VALUES ('{"sha256":"${hash}","mimeType":"image/svg+xml"}'); CREATE TABLE payloads AS SELECT g AS id,md5(g::text) AS payload FROM generate_series(1,100000) g;`,
       );
+      await sql(
+        "backup_source",
+        "CREATE SCHEMA restore_identity; CREATE ROLE restore_unprivileged NOINHERIT; CREATE FUNCTION public.restore_lock() RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS 'SELECT true'; REVOKE ALL ON FUNCTION public.restore_lock() FROM PUBLIC;",
+      );
       const audition = Buffer.from("private audition binary\u0000\u00ff");
       const original = Buffer.from("private original AIGC binary\u0000\u00ff");
       const auditionHash = createHash("sha256").update(audition).digest("hex"),
@@ -232,6 +236,63 @@ test(
       assert.equal(
         (await sql("backup_source", clipSignature)).stdout,
         (await sql("backup_restored", clipSignature)).stdout,
+      );
+      assert.equal(
+        (
+          await sql(
+            "backup_source",
+            "SELECT has_function_privilege('restore_unprivileged','public.restore_lock()','EXECUTE')",
+          )
+        ).stdout,
+        "f",
+      );
+      assert.equal(
+        (
+          await sql(
+            "backup_restored",
+            "SELECT has_function_privilege('restore_unprivileged','public.restore_lock()','EXECUTE')",
+          )
+        ).stdout,
+        "t",
+        "no-acl restores PostgreSQL's default PUBLIC execute",
+      );
+      await docker(
+        [
+          "exec",
+          "-i",
+          id,
+          "psql",
+          "-X",
+          "-U",
+          "postgres",
+          "-d",
+          "backup_restored",
+          "-v",
+          "identity_schema=restore_identity",
+          "-v",
+          "learning_schema=public",
+        ],
+        false,
+        await readFile(
+          new URL(
+            "../../infra/database/restore-boundaries.sql",
+            import.meta.url,
+          ),
+        ),
+      );
+      assert.equal(
+        (
+          await sql(
+            "backup_restored",
+            "SELECT has_function_privilege('restore_unprivileged','public.restore_lock()','EXECUTE')",
+          )
+        ).stdout,
+        "f",
+      );
+      assert.equal(
+        (await sql("backup_restored", "SELECT public.restore_lock()")).stdout,
+        "t",
+        "owner maintenance remains available",
       );
       const again = await cli(
         [
