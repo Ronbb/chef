@@ -167,21 +167,21 @@ async fn history(
             UNION ALL
             SELECT 'voice:'||character_id||':'||character_revision||':'||revision, 'voiceProfile', character_id||' v'||character_revision||' / voice v'||revision, 'user:'||actor_id, reason, created_at FROM character_voice_profiles WHERE true{course_scope}
             UNION ALL
-            SELECT 'alignment:'||id,'alignmentImport',id,'user:'||actor_id,reason,created_at FROM speech_alignments
+            SELECT 'alignment:'||id,'alignmentImport',id,'user:'||actor_id,reason,created_at FROM speech_alignments WHERE true{course_scope}
             UNION ALL
-            SELECT 'alignmentReview:'||alignment_id||':'||clip_id,CASE WHEN accepted THEN 'alignmentAccepted' ELSE 'alignmentRejected' END,alignment_id||':'||clip_id,'user:'||actor_id,reason,created_at FROM speech_alignment_reviews
+            SELECT 'alignmentReview:'||alignment_id||':'||clip_id,CASE WHEN accepted THEN 'alignmentAccepted' ELSE 'alignmentRejected' END,alignment_id||':'||clip_id,'user:'||actor_id,reason,created_at FROM speech_alignment_reviews WHERE true{course_scope}
             UNION ALL
             SELECT 'lessonAudio:'||lesson_id||':'||revision||':'||version,CASE WHEN accepted THEN 'lessonAudioAccepted' ELSE 'lessonAudioRejected' END,lesson_id||' v'||revision,'user:'||actor_id,reason,created_at FROM lesson_audio_reviews WHERE true{course_scope}
             UNION ALL
             SELECT 'directPublication:'||lesson_id||':'||revision,'lessonDirectPublication',lesson_id||' v'||revision,'user:'||actor_id,reason,created_at FROM lesson_direct_publications WHERE true{course_scope}
             UNION ALL
-            SELECT 'speechPackage:'||id,'speechPackageImport',lesson_id||' v'||revision,'user:'||actor_id,reason,created_at FROM speech_package_imports
+            SELECT 'speechPackage:'||id,'speechPackageImport',lesson_id||' v'||revision,'user:'||actor_id,reason,created_at FROM speech_package_imports WHERE true{course_scope}
             UNION ALL
-            SELECT 'speechClip:'||id, 'speechClip', id, 'user:'||actor_id, reason, created_at FROM course_speech_clips
+            SELECT 'speechClip:'||id, 'speechClip', id, 'user:'||actor_id, reason, created_at FROM course_speech_clips WHERE true{course_scope}
             UNION ALL
-            SELECT 'speechClipReview:'||clip_id, CASE WHEN accepted THEN 'speechClipAccepted' ELSE 'speechClipRejected' END, clip_id, 'user:'||actor_id, reason, created_at FROM course_speech_clip_reviews
+            SELECT 'speechClipReview:'||clip_id, CASE WHEN accepted THEN 'speechClipAccepted' ELSE 'speechClipRejected' END, clip_id, 'user:'||actor_id, reason, created_at FROM course_speech_clip_reviews WHERE true{course_scope}
             UNION ALL
-            SELECT 'speechPlan:'||id, 'speechPlan', lesson_id||' v'||lesson_revision, 'user:'||actor_id, reason, created_at FROM course_speech_plans
+            SELECT 'speechPlan:'||id, 'speechPlan', lesson_id||' v'||lesson_revision, 'user:'||actor_id, reason, created_at FROM course_speech_plans WHERE true{course_scope}
             UNION ALL
             SELECT 'asset:'||id, 'assetImport', target, 'user:'||actor_id, reason, created_at FROM asset_import_audit WHERE actor_id IS NOT NULL{course_scope}
             UNION ALL

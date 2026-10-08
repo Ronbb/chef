@@ -22,6 +22,8 @@ mod product_content;
 mod product_facts;
 #[path = "support/product_recordings.rs"]
 mod product_recordings;
+#[path = "support/product_speech_work.rs"]
+mod product_speech_work;
 #[path = "support/product_visuals.rs"]
 mod product_visuals;
 #[path = "support/product_voice_work.rs"]
@@ -366,6 +368,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     product_recordings::seed(&owner, &root).await;
     product_voices::seed(&owner, account).await;
     product_voice_work::seed(&owner).await;
+    product_speech_work::seed(&owner, account).await;
+    let speech_work_snapshot = product_speech_work::snapshot(&owner).await;
+    assert!(speech_work_snapshot.iter().all(|(n, _)| *n > 0));
     let voice_work_snapshot = product_voice_work::snapshot(&owner).await;
     assert!(voice_work_snapshot.iter().all(|(n, _)| *n > 0));
     let voice_snapshot = product_voices::snapshot(&owner).await;
@@ -518,6 +523,20 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         )
         .await
         .unwrap();
+    owner.execute_unprepared("ALTER TABLE speech_package_imports ADD CONSTRAINT chef_package_product_lesson CHECK(true)").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name IN ('course_speech_plans','course_speech_clips','speech_alignments','speech_package_imports','voice_auditions','learning_sessions') AND column_name IN ('product_id','base_profile_revision')) AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(
+        product_speech_work::snapshot(&owner).await,
+        speech_work_snapshot
+    );
+    owner
+        .execute_unprepared(
+            "ALTER TABLE speech_package_imports DROP CONSTRAINT chef_package_product_lesson",
+        )
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -525,7 +544,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=15 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=16 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -545,6 +564,15 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         voice_work_snapshot
     );
     product_voice_work::verify(&owner).await;
+    assert_eq!(
+        product_speech_work::snapshot(&owner).await,
+        speech_work_snapshot
+    );
+    product_speech_work::verify(&owner, account).await;
+    assert_eq!(
+        product_speech_work::snapshot(&owner).await,
+        speech_work_snapshot
+    );
     assert_eq!(
         product_voice_work::snapshot(&owner).await,
         voice_work_snapshot
@@ -3302,7 +3330,10 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
+    assert_eq!(
+        row.try_get::<i64>("", "n").unwrap(),
+        speech_work_snapshot[0].0 + 1
+    );
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM character_revisions WHERE character_id='split-revoked-character') + (SELECT count(*) FROM character_voice_profiles WHERE character_id='split-character' AND revision=4) AS n")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let row = owner
@@ -3425,26 +3456,32 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM course_speech_clips) AS clips,(SELECT count(*) FROM course_speech_clip_events) AS events,(SELECT count(*) FROM course_speech_clip_reviews) AS reviews")).await.unwrap().unwrap();
     assert_eq!(
         row.try_get::<i64>("", "clips").unwrap(),
-        keys.len() as i64 + 1
+        keys.len() as i64 + 1 + speech_work_snapshot[1].0
     );
     assert_eq!(
         row.try_get::<i64>("", "events").unwrap(),
-        2 * keys.len() as i64 + 1
+        2 * keys.len() as i64 + 1 + speech_work_snapshot[2].0
     );
     assert_eq!(
         row.try_get::<i64>("", "reviews").unwrap(),
-        keys.len() as i64
+        keys.len() as i64 + speech_work_snapshot[3].0
     );
     let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM speech_alignments WHERE id='88888888888888888888888888888888' AND actor_id=$1 AND reason='Independent synthetic alignment'",[account.into()])).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 1);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_alignments) AS reports,(SELECT count(*) FROM speech_alignment_reviews) AS reviews")).await.unwrap().unwrap();
-    assert_eq!(row.try_get::<i64>("", "reports").unwrap(), 1);
+    assert_eq!(
+        row.try_get::<i64>("", "reports").unwrap(),
+        speech_work_snapshot[4].0 + 1
+    );
     assert_eq!(
         row.try_get::<i64>("", "reviews").unwrap(),
-        keys.len() as i64
+        keys.len() as i64 + speech_work_snapshot[5].0
     );
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_package_imports) AS packages,(SELECT count(*) FROM lesson_audio_reviews) AS decisions,(SELECT count(*) FROM lesson_direct_publications) AS direct")).await.unwrap().unwrap();
-    assert_eq!(row.try_get::<i64>("", "packages").unwrap(), 1);
+    assert_eq!(
+        row.try_get::<i64>("", "packages").unwrap(),
+        speech_work_snapshot[6].0 + 1
+    );
     assert_eq!(row.try_get::<i64>("", "decisions").unwrap(), 2);
     assert_eq!(row.try_get::<i64>("", "direct").unwrap(), 1);
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_auditions WHERE id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') + (SELECT count(*) FROM voice_audition_events WHERE audition_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') AS n")).await.unwrap().unwrap();
@@ -3958,6 +3995,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     .await;
     assert_eq!(status, 200, "{auditions_before}");
     let history_before = history_pages(&content_app, &mut cookie, &mut csrf).await;
+    product_speech_work::seed_foreign(&owner, account).await;
     for page in &history_before {
         let text = page.to_string();
         for forbidden in [
