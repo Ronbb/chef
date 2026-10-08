@@ -3208,8 +3208,15 @@ async fn approvals_permissions_concurrency_and_publication() {
     for key in ["serverOnly", "correctOptionId", "accepted", "password"] {
         assert!(!second.1.to_string().contains(key));
     }
+    // One database-clock boundary remains in the future on every test date.
+    let history_boundary = db.query_one_raw(Statement::from_string(DbBackend::Postgres,
+        "SELECT to_char((CURRENT_TIMESTAMP + interval '1 day') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS boundary".to_owned()
+    )).await.unwrap().unwrap().try_get::<String>("", "boundary").unwrap();
     // Tie timestamps exercise the secondary key and boundaries across tables.
-    db.execute_unprepared("INSERT INTO content_audit(action,actor,reason,generation,created_at) SELECT 'stage','pagination-test','pagination-'||n,2,'2026-10-08T00:00:00Z'::timestamptz FROM generate_series(1,25) n").await.unwrap();
+    db.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,
+        "INSERT INTO content_audit(action,actor,reason,generation,created_at) SELECT 'stage','pagination-test','pagination-'||n,2,$1::timestamptz FROM generate_series(1,25) n",
+        vec![history_boundary.clone().into()]
+    )).await.unwrap();
     let first = operator
         .send("GET", "/api/v1/operator/history", None, true)
         .await;
@@ -3649,7 +3656,7 @@ async fn approvals_permissions_concurrency_and_publication() {
     let event = survivor
         .send(
             "GET",
-            "/api/v1/operator/history?beforeTime=2026-10-08T00:00:00Z&beforeKey=account:0",
+            &format!("/api/v1/operator/history?beforeTime={history_boundary}&beforeKey=account:0"),
             None,
             true,
         )
