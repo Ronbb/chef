@@ -1,5 +1,7 @@
 # 身份与学习schema分离
 
+录音归属准备补充：learning_000012_product_recordings为audio_assets/audio_import_audit添加默认B的固定产品枚举与归属不可变触发器，录音增加产品复合候选键；旧全局编号及不可变内容/审计保护保持。actual split维护账本13步，真实解码合成音频在迁移前登记，两张已填充旧字段指纹保持；末尾索引冲突整批DDL/账本回滚，改归属与未知产品拒绝、H数据库合成登记正例回滚。独立身份与后台全链路回归保持；运行录音API/hydrate/validate、声音/配音关联和全局ID仍待迁移，H后台与生产pin保持，SQL/回归只Chef，产品无迁移副本。
+
 课程图片与角色引用补充：hydrate_source_for_product和validate_lesson_detailed使用可信产品限制素材描述及角色快照；课程导入/上传预检和目录检查/暂存/激活传相同上下文。导入另检查projected media/cast归属，防止嵌入描述绕过assetRefs，保持草稿与完整发布检查分离。public legacy hydrate/validate包装None用于旧CLI兼容。actual split存在且文件有效的H图片引用及嵌入描述预检分别定位assetRefs/media revision，导入400且课源/审计零新增；H角色引用预检定位cast revision、导入400且零新增，原B导入发布保持。录音引用与校验、公共媒体、角色语音入口/关联、审计历史与局部编号继续，H后台/生产pin保持，实现仅Chef。
 
 独立图片素材接口补充：admin_assets::Store接收可信产品，列表/搜索/游标分页及文件读取固定产品；上传核对Operator产品，复用media导入内核锁对应状态，新图片/角色/导入审计显式归属，头像查询同产品。全局素材/角色编号冲突规则暂保留；本机CLI及角色语音入口仍None待迁移。actual split插入25个排序靠前且descriptor无效的H素材，B列表整JSON不变、搜索为空、文件404、客户端product查询400；原B上传归属/单审计及重复409/文件/撤权回归保持。素材hydrate/validate、公开文件/角色语音关联、审计历史与产品局部编号继续，H后台/生产pin保持，产品无素材实现副本。
