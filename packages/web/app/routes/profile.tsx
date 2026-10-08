@@ -228,11 +228,13 @@ function ProfileContent() {
         <h1>我的</h1>
       </div>
       <div className="profile-summary">
-        <img src="/assets/avatars/learner.svg" alt="" />
+        <img src={product.avatar} alt="" />
         <div>
-          <h2>{profile?.displayName ?? "法语学习者"}</h2>
+          <h2>{profile?.displayName ?? product.learnerLabel ?? "学习者"}</h2>
           <p>{profile?.email ?? product.tagline}</p>
-          <span className="profile-level">A1–A2</span>
+          {product.courseLevelLabel && (
+            <span className="profile-level">{product.courseLevelLabel}</span>
+          )}
         </div>
         {profile && (
           <button

@@ -14,5 +14,8 @@ export interface Product {
   themeColor: string;
   brandIcon: string;
   avatar: string;
+  /** Product copy, not an assessed level of the current learner. */
+  learnerLabel?: string;
+  courseLevelLabel?: string;
   theme: Record<`--${string}`, string>;
 }
