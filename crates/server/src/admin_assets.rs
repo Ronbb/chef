@@ -2,7 +2,7 @@
 use crate::{
     AppError,
     admin_auth::AdminAuth,
-    learning::{field, one, random_id},
+    learning::{field, one, product_filter, random_id},
 };
 use axum::{
     Json, Router,
@@ -15,9 +15,11 @@ use sea_orm::{ConnectionTrait, DbBackend, Statement};
 #[derive(Clone)]
 struct Store {
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route(
@@ -27,7 +29,7 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
                 .layer(DefaultBodyLimit::max(34 * 1024 * 1024)),
         )
         .route("/api/v1/operator/assets/{id}/{revision}/file", get(file))
-        .with_state(Store { db })
+        .with_state(Store { db, product })
 }
 // Owned scratch directory: neither the path nor filename comes from the upload.
 pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
@@ -131,6 +133,7 @@ async fn upload(
     bundle.assets[0] = spec;
     crate::media::import_operator_bundle(
         &backend.db,
+        backend.product,
         bundle,
         &scratch.0,
         &root,
@@ -185,14 +188,14 @@ async fn list(
 ) -> Result<Json<AdminAssets>, AppError> {
     auth.require_operator().await?;
     query.validate()?;
-    let rows = backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, r#"
+    let rows = backend.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres, format!(r#"
         SELECT descriptor,provenance->>'source' AS source,provenance->>'license' AS license,
         provenance->>'creator' AS creator,(provenance->>'rightsConfirmed')::boolean AS rights_confirmed,byte_size
         FROM media_assets
         WHERE (asset_id,revision)>($1,$2)
         AND ($3='' OR strpos(lower(asset_id),lower($3))>0 OR strpos(lower(descriptor->>'altZh'),lower($3))>0)
-        ORDER BY asset_id,revision LIMIT 21
-    "#, vec![query.after_id.unwrap_or_default().into(), (query.after_revision.unwrap_or(0) as i32).into(),query.q.unwrap_or_default().trim().to_owned().into()])).await.map_err(|_|AppError::Unavailable)?;
+        {} ORDER BY asset_id,revision LIMIT 21
+    "#,product_filter(backend.product,"product_id")), vec![query.after_id.unwrap_or_default().into(), (query.after_revision.unwrap_or(0) as i32).into(),query.q.unwrap_or_default().trim().to_owned().into()])).await.map_err(|_|AppError::Unavailable)?;
     let more = rows.len() > 20;
     let items = rows
         .into_iter()
@@ -238,7 +241,10 @@ async fn file(
     }
     let row = one(
         &backend.db,
-        "SELECT descriptor FROM media_assets WHERE asset_id=$1 AND revision=$2",
+        &format!(
+            "SELECT descriptor FROM media_assets WHERE asset_id=$1 AND revision=$2{}",
+            product_filter(backend.product, "product_id")
+        ),
         vec![id.into(), (revision as i32).into()],
     )
     .await?

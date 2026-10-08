@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立图片素材接口补充：admin_assets::Store接收可信产品，列表/搜索/游标分页及文件读取固定产品；上传核对Operator产品，复用media导入内核锁对应状态，新图片/角色/导入审计显式归属，头像查询同产品。全局素材/角色编号冲突规则暂保留；本机CLI及角色语音入口仍None待迁移。actual split插入25个排序靠前且descriptor无效的H素材，B列表整JSON不变、搜索为空、文件404、客户端product查询400；原B上传归属/单审计及重复409/文件/撤权回归保持。素材hydrate/validate、公开文件/角色语音关联、审计历史与产品局部编号继续，H后台/生产pin保持，产品无素材实现副本。
+
 图片与角色归属准备补充：learning_000011_product_visuals为media_assets/character_revisions/asset_import_audit添加默认B的固定产品枚举与不可变归属触发器；图片/角色复合候选键和角色到同产品头像外键立即验证。全局编号及原不可变内容保护暂保留，运行登记/查询/hydrate/validate和声音关联仍待迁移，不能开放H后台或切生产。actual split维护账本12步，三张已填充旧字段指纹不变；最后角色约束冲突整批DDL/账本回滚、双向跨产品头像具体外键拒绝、H合成登记正例事务回滚及改归属拒绝。身份/独立后台全链路保持；SQL与回归只在Chef，产品无迁移副本。
 
 独立课音频发布门槛补充：lesson_audio_reviews::Store由可信装配接收产品，课程/撤回读取、状态锁、试听决定、直接授权/相同重试及后续拒绝覆盖均固定产品，新增决定与授权显式product_id。admin::approved与音频accepted核对同产品记录，目录检查/暂存/激活、概览及编辑审核传同一上下文。actual split外产品音频状态/试听写入/直接授权404且两表计数不变；B直接授权不伪造试听、后续拒绝覆盖、正向试听/CAS/重试/撤权与发布保持。旧CLI authorize_local仍None待迁移；录音validate/素材归属及配音交付/产品局部ID尚待，H后台/生产pin保持，产品无门槛副本。

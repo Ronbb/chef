@@ -486,19 +486,24 @@ pub async fn import_bundle(
     store: &Path,
     actor: &str,
 ) -> Result<()> {
-    import_bundle_impl(db, bundle, source_root, store, actor, None).await
+    import_bundle_impl(db, None, bundle, source_root, store, actor, None).await
 }
 pub(crate) async fn import_operator_bundle(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     bundle: AssetBundle,
     source_root: &Path,
     store: &Path,
     operator: &crate::product_memberships::Operator,
     reason: &str,
 ) -> Result<()> {
+    if product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden.into());
+    }
     crate::admin::reason(reason)?;
     import_bundle_impl(
         db,
+        product,
         bundle,
         source_root,
         store,
@@ -534,6 +539,7 @@ pub(crate) async fn import_operator_character(
     };
     import_bundle_impl(
         db,
+        None,
         bundle,
         root,
         root,
@@ -548,6 +554,7 @@ pub(crate) async fn import_operator_character(
 }
 async fn import_bundle_impl(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     bundle: AssetBundle,
     source_root: &Path,
     store: &Path,
@@ -631,14 +638,20 @@ async fn import_bundle_impl(
     }
     one(
         &tx,
-        "SELECT generation FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            product.map_or_else(
+                || "singleton".to_owned(),
+                |p| format!("product_id='{}'", p.as_str())
+            )
+        ),
         vec![],
     )
     .await
     .map_err(anyhow::Error::msg)?
     .context("content state missing")?;
     if let Some((id, expected)) = operator.and_then(|o| o.expected_character) {
-        let row=one(&tx,"SELECT COALESCE(max(revision),0) AS revision FROM character_revisions WHERE character_id=$1",vec![id.into()]).await?.ok_or(AppError::Unavailable)?;
+        let row=one(&tx,&format!("SELECT COALESCE(max(revision),0) AS revision FROM character_revisions WHERE character_id=$1{}",crate::learning::product_filter(product,"product_id")),vec![id.into()]).await?.ok_or(AppError::Unavailable)?;
         if field::<i32>(&row, "revision")? as u32 != expected {
             return Err(AppError::Conflict.into());
         }
@@ -676,7 +689,22 @@ async fn import_bundle_impl(
         );
     }
     for (spec, (descriptor, ext, size)) in bundle.assets.iter().zip(&descriptors) {
-        exec(&tx,"INSERT INTO media_assets(asset_id,revision,descriptor,provenance,sha256,extension,byte_size) VALUES($1,$2,$3,$4,$5,$6,$7)",vec![spec.asset_id.clone().into(),(spec.revision as i32).into(),serde_json::to_value(descriptor)?.into(),serde_json::to_value(spec)?.into(),spec.sha256.clone().into(),ext.clone().into(),(*size as i64).into()]).await.map_err(anyhow::Error::msg)?;
+        let mut values = vec![
+            spec.asset_id.clone().into(),
+            (spec.revision as i32).into(),
+            serde_json::to_value(descriptor)?.into(),
+            serde_json::to_value(spec)?.into(),
+            spec.sha256.clone().into(),
+            ext.clone().into(),
+            (*size as i64).into(),
+        ];
+        let sql = if let Some(product) = product {
+            values.push(product.as_str().into());
+            "INSERT INTO media_assets(asset_id,revision,descriptor,provenance,sha256,extension,byte_size,product_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)"
+        } else {
+            "INSERT INTO media_assets(asset_id,revision,descriptor,provenance,sha256,extension,byte_size) VALUES($1,$2,$3,$4,$5,$6,$7)"
+        };
+        exec(&tx, sql, values).await.map_err(anyhow::Error::msg)?;
     }
     let mut ids = BTreeSet::new();
     for (index, character) in bundle.characters.iter().enumerate() {
@@ -693,7 +721,10 @@ async fn import_bundle_impl(
         );
         let asset = one(
             &tx,
-            "SELECT descriptor FROM media_assets WHERE asset_id=$1 AND revision=$2",
+            &format!(
+                "SELECT descriptor FROM media_assets WHERE asset_id=$1 AND revision=$2{}",
+                crate::learning::product_filter(product, "product_id")
+            ),
             vec![
                 snapshot.avatar_id.clone().into(),
                 (character.avatar_revision as i32).into(),
@@ -708,7 +739,20 @@ async fn import_bundle_impl(
             descriptor.width == descriptor.height,
             "{p}/snapshot/avatarId: avatar must be square"
         );
-        exec(&tx,"INSERT INTO character_revisions(character_id,revision,snapshot,avatar_id,avatar_revision) VALUES($1,$2,$3,$4,$5)",vec![snapshot.character_id.clone().into(),(snapshot.revision as i32).into(),serde_json::to_value(snapshot)?.into(),snapshot.avatar_id.clone().into(),(character.avatar_revision as i32).into()]).await.map_err(anyhow::Error::msg)?;
+        let mut values = vec![
+            snapshot.character_id.clone().into(),
+            (snapshot.revision as i32).into(),
+            serde_json::to_value(snapshot)?.into(),
+            snapshot.avatar_id.clone().into(),
+            (character.avatar_revision as i32).into(),
+        ];
+        let sql = if let Some(product) = product {
+            values.push(product.as_str().into());
+            "INSERT INTO character_revisions(character_id,revision,snapshot,avatar_id,avatar_revision,product_id) VALUES($1,$2,$3,$4,$5,$6)"
+        } else {
+            "INSERT INTO character_revisions(character_id,revision,snapshot,avatar_id,avatar_revision) VALUES($1,$2,$3,$4,$5)"
+        };
+        exec(&tx, sql, values).await.map_err(anyhow::Error::msg)?;
     }
     let target = operator.map(|_| {
         bundle
@@ -724,7 +768,22 @@ async fn import_bundle_impl(
             .collect::<Vec<_>>()
             .join(", ")
     });
-    exec(&tx,"INSERT INTO asset_import_audit(actor,bundle_hash,asset_count,character_count,actor_id,reason,target) VALUES($1,$2,$3,$4,$5,$6,$7)",vec![actor.into(),bundle_hash.into(),(bundle.assets.len() as i32).into(),(bundle.characters.len() as i32).into(),operator.map(|o|o.operator.actor).into(),operator.map(|o|o.reason.to_owned()).into(),target.into()]).await.map_err(anyhow::Error::msg)?;
+    let mut values = vec![
+        actor.into(),
+        bundle_hash.into(),
+        (bundle.assets.len() as i32).into(),
+        (bundle.characters.len() as i32).into(),
+        operator.map(|o| o.operator.actor).into(),
+        operator.map(|o| o.reason.to_owned()).into(),
+        target.into(),
+    ];
+    let sql = if let Some(product) = product {
+        values.push(product.as_str().into());
+        "INSERT INTO asset_import_audit(actor,bundle_hash,asset_count,character_count,actor_id,reason,target,product_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)"
+    } else {
+        "INSERT INTO asset_import_audit(actor,bundle_hash,asset_count,character_count,actor_id,reason,target) VALUES($1,$2,$3,$4,$5,$6,$7)"
+    };
+    exec(&tx, sql, values).await.map_err(anyhow::Error::msg)?;
     tx.commit().await?;
     Ok(())
 }

@@ -871,6 +871,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     )
     .await;
     assert_eq!(registry["items"][0]["asset"]["assetId"], "split-upload");
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT product_id,(SELECT count(*) FROM asset_import_audit WHERE product_id='brioche' AND target='split-upload v1')::bigint AS audit_count FROM media_assets WHERE asset_id='split-upload' AND revision=1")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "product_id").unwrap(), "brioche");
+    assert_eq!(row.try_get::<i64>("", "audit_count").unwrap(), 1);
     let response = content_app
         .clone()
         .oneshot(
@@ -3356,6 +3359,65 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             .unwrap()
             .levels
             .is_empty()
+    );
+    let (status, visual_before) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/assets",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{visual_before}");
+    // Poisoned foreign descriptors would fail parsing if the product filter were
+    // absent; 25 early IDs also detect foreign records consuming pagination.
+    owner.execute_unprepared("INSERT INTO media_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size) SELECT 'hargow','aaa-foreign-visual-'||i,1,'{}',provenance,sha256,extension,byte_size FROM media_assets CROSS JOIN generate_series(1,25) i WHERE asset_id='art-bakery-morning' AND revision=1").await.unwrap();
+    let (status, visual_after) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/assets",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{visual_after}");
+    assert_eq!(visual_after, visual_before);
+    let (status, filtered) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/assets?q=foreign-visual",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{filtered}");
+    assert!(filtered["items"].as_array().unwrap().is_empty());
+    assert!(filtered["next"].is_null());
+    let (status, body) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/assets/aaa-foreign-visual-1/1/file",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(
+        request(
+            &content_app,
+            "GET",
+            "/api/v1/operator/assets?product=hargow",
+            None,
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        400
     );
     let mut h_lesson = lesson.clone();
     let (status, admin_before) = request(
