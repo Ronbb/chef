@@ -238,6 +238,8 @@ pub async fn run() -> Result<()> {
             | "speech-plan-export"
             | "speech-plan-export-direct"
             | "speech-package-automatic"
+            | "speech-plan-preview"
+            | "speech-plan-save"
     );
     let author_product = if author_command {
         crate::schema_split::author_scope(db.as_ref().unwrap(), product).await
@@ -251,6 +253,43 @@ pub async fn run() -> Result<()> {
         }
         None
     };
+    if let Some(scope) = author_product
+        && matches!(command.as_str(), "speech-plan-preview" | "speech-plan-save")
+    {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let preview = command == "speech-plan-preview";
+        anyhow::ensure!(
+            args.len() == if preview { 3 } else { 2 },
+            "usage: speech-plan-preview <request.json> <operator-email> <new-private-output.json>; speech-plan-save <request.json> <operator-email>"
+        );
+        let operator = crate::maintenance_auth::operator(scope, &args[1]).await?;
+        let document = crate::author_json::Document::load(&args[0])?;
+        let result = if preview {
+            let request = crate::author_json::from_value(document.value, "")?;
+            let plan = crate::admin_speech_plans::preview_author(
+                db.as_ref().unwrap(),
+                scope,
+                &operator,
+                &request,
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Scoped speech plan preview failed"))?;
+            crate::maintenance_auth::save_private_archive(
+                &args[2],
+                &serde_json::to_vec_pretty(&plan)?,
+            )?;
+            plan
+        } else {
+            let request = crate::author_json::from_value(document.value, "")?;
+            crate::admin_speech_plans::save_author(db.as_ref().unwrap(), scope, &operator, request)
+                .await.map_err(|_| anyhow::anyhow!("Scoped speech plan not confirmed; inspect the fixed attempt before retrying"))?
+        };
+        println!(
+            "{}",
+            serde_json::json!({"id":result.id,"planHash":result.plan_hash,"requestCount":result.request_count,"totalRequestCharacters":result.total_request_characters,"audioGenerated":false})
+        );
+        return Ok(());
+    }
     if let Some(scope) = author_product
         && matches!(
             command.as_str(),

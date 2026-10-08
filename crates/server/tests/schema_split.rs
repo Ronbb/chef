@@ -4691,6 +4691,101 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     }
     std::fs::write(root.join("other-product-session.json"),serde_json::to_vec(&serde_json::json!({"cookie":cookie.replace("brioche.sid=","hargow.sid="),"csrfToken":csrf})).unwrap()).unwrap();
     std::fs::write(root.join("unknown-session.json"),serde_json::to_vec(&serde_json::json!({"cookie":cookie,"csrfToken":csrf,"product":"hargow","secret":"DO_NOT_LOG_PRIVATE_CREDENTIAL"})).unwrap()).unwrap();
+    std::fs::write(
+        root.join("cli-preview-request.json"),
+        serde_json::to_vec(&preview_request).unwrap(),
+    )
+    .unwrap();
+    let (status, current_preview) = request(
+        &content_app,
+        "POST",
+        &preview_route,
+        Some(preview_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{current_preview}");
+    let result = export_cli
+        .run(
+            "speech-plan-preview",
+            "cli-preview-request.json",
+            "split@example.test",
+            "operator-session.json",
+            "cli-preview.json",
+        )
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let output: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(output["audioGenerated"], false);
+    assert!(output.get("targets").is_none());
+    let private_preview: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("cli-preview.json")).unwrap()).unwrap();
+    assert_eq!(private_preview, current_preview);
+    let original_preview = std::fs::read(root.join("cli-preview.json")).unwrap();
+    assert!(
+        !export_cli
+            .run(
+                "speech-plan-preview",
+                "cli-preview-request.json",
+                "split@example.test",
+                "operator-session.json",
+                "cli-preview.json"
+            )
+            .await
+            .status
+            .success()
+    );
+    assert_eq!(
+        std::fs::read(root.join("cli-preview.json")).unwrap(),
+        original_preview
+    );
+    let mut foreign_cli_preview = preview_request.clone();
+    foreign_cli_preview["lessonId"] = "layout-h-speech-lesson".into();
+    foreign_cli_preview["lessonRevision"] = 1.into();
+    std::fs::write(
+        root.join("cli-foreign-preview.json"),
+        serde_json::to_vec(&foreign_cli_preview).unwrap(),
+    )
+    .unwrap();
+    for (input, email, session, name) in [
+        (
+            "cli-preview-request.json",
+            "other@example.test",
+            "operator-session.json",
+            "wrong-actor",
+        ),
+        (
+            "cli-preview-request.json",
+            "split@example.test",
+            "learner-session.json",
+            "learner",
+        ),
+        (
+            "cli-preview-request.json",
+            "split@example.test",
+            "bad-csrf-session.json",
+            "csrf",
+        ),
+        (
+            "cli-foreign-preview.json",
+            "split@example.test",
+            "operator-session.json",
+            "foreign",
+        ),
+    ] {
+        let output = format!("rejected-preview-{name}.json");
+        let result = export_cli
+            .run("speech-plan-preview", input, email, session, &output)
+            .await;
+        assert!(!result.status.success());
+        assert!(!root.join(output).exists());
+        assert!(!String::from_utf8_lossy(&result.stderr).contains("DO_NOT_LOG_PRIVATE_CREDENTIAL"));
+    }
     // Export must choose the current product's latest reviewed clip even when
     // another product has a newer ready receipt with the exact generation key.
     for suffix in ["export", "export-direct"] {
@@ -6683,6 +6778,93 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let h_plan_hash=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(p)::text) AS hash FROM course_speech_plans p WHERE product_id='hargow' AND id=repeat('4',32)")).await.unwrap().unwrap().try_get::<String>("", "hash").unwrap();
     let mut local_plan_request = plan_request.clone();
     local_plan_request["id"] = "4".repeat(32).into();
+    std::fs::write(
+        root.join("cli-plan-save.json"),
+        serde_json::to_vec(&local_plan_request).unwrap(),
+    )
+    .unwrap();
+    let save_args = vec![
+        "speech-plan-save".to_owned(),
+        "cli-plan-save.json".to_owned(),
+        "split@example.test".to_owned(),
+    ];
+    for session in [
+        "learner-session.json",
+        "bad-csrf-session.json",
+        "other-product-session.json",
+    ] {
+        assert!(
+            !export_cli
+                .execute(save_args.clone(), session)
+                .await
+                .status
+                .success()
+        );
+    }
+    let absent = owner.query_one_raw(Statement::from_string(DbBackend::Postgres, "SELECT count(*)::bigint AS n FROM course_speech_plans WHERE product_id='brioche' AND id=repeat('4',32)")).await.unwrap().unwrap();
+    assert_eq!(absent.try_get::<i64>("", "n").unwrap(), 0);
+    let result = export_cli
+        .execute(save_args.clone(), "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let first_cli: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(first_cli["id"], "4".repeat(32));
+    assert_eq!(first_cli["audioGenerated"], false);
+    assert!(first_cli.get("targets").is_none());
+    let result = export_cli.execute(save_args, "operator-session.json").await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
+        first_cli
+    );
+    let mut changed_cli_plan = local_plan_request.clone();
+    changed_cli_plan["reason"] = "Changed CLI request".into();
+    std::fs::write(
+        root.join("cli-changed-plan.json"),
+        serde_json::to_vec(&changed_cli_plan).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "speech-plan-save".to_owned(),
+                    "cli-changed-plan.json".to_owned(),
+                    "split@example.test".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "speech-plan-save".to_owned(),
+                    "cli-plan-save.json".to_owned(),
+                    "other@example.test".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
+    local_plan_request["reason"] = format!(
+        "[local-cli] {}",
+        local_plan_request["reason"].as_str().unwrap()
+    )
+    .into();
     let (status, local_plan) = request(
         &content_app,
         "POST",
@@ -7046,6 +7228,34 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     );
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
+    assert!(
+        !export_cli
+            .run(
+                "speech-plan-preview",
+                "cli-preview-request.json",
+                "split@example.test",
+                "operator-session.json",
+                "offline-preview.json"
+            )
+            .await
+            .status
+            .success()
+    );
+    assert!(!root.join("offline-preview.json").exists());
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "speech-plan-save".to_owned(),
+                    "cli-plan-save.json".to_owned(),
+                    "split@example.test".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
     let result = export_cli
         .run(
             "speech-plan-export-direct",

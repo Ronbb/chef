@@ -177,6 +177,41 @@ pub async fn preview_for_actor(
     )
     .await
 }
+pub(crate) async fn preview_author(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    operator: &crate::product_memberships::Operator,
+    request: &AdminSpeechPreviewRequest,
+) -> Result<AdminSpeechPlan, AppError> {
+    preview_authorized(
+        &Store {
+            db: db.clone(),
+            product: Some(product),
+        },
+        operator,
+        request,
+    )
+    .await
+}
+
+pub(crate) async fn save_author(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    operator: &crate::product_memberships::Operator,
+    mut request: AdminSpeechPlanRequest,
+) -> Result<AdminSpeechPlan, AppError> {
+    request.reason = format!("[local-cli] {}", request.reason);
+    save_for_actor(
+        &Store {
+            db: db.clone(),
+            product: Some(product),
+        },
+        operator,
+        request,
+    )
+    .await
+}
+
 async fn preview_authorized(
     b: &Store,
     operator: &crate::product_memberships::Operator,
