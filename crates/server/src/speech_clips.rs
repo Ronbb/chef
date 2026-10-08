@@ -286,7 +286,13 @@ async fn create_for_actor(
     let payload = serde_json::to_value(&request).map_err(|_| AppError::InvalidInput)?;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
-    if let Some(product) = b.product
+    let local_ids = b.product.is_some()
+        && crate::product_keys::supports_local_ids(
+            &tx,
+            crate::product_keys::LocalIdTable::SpeechClip,
+        )
+        .await?;
+    if let Some(product) = b.product.filter(|_| !local_ids)
         && one(
             &tx,
             "SELECT 1 FROM course_speech_clips WHERE id=$1 AND product_id<>$2",

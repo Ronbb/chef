@@ -30,6 +30,7 @@ pub mod observability;
 pub mod password;
 pub mod preview;
 pub mod product;
+mod product_keys;
 pub mod product_memberships;
 pub mod product_settings;
 pub mod qwen;

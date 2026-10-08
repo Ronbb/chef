@@ -335,8 +335,14 @@ async fn save_for_actor(
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
     let request_json = serde_json::to_value(&request).map_err(|_| AppError::InvalidInput)?;
-    // Global plan IDs remain during migration; never load another product's retry payload.
-    if let Some(product) = b.product
+    // Keep the global guard on old/partial layouts; retries never load foreign payloads.
+    let local_ids = b.product.is_some()
+        && crate::product_keys::supports_local_ids(
+            &tx,
+            crate::product_keys::LocalIdTable::SpeechPlan,
+        )
+        .await?;
+    if let Some(product) = b.product.filter(|_| !local_ids)
         && one(
             &tx,
             "SELECT 1 FROM course_speech_plans WHERE id=$1 AND product_id<>$2",

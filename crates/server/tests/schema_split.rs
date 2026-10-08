@@ -4330,6 +4330,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     )
     .await;
     assert_eq!(status, 404, "{body}");
+    owner.execute_unprepared("ALTER TABLE course_speech_plans DROP CONSTRAINT chef_local_speech_plan_primary; ALTER TABLE course_speech_plans ADD CONSTRAINT legacy_speech_plan_primary_fixture PRIMARY KEY(id)").await.unwrap();
     let mut foreign_retry = plan_request.clone();
     foreign_retry["id"] = "4".repeat(32).into();
     let (status, body) = request(
@@ -4342,6 +4343,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     )
     .await;
     assert_eq!(status, 404, "{body}");
+    owner.execute_unprepared("ALTER TABLE course_speech_plans DROP CONSTRAINT legacy_speech_plan_primary_fixture; ALTER TABLE course_speech_plans ADD CONSTRAINT chef_local_speech_plan_primary PRIMARY KEY(product_id,id)").await.unwrap();
     let mut foreign_voice_preview = preview_request.clone();
     foreign_voice_preview["selection"]["voices"][0] = serde_json::json!({"characterId":"aaa-foreign-character-1","characterRevision":1,"voiceRevision":1});
     let (status, body) = request(
@@ -4497,6 +4499,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let mut foreign_previous = clip_request.clone();
     foreign_previous["id"] = format!("{:032x}", 504).into();
     foreign_previous["expectedPreviousId"] = foreign_clip_id.clone().into();
+    owner.execute_unprepared("ALTER TABLE course_speech_clips DROP CONSTRAINT chef_local_speech_clip_primary; ALTER TABLE course_speech_clips ADD CONSTRAINT legacy_speech_clip_primary_fixture PRIMARY KEY(id)").await.unwrap();
     for (body, expected) in [
         (foreign_plan_clip, 404),
         (foreign_retry, 404),
@@ -4513,6 +4516,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .await;
         assert_eq!(status, expected, "{result}");
     }
+    owner.execute_unprepared("ALTER TABLE course_speech_clips DROP CONSTRAINT legacy_speech_clip_primary_fixture; ALTER TABLE course_speech_clips ADD CONSTRAINT chef_local_speech_clip_primary PRIMARY KEY(product_id,id)").await.unwrap();
     let (status,body)=request(&content_app,"POST",&format!("{foreign_clip_path}/review"),Some(serde_json::json!({"accepted":true,"heard":true,"reason":"Synthetic foreign clip adoption rejected"})),&mut cookie,&mut csrf).await;
     assert_eq!(status, 404, "{body}");
     let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM course_speech_clips)+(SELECT count(*) FROM course_speech_clip_events)+(SELECT count(*) FROM course_speech_clip_reviews) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
@@ -6364,6 +6368,162 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_audition_hash);
     assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
     assert_eq!(row.try_get::<i64>("", "events").unwrap(), 2);
+    let h_plan_hash=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(p)::text) AS hash FROM course_speech_plans p WHERE product_id='hargow' AND id=repeat('4',32)")).await.unwrap().unwrap().try_get::<String>("", "hash").unwrap();
+    let mut local_plan_request = plan_request.clone();
+    local_plan_request["id"] = "4".repeat(32).into();
+    let (status, local_plan) = request(
+        &content_app,
+        "POST",
+        plan_route,
+        Some(local_plan_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{local_plan}");
+    let (status, retried_plan) = request(
+        &content_app,
+        "POST",
+        plan_route,
+        Some(local_plan_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{retried_plan}");
+    assert_eq!(retried_plan, local_plan);
+    let mut changed_plan = local_plan_request;
+    changed_plan["reason"] = "Changed local plan request".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            plan_route,
+            Some(changed_plan),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let (status, read_plan) = request(
+        &content_app,
+        "GET",
+        &foreign_plan_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{read_plan}");
+    assert_eq!(read_plan, local_plan);
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(p)::text) AS hash,(SELECT count(*) FROM course_speech_plans WHERE product_id='brioche' AND id=repeat('4',32))::bigint AS own FROM course_speech_plans p WHERE product_id='hargow' AND id=repeat('4',32)")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_plan_hash);
+    assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
+    let h_clip_hash=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT md5(jsonb_build_array(to_jsonb(c),(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.version) FROM course_speech_clip_events e WHERE e.product_id=c.product_id AND e.clip_id=c.id),(SELECT to_jsonb(r) FROM course_speech_clip_reviews r WHERE r.product_id=c.product_id AND r.clip_id=c.id))::text) AS hash FROM course_speech_clips c WHERE product_id='hargow' AND id=$1",[foreign_clip_id.clone().into()])).await.unwrap().unwrap().try_get::<String>("", "hash").unwrap();
+    let calls_before = [
+        enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment
+            .syntheses
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ];
+    let mut local_clip_request = clip_request.clone();
+    local_clip_request["costConfirmed"] = false.into();
+    local_clip_request["id"] = foreign_clip_id.clone().into();
+    local_clip_request["planId"] = "4".repeat(32).into();
+    local_clip_request["expectedPreviousId"] = reused["id"].clone();
+    let (status, local_clip) = request(
+        &content_app,
+        "POST",
+        clip_route,
+        Some(local_clip_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{local_clip}");
+    assert_eq!(local_clip["status"], "ready");
+    assert_eq!(local_clip["planId"], "4".repeat(32));
+    assert_eq!(local_clip["reusedFrom"], "e".repeat(32));
+    let (status, retried_clip) = request(
+        &content_app,
+        "POST",
+        clip_route,
+        Some(local_clip_request.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{retried_clip}");
+    assert_eq!(retried_clip, local_clip);
+    let mut changed_clip = local_clip_request;
+    changed_clip["reason"] = "Changed local clip request".into();
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            clip_route,
+            Some(changed_clip),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let (status, read_clip) = request(
+        &content_app,
+        "GET",
+        &foreign_clip_path,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{read_clip}");
+    assert_eq!(read_clip, local_clip);
+    let review_local = serde_json::json!({"accepted":false,"heard":true,"reason":"Synthetic local clip rejection; no real listening assertion"});
+    let (status, reviewed_clip) = request(
+        &content_app,
+        "POST",
+        &format!("{foreign_clip_path}/review"),
+        Some(review_local.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{reviewed_clip}");
+    assert_eq!(reviewed_clip["accepted"], false);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            &format!("{foreign_clip_path}/review"),
+            Some(review_local),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        200
+    );
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT md5(jsonb_build_array(to_jsonb(c),(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.version) FROM course_speech_clip_events e WHERE e.product_id=c.product_id AND e.clip_id=c.id),(SELECT to_jsonb(r) FROM course_speech_clip_reviews r WHERE r.product_id=c.product_id AND r.clip_id=c.id))::text) AS hash,(SELECT count(*) FROM course_speech_clips WHERE product_id='brioche' AND id=$1)::bigint AS own,(SELECT count(*) FROM course_speech_clip_events WHERE product_id='brioche' AND clip_id=$1)::bigint AS events,(SELECT count(*) FROM course_speech_clip_reviews WHERE product_id='brioche' AND clip_id=$1)::bigint AS reviews FROM course_speech_clips c WHERE product_id='hargow' AND id=$1",[foreign_clip_id.clone().into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_clip_hash);
+    assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "events").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "reviews").unwrap(), 1);
+    assert_eq!(
+        calls_before,
+        [
+            enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment
+                .syntheses
+                .load(std::sync::atomic::Ordering::SeqCst)
+        ]
+    );
     task.abort();
     let _ = task.await;
     assert_eq!(
