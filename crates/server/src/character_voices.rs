@@ -245,6 +245,19 @@ async fn append(
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
+pub(crate) async fn append_author(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    operator: &crate::product_memberships::Operator,
+    request: AdminCharacterVoiceRequest,
+) -> Result<AdminCharacterVoice, AppError> {
+    let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
+    let result =
+        append_profile_authorized_for_product(&tx, Some(product), operator, request).await?;
+    tx.commit().await.map_err(|_| AppError::Unavailable)?;
+    Ok(result)
+}
+
 pub async fn append_profile(
     db: &sea_orm::DatabaseConnection,
     actor: i64,

@@ -242,6 +242,9 @@ pub async fn run() -> Result<()> {
             | "speech-plan-save"
             | "speech-clip-generate"
             | "voice-audition-generate"
+            | "voice-audition-review"
+            | "speech-clip-review"
+            | "character-voice-import"
     );
     let author_product = if author_command {
         crate::schema_split::author_scope(db.as_ref().unwrap(), product).await
@@ -255,6 +258,79 @@ pub async fn run() -> Result<()> {
         }
         None
     };
+    if let Some(scope) = author_product
+        && matches!(
+            command.as_str(),
+            "voice-audition-review" | "speech-clip-review"
+        )
+    {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        anyhow::ensure!(
+            args.len() == 3,
+            "usage: {command} <id> <operator-email> <review.json>"
+        );
+        let operator = crate::maintenance_auth::operator(scope, &args[1]).await?;
+        let document = crate::author_json::Document::load(&args[2])?;
+        let accepted = if command == "voice-audition-review" {
+            crate::voice_auditions::review_author(
+                db.as_ref().unwrap(),
+                scope,
+                &operator,
+                args[0].clone(),
+                crate::author_json::from_value(document.value, "")?,
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("Scoped audition review not confirmed; inspect the fixed record")
+            })?
+            .accepted
+        } else {
+            crate::speech_clips::review_author(
+                db.as_ref().unwrap(),
+                scope,
+                &operator,
+                args[0].clone(),
+                crate::author_json::from_value(document.value, "")?,
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("Scoped clip review not confirmed; inspect the fixed record")
+            })?
+            .accepted
+        };
+        println!(
+            "{}",
+            serde_json::json!({"id":args[0],"accepted":accepted,"published":false})
+        );
+        return Ok(());
+    }
+    if let Some(scope) = author_product
+        && command == "character-voice-import"
+    {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        anyhow::ensure!(
+            args.len() == 3,
+            "usage: character-voice-import <request.json> <operator-email> <reason>"
+        );
+        let operator = crate::maintenance_auth::operator(scope, &args[1]).await?;
+        let document = crate::author_json::Document::load(&args[0])?;
+        let mut request: brioche_course_contract::AdminCharacterVoiceRequest =
+            crate::author_json::from_value(document.value, "")?;
+        request.reason = args[2].clone();
+        let result =
+            crate::character_voices::append_author(db.as_ref().unwrap(), scope, &operator, request)
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Scoped character voice not confirmed; inspect the fixed revision"
+                    )
+                })?;
+        println!(
+            "Character voice profile registered at revision {}. No audio generated or published.",
+            result.voice_revision
+        );
+        return Ok(());
+    }
     if let Some(scope) = author_product
         && matches!(
             command.as_str(),

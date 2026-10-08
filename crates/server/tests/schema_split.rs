@@ -6604,11 +6604,51 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     own_voice["characterId"] = "aaa-foreign-character-1".into();
     own_voice["characterRevision"] = 1.into();
     own_voice["expectedVoiceRevision"] = 0.into();
+    std::fs::write(
+        root.join("cli-own-voice.json"),
+        serde_json::to_vec(&own_voice).unwrap(),
+    )
+    .unwrap();
+    let voice_args = vec![
+        "character-voice-import".to_owned(),
+        "cli-own-voice.json".to_owned(),
+        "split@example.test".to_owned(),
+        own_voice["reason"].as_str().unwrap().to_owned(),
+    ];
+    for session in [
+        "learner-session.json",
+        "bad-csrf-session.json",
+        "other-product-session.json",
+    ] {
+        assert!(
+            !export_cli
+                .execute(voice_args.clone(), session)
+                .await
+                .status
+                .success()
+        );
+    }
+    let result = export_cli
+        .execute(voice_args.clone(), "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stdout).contains("revision 1"));
+    assert!(
+        !export_cli
+            .execute(voice_args, "operator-session.json")
+            .await
+            .status
+            .success()
+    );
     let (status, created_voice) = request(
         &content_app,
-        "POST",
-        "/api/v1/operator/characters",
-        Some(own_voice.clone()),
+        "GET",
+        "/api/v1/operator/characters/aaa-foreign-character-1/1/voices/1",
+        None,
         &mut cookie,
         &mut csrf,
     )
@@ -6819,18 +6859,98 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             .load(std::sync::atomic::Ordering::SeqCst),
         calls_before + 1
     );
-    let review_local = serde_json::json!({"accepted":false,"heard":true,"expectedVoiceRevision":1,"reason":"Synthetic local rejection; no real listening claim"});
+    let mut review_local = serde_json::json!({"accepted":false,"heard":true,"expectedVoiceRevision":1,"reason":"Synthetic local rejection; no real listening claim"});
+    std::fs::write(
+        root.join("cli-audition-review.json"),
+        serde_json::to_vec(&review_local).unwrap(),
+    )
+    .unwrap();
+    let review_args = vec![
+        "voice-audition-review".to_owned(),
+        foreign_audition.clone(),
+        "split@example.test".to_owned(),
+        "cli-audition-review.json".to_owned(),
+    ];
+    for session in [
+        "learner-session.json",
+        "bad-csrf-session.json",
+        "other-product-session.json",
+    ] {
+        assert!(
+            !export_cli
+                .execute(review_args.clone(), session)
+                .await
+                .status
+                .success()
+        );
+    }
+    let mut unheard_review = review_local.clone();
+    unheard_review["heard"] = false.into();
+    std::fs::write(
+        root.join("cli-unheard-audition.json"),
+        serde_json::to_vec(&unheard_review).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "voice-audition-review".to_owned(),
+                    foreign_audition.clone(),
+                    "split@example.test".to_owned(),
+                    "cli-unheard-audition.json".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
+    let mut wrong_actor = review_args.clone();
+    wrong_actor[2] = "other@example.test".to_owned();
+    assert!(
+        !export_cli
+            .execute(wrong_actor, "operator-session.json")
+            .await
+            .status
+            .success()
+    );
+    let row = owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres, "SELECT count(*)::bigint AS n FROM voice_audition_reviews WHERE product_id='brioche' AND audition_id=$1", [foreign_audition.clone().into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    let result = export_cli
+        .execute(review_args.clone(), "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let cli_review: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(cli_review["accepted"], false);
+    assert_eq!(cli_review["published"], false);
+    let result = export_cli
+        .execute(review_args, "operator-session.json")
+        .await;
+    assert!(!result.status.success());
+    review_local["reason"] =
+        format!("[local-cli] {}", review_local["reason"].as_str().unwrap()).into();
     let (status, reviewed_local) = request(
         &content_app,
-        "POST",
-        &format!("{foreign_path}/review"),
-        Some(review_local.clone()),
+        "GET",
+        &foreign_path,
+        None,
         &mut cookie,
         &mut csrf,
     )
     .await;
     assert_eq!(status, 200, "{reviewed_local}");
     assert_eq!(reviewed_local["accepted"], false);
+    let row = owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres, "SELECT actor_id,reason FROM voice_audition_reviews WHERE product_id='brioche' AND audition_id=$1", [foreign_audition.clone().into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "actor_id").unwrap(), account);
+    assert_eq!(
+        row.try_get::<String>("", "reason").unwrap(),
+        review_local["reason"].as_str().unwrap()
+    );
     assert_eq!(
         request(
             &content_app,
@@ -7348,18 +7468,102 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     .await;
     assert_eq!(status, 200, "{read_clip}");
     assert_eq!(read_clip, local_clip);
-    let review_local = serde_json::json!({"accepted":false,"heard":true,"reason":"Synthetic local clip rejection; no real listening assertion"});
+    let mut review_local = serde_json::json!({"accepted":false,"heard":true,"reason":"Synthetic local clip rejection; no real listening assertion"});
+    std::fs::write(
+        root.join("cli-clip-review.json"),
+        serde_json::to_vec(&review_local).unwrap(),
+    )
+    .unwrap();
+    let review_args = vec![
+        "speech-clip-review".to_owned(),
+        foreign_clip_id.clone(),
+        "split@example.test".to_owned(),
+        "cli-clip-review.json".to_owned(),
+    ];
+    for session in [
+        "learner-session.json",
+        "bad-csrf-session.json",
+        "other-product-session.json",
+    ] {
+        assert!(
+            !export_cli
+                .execute(review_args.clone(), session)
+                .await
+                .status
+                .success()
+        );
+    }
+    let mut unheard_review = review_local.clone();
+    unheard_review["heard"] = false.into();
+    std::fs::write(
+        root.join("cli-unheard-clip.json"),
+        serde_json::to_vec(&unheard_review).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "speech-clip-review".to_owned(),
+                    foreign_clip_id.clone(),
+                    "split@example.test".to_owned(),
+                    "cli-unheard-clip.json".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
+    let mut wrong_actor = review_args.clone();
+    wrong_actor[2] = "other@example.test".to_owned();
+    assert!(
+        !export_cli
+            .execute(wrong_actor, "operator-session.json")
+            .await
+            .status
+            .success()
+    );
+    let row = owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres, "SELECT count(*)::bigint AS n FROM course_speech_clip_reviews WHERE product_id='brioche' AND clip_id=$1", [foreign_clip_id.clone().into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    let result = export_cli
+        .execute(review_args.clone(), "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let cli_review: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(cli_review["accepted"], false);
+    assert_eq!(cli_review["published"], false);
+    let result = export_cli
+        .execute(review_args, "operator-session.json")
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    review_local["reason"] =
+        format!("[local-cli] {}", review_local["reason"].as_str().unwrap()).into();
     let (status, reviewed_clip) = request(
         &content_app,
-        "POST",
-        &format!("{foreign_clip_path}/review"),
-        Some(review_local.clone()),
+        "GET",
+        &foreign_clip_path,
+        None,
         &mut cookie,
         &mut csrf,
     )
     .await;
     assert_eq!(status, 200, "{reviewed_clip}");
     assert_eq!(reviewed_clip["accepted"], false);
+    let row = owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres, "SELECT actor_id,reason FROM course_speech_clip_reviews WHERE product_id='brioche' AND clip_id=$1", [foreign_clip_id.clone().into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "actor_id").unwrap(), account);
+    assert_eq!(
+        row.try_get::<String>("", "reason").unwrap(),
+        review_local["reason"].as_str().unwrap()
+    );
     assert_eq!(
         request(
             &content_app,
@@ -7390,6 +7594,49 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     );
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
+    for (command, id, input) in [
+        (
+            "voice-audition-review",
+            foreign_audition.clone(),
+            "cli-audition-review.json",
+        ),
+        (
+            "speech-clip-review",
+            foreign_clip_id.clone(),
+            "cli-clip-review.json",
+        ),
+    ] {
+        assert!(
+            !export_cli
+                .execute(
+                    vec![
+                        command.to_owned(),
+                        id,
+                        "split@example.test".to_owned(),
+                        input.to_owned()
+                    ],
+                    "operator-session.json"
+                )
+                .await
+                .status
+                .success()
+        );
+    }
+    assert!(
+        !export_cli
+            .execute(
+                vec![
+                    "character-voice-import".to_owned(),
+                    "cli-own-voice.json".to_owned(),
+                    "split@example.test".to_owned(),
+                    "Identity offline".to_owned()
+                ],
+                "operator-session.json"
+            )
+            .await
+            .status
+            .success()
+    );
     for (command, input) in [
         ("speech-clip-generate", "cli-clip.json"),
         ("voice-audition-generate", "cli-audition.json"),

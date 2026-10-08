@@ -85,3 +85,13 @@ chef-server speech-package-automatic report.json package-request.json operator@e
 这些命令不发布课程、不登记人工审听。输出仅编号、状态、时长和审听要求；文件和工作记录遵循既有私有媒体/不可变事件规则。实现、授权和轮询只位于 Chef，产品只装配。
 
 隔离验证运行真实 CLI 子进程且清空供应商环境：有效本产品缓存首次登记与 HTTP 逐字段一致、精确重试不新增事件，已就绪角色试听可以精确重放；双产品同编号的另一产品记录指纹保持，供应商计数不增加。普通成员/错误 CSRF/另一产品 Cookie/错误邮箱与身份服务停止拒绝。需要新供应商生成时不插入已提交记录。模拟供应商只验证协议，不能作为真实语音质量或粤语模型验收。
+
+## 分离后的角色声音与语音评价
+
+`character-voice-import <request.json> <operator-email> <reason>`、`voice-audition-review <id> <operator-email> <review.json>` 和 `speech-clip-review <id> <operator-email> <review.json>` 使用完整 split 作者布局与上述私有会话。实际产品管理员、邮箱、Origin/CSRF 由独立身份服务验证；事务复核产品权限，不读取身份表或以全局角色代替成员权限。通用实现仅由 Chef 拥有。
+
+声音登记调用后台同一个固定角色/档案追加事务，保留 expectedVoiceRevision、声音与参考录音校验；理由以命令第三个参数为准，重复旧版本拒绝，不覆盖已存在档案。声音登记不会调用 TTS 或发布录音。
+
+评价复用后台事务，理由加 `[local-cli]` 标记；heard 必须由操作者明确提供，不由命令默认补齐。试听评价保留一次决定及 expectedVoiceRevision，重复拒绝；采纳声音与评价同事务。片段评价保留相同操作者、决定、理由的精确重试，不同请求拒绝。输出仅编号、决定与 published=false。用户直接发布授权不等于人工审听，这些可选评价命令不会自动声明审听或作为额外用户审批门槛。
+
+实际隔离 CLI 使用受限作者连接与真实身份服务，覆盖同编号声音登记、试听与片段评价、固定版本冲突、片段精确重试及另一产品行指纹保持；普通成员/错误 CSRF/另一产品 Cookie/邮箱不匹配/未听过与身份服务停止拒绝。拒绝请求零新增本产品评价；成功审计记录真实账号与 local-cli 理由。测试 heard=true 只针对明确标注的合成试听，不是生产审听或粤语质量证据。

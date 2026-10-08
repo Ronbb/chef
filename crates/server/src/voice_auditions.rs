@@ -517,6 +517,26 @@ pub async fn review_local(
     .await
 }
 
+pub(crate) async fn review_author(
+    db: &sea_orm::DatabaseConnection,
+    product: crate::product::ProductId,
+    operator: &crate::product_memberships::Operator,
+    id: String,
+    mut request: AdminAuditionReview,
+) -> Result<AdminAudition, AppError> {
+    request.reason = format!("[local-cli] {}", request.reason);
+    review_for_actor(
+        &Store {
+            db: db.clone(),
+            product: Some(product),
+        },
+        operator,
+        id,
+        request,
+    )
+    .await
+}
+
 async fn review_for_actor(
     b: &Store,
     operator: &crate::product_memberships::Operator,
