@@ -1,14 +1,11 @@
 import type { Catalog } from "@brioche/contracts/Catalog";
 import type { PublicLesson } from "@brioche/contracts/PublicLesson";
 import type { UserProfile } from "@brioche/contracts/UserProfile";
-import product from "@chef/product";
+import { productNamespace } from "./product-runtime";
 import { productSessionCookie } from "./product-session";
 const base = () => process.env.INTERNAL_API_URL ?? "http://127.0.0.1:3001";
 function sessionCookie(request: Request) {
-  return productSessionCookie(
-    request.headers,
-    product.sessionNamespace ?? "brioche",
-  );
+  return productSessionCookie(request.headers, productNamespace);
 }
 export async function getPrivate<T>(
   request: Request,

@@ -1,3 +1,4 @@
+import { productNamespace } from "../lib/product-runtime";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, redirect } from "react-router";
 import { getIdentity } from "../lib/api.server";
@@ -6,12 +7,13 @@ import {
   definitiveWriteFailure,
   privateRequest,
 } from "../lib/api.client";
-import { clearPending, draftsChangedEvent } from "../lib/learning-draft";
+import { clearPending, draftsChangedEventFor } from "../lib/learning-draft";
 import { pendingOwned } from "../lib/owned-draft";
 import { Icon } from "../components/icon";
 import { PendingNavigation } from "../components/pending-navigation";
 import { usePendingOwnedWrites } from "../components/pending-owned-writes";
 import type { Route } from "./+types/pending-saves";
+const draftsChangedEvent = draftsChangedEventFor(productNamespace);
 export async function loader({ request }: Route.LoaderArgs) {
   const identity = await getIdentity(request);
   if (!identity.user) throw redirect("/login?next=/pending-saves");
@@ -47,7 +49,7 @@ function PendingList({ userId }: { userId: string }) {
   }, [items]);
   function sync() {
     const previous = currentItems.current,
-      next = pendingOwned(userId),
+      next = pendingOwned(userId, productNamespace),
       nextKeys = new Set(next.map((entry) => entry.key)),
       focusedKey = [...buttons.current].find(
         ([, button]) => button === document.activeElement,
@@ -83,7 +85,7 @@ function PendingList({ userId }: { userId: string }) {
   async function confirm(item: (typeof items)[number]) {
     if (writing.current || !alive.current) return;
     // Another writer may already have confirmed this row before React commits.
-    const current = pendingOwned(userId).find(
+    const current = pendingOwned(userId, productNamespace).find(
       (entry) => entry.key === item.key,
     );
     if (!current || JSON.stringify(current.job) !== JSON.stringify(item.job)) {

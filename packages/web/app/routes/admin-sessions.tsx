@@ -1,3 +1,4 @@
+import { productNamespace } from "../lib/product-runtime";
 import { useCommittedDialog } from "../components/committed-dialog";
 import { Link, data, useLocation, useRevalidator } from "react-router";
 import { useId, useEffect, useRef, useState } from "react";
@@ -76,8 +77,9 @@ export default function Sessions({
       dialog.current?.close();
       if (result.current) {
         learning.stop();
-        if (learning.profile) clearLearningDrafts(learning.profile.id);
-        announceIdentityChange();
+        if (learning.profile)
+          clearLearningDrafts(learning.profile.id, productNamespace);
+        announceIdentityChange(productNamespace);
         window.location.assign("/login");
       } else {
         setNotice("登录会话已撤销。");

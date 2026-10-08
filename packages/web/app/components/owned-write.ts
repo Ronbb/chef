@@ -1,3 +1,4 @@
+import { productNamespace } from "../lib/product-runtime";
 import { useEffect, useRef, useState } from "react";
 import {
   ApiRequestError,
@@ -32,7 +33,7 @@ export function useOwnedWrite<T>(
   },
 ) {
   const storageKey = recovery.userId
-    ? draftScope(recovery.userId, "owned", 1) +
+    ? draftScope(recovery.userId, "owned", 1, productNamespace) +
       ":" +
       ownedTargetKey(recovery.target)
     : "";

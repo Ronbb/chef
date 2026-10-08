@@ -1,3 +1,4 @@
+import { productNamespace } from "../lib/product-runtime";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, redirect } from "react-router";
 import type { LearningSession } from "@brioche/contracts/LearningSession";
@@ -53,6 +54,7 @@ function Session({
     ownerId,
     initial.progress.id,
     initial.lesson.revision,
+    productNamespace,
   );
   const session = useLearningSession(initial, scope),
     audio = useLearning(),

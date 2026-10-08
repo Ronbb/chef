@@ -1,3 +1,4 @@
+import { productNamespace } from "../app/lib/product-runtime";
 import product from "@chef/product";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -1096,7 +1097,7 @@ const pendingJobs = ["qa-account", "qa-account", "qa-next"].map(
     const knowledgeId = "pending-word-" + index;
     return {
       key:
-        draftScope(userId, "owned", 1) +
+        draftScope(userId, "owned", 1, productNamespace) +
         ":" +
         ownedTargetKey({
           kind: "bookmark",
@@ -1120,7 +1121,9 @@ const pendingJobs = ["qa-account", "qa-account", "qa-next"].map(
 );
 if (kind === "pending" || kind === "session-revoked") {
   if (kind === "session-revoked")
-    clearSessionDrafts(draftScope("qa-account", "qa-session", 1));
+    clearSessionDrafts(
+      draftScope("qa-account", "qa-session", 1, productNamespace),
+    );
   for (const entry of pendingJobs) saveDraft(entry.key, entry.job);
   qa.confirmExternal = (index) =>
     clearPending(

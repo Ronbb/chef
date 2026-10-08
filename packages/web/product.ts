@@ -1,6 +1,7 @@
 export interface Product {
   id: string;
-  /** Trusted build configuration; defaults to Brioche for existing products. */
+  /** Trusted namespace for cookies, private drafts and identity notices.
+   * Defaults to Brioche for compatibility; Hargow must explicitly use hargow. */
   sessionNamespace?: "brioche" | "hargow";
   name: string;
   wordmark: string;

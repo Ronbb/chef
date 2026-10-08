@@ -1,7 +1,9 @@
+import { productNamespace } from "../lib/product-runtime";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import { draftsChangedEvent } from "../lib/learning-draft";
+import { draftsChangedEventFor } from "../lib/learning-draft";
 import { pendingOwned } from "../lib/owned-draft";
 
+const draftsChangedEvent = draftsChangedEventFor(productNamespace);
 function subscribe(notify: () => void) {
   window.addEventListener(draftsChangedEvent, notify);
   window.addEventListener("storage", notify);
@@ -16,7 +18,7 @@ const serverSnapshot = () => false;
 // collapsed card can unmount its writer while its original request is pending.
 export function usePendingOwnedWrites(userId?: string) {
   const snapshot = useCallback(
-    () => !!userId && pendingOwned(userId).length > 0,
+    () => !!userId && pendingOwned(userId, productNamespace).length > 0,
     [userId],
   );
   const active = useSyncExternalStore(subscribe, snapshot, serverSnapshot);

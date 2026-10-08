@@ -1,3 +1,4 @@
+import { productNamespace } from "../lib/product-runtime";
 import {
   createContext,
   useContext,
@@ -235,7 +236,7 @@ export function LearningProvider({
       account.current = null;
       setAccountProfile(null);
       stop();
-      clearLearningDrafts(savedProfile.current.id);
+      clearLearningDrafts(savedProfile.current.id, productNamespace);
     }
     savedProfile.current = value;
     setProfile(value);

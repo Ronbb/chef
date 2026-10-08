@@ -1,3 +1,4 @@
+import { productNamespace } from "../lib/product-runtime";
 import { useLearning } from "../components/learning";
 import product from "@chef/product";
 import { Icon } from "../components/icon";
@@ -205,7 +206,7 @@ function ProfileContent() {
         attempt.signal.aborted
       )
         return;
-      clearLearningDrafts(profile.id);
+      clearLearningDrafts(profile.id, productNamespace);
       learning.stop();
       window.location.assign("/");
     } catch {

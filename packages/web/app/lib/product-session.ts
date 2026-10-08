@@ -1,12 +1,17 @@
 export type SessionNamespace = "brioche" | "hargow";
 
+export function checkedNamespace(value: unknown = "brioche"): SessionNamespace {
+  if (value !== "brioche" && value !== "hargow")
+    throw Error("Invalid product session namespace");
+  return value;
+}
+
 /** Only the configured product's session crosses the SSR service boundary. */
 export function productSessionCookie(
   headers: Headers,
   namespace: SessionNamespace,
 ): string {
-  if (namespace !== "brioche" && namespace !== "hargow")
-    throw Error("Invalid product session namespace");
+  checkedNamespace(namespace);
   const names = new Set([`${namespace}.sid`, `__Host-${namespace}.sid`]);
   const matches = (headers.get("cookie") ?? "")
     .split(";")

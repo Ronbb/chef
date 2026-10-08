@@ -1,3 +1,4 @@
+import { productNamespace } from "./product-runtime";
 import type { CsrfToken } from "@brioche/contracts/CsrfToken";
 import { announceIdentityChange } from "./identity-sync";
 export async function authRequest<T>(
@@ -35,7 +36,7 @@ export async function authRequest<T>(
     );
   }
   if (["login", "logout", "accept-invite", "reset-password"].includes(path)) {
-    announceIdentityChange();
+    announceIdentityChange(productNamespace);
   }
   return response.json() as Promise<T>;
 }

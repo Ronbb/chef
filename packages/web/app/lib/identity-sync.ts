@@ -1,9 +1,15 @@
+import { checkedNamespace, type SessionNamespace } from "./product-session.ts";
 // The notice contains no account, token or lesson data. Other tabs reload their
 // server-authorized route rather than trying to reuse another tab's identity.
 export const identityNoticeKey = "brioche.identity-change.v1";
-export function announceIdentityChange() {
+export function identityNoticeKeyFor(namespace: SessionNamespace = "brioche") {
+  return `${checkedNamespace(namespace)}.identity-change.v1`;
+}
+export function announceIdentityChange(
+  namespace: SessionNamespace = "brioche",
+) {
   try {
-    localStorage.setItem(identityNoticeKey, crypto.randomUUID());
+    localStorage.setItem(identityNoticeKeyFor(namespace), crypto.randomUUID());
   } catch {
     // Focus/visibility checks still work when browser storage is unavailable.
   }
@@ -14,6 +20,7 @@ export function sameIdentity(a: Identity, b: Identity) {
 }
 
 export function watchIdentity(options: {
+  namespace?: SessionNamespace;
   identity: Identity;
   window: EventTarget;
   document: EventTarget;
@@ -23,6 +30,7 @@ export function watchIdentity(options: {
   stopPlayback: () => void;
   every: (callback: () => void) => () => void;
 }) {
+  const noticeKey = identityNoticeKeyFor(options.namespace);
   let disposed = false,
     invalidated = false;
   let pending: AbortController | null = null;
@@ -54,7 +62,7 @@ export function watchIdentity(options: {
   }
   function storage(event: Event) {
     const notice = event as StorageEvent;
-    if (notice.key === identityNoticeKey && notice.newValue) invalidate();
+    if (notice.key === noticeKey && notice.newValue) invalidate();
   }
   function pageShow(event: Event) {
     if ((event as PageTransitionEvent).persisted) invalidate();

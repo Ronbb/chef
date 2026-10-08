@@ -1,3 +1,4 @@
+import type { SessionNamespace } from "./product-session.ts";
 import type { StoredPending } from "./learning-draft";
 import { draftScope, readDraft, storedKeys } from "./learning-draft.ts";
 export type OwnedTarget =
@@ -11,9 +12,10 @@ export type OwnedTarget =
   | { kind: "rating"; cardId: string };
 export function pendingOwned(
   userId: string,
+  namespace: SessionNamespace = "brioche",
 ): { key: string; job: StoredPending; target: OwnedTarget }[] {
-  const owner = draftScope(userId, "owned", 1) + ":",
-    reviews = draftScope(userId, "reviews", 1) + ":pending";
+  const owner = draftScope(userId, "owned", 1, namespace) + ":",
+    reviews = draftScope(userId, "reviews", 1, namespace) + ":pending";
   const found: { key: string; job: StoredPending; target: OwnedTarget }[] = [];
   for (const key of storedKeys()) {
     if (!key.startsWith(owner) && key !== reviews) continue;

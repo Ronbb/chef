@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+共享 Web 产品范围：product-runtime 从可信构建配置统一 Cookie/草稿/身份通知 namespace，Hargow 必填 hargow且与产品ID一致；账号清理只删除本产品，Brioche旧键兼容。所有生产恢复/退出调用显式传该范围，不从 URL/Host/storage 选产品。实现、实际组件/SSR与协议回归只 Chef，产品不复制业务；详见 docs/product-web-isolation.md。真实粤语/完整装配待齐，生产/pin保持。
+
 分离配音交付 CLI：alignment import、package import、lesson direct publication 先完整 author_scope 与真实 maintenance_auth，Some(product) 复用报告导入/打包快照与登记/授权事务，身份停止拒绝。package import 新 CLI 仅完整 split；原 HTTP 抽取同一内核，不复制逻辑。固定归档/哈希/实文件、不可变重试与产品范围保持，登记或授权不激活目录、不伪造 heard/timingsChecked。仅 Chef 合成隔离验证，生产/pin 不动。
 
 分离角色声音/评价 CLI：character-voice-import、audition/clip review 先 author_scope 与 maintenance_auth 真实本产品管理员核验，再复用 append_profile_authorized_for_product / review_for_actor。声音追加、参考录音边界、试听采纳同事务、heard 显式声明、试听重复冲突/片段精确重试保持；不自动发布或伪造审听。实现和隔离合成测试只 Chef，身份停止拒绝，生产和产品 pin 保持。

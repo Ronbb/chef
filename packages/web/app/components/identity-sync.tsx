@@ -1,3 +1,4 @@
+import { productNamespace } from "../lib/product-runtime";
 import { useEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 import type { UserProfile } from "@brioche/contracts/UserProfile";
@@ -20,6 +21,7 @@ export function IdentitySync({
   useEffect(() => {
     if (!enabled) return;
     return watchIdentity({
+      namespace: productNamespace,
       identity: user ? { id: user.id, role: user.role } : null,
       window,
       document,
@@ -35,7 +37,7 @@ export function IdentitySync({
       },
       stopPlayback: () => current.current.stop(),
       invalidate: () => {
-        if (user) clearLearningDrafts(user.id);
+        if (user) clearLearningDrafts(user.id, productNamespace);
         // Dispose private routes and their leave guards before a full reload.
         flushSync(onInvalidate);
         document.getElementById("page-content")?.querySelector("h1")?.focus();

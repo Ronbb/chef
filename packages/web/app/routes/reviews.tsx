@@ -1,3 +1,4 @@
+import { productNamespace } from "../lib/product-runtime";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, redirect } from "react-router";
 import type { ReviewQueue } from "@brioche/contracts/ReviewQueue";
@@ -67,7 +68,7 @@ export default function Reviews({ loaderData }: Route.ComponentProps) {
   const audio = useLearning(),
     term = queue.items[index];
   const storageKey = audio.profile
-    ? draftScope(audio.profile.id, "reviews", 1) + ":pending"
+    ? draftScope(audio.profile.id, "reviews", 1, productNamespace) + ":pending"
     : "";
   const hasPendingWrite = !!pending.current;
   const ownedPending = usePendingOwnedWrites(audio.profile?.id);

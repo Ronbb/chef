@@ -2,23 +2,30 @@ import type { ExerciseAnswer } from "@brioche/contracts/ExerciseAnswer";
 import type { PublicLesson } from "@brioche/contracts/PublicLesson";
 import { MAX_TEXT_ANSWER_UTF16_UNITS } from "@brioche/contracts/answer-limits";
 
-const prefix = "brioche.learning.v1:";
+import { checkedNamespace, type SessionNamespace } from "./product-session.ts";
+function prefix(namespace: SessionNamespace = "brioche") {
+  return `${checkedNamespace(namespace)}.learning.v1:`;
+}
+export function draftsChangedEventFor(namespace: SessionNamespace = "brioche") {
+  return `${checkedNamespace(namespace)}:learning-drafts`;
+}
 // Only a change notification; account data and request bodies stay in storage.
 export const draftsChangedEvent = "brioche:learning-drafts";
-function notifyDraftsChanged() {
+function notifyDraftsChanged(namespace: SessionNamespace = "brioche") {
   if (
     typeof window !== "undefined" &&
     typeof window.dispatchEvent === "function"
   )
-    window.dispatchEvent(new Event(draftsChangedEvent));
+    window.dispatchEvent(new Event(draftsChangedEventFor(namespace)));
 }
 export function draftScope(
   userId: string,
   sessionId: string,
   revision: number,
+  namespace: SessionNamespace = "brioche",
 ) {
   return (
-    prefix +
+    prefix(namespace) +
     encodeURIComponent(userId) +
     ":" +
     encodeURIComponent(sessionId) +
@@ -45,18 +52,23 @@ export function saveDraft(key: string, value: unknown): boolean {
   try {
     if (value === null) sessionStorage.removeItem(key);
     else sessionStorage.setItem(key, JSON.stringify(value));
-    notifyDraftsChanged();
+    notifyDraftsChanged(
+      key.startsWith(prefix("hargow")) ? "hargow" : "brioche",
+    );
     return true;
   } catch {
     return false;
   }
 }
-export function clearLearningDrafts(userId: string) {
-  const owner = prefix + encodeURIComponent(userId) + ":";
+export function clearLearningDrafts(
+  userId: string,
+  namespace: SessionNamespace = "brioche",
+) {
+  const owner = prefix(namespace) + encodeURIComponent(userId) + ":";
   try {
     for (const key of Object.keys(sessionStorage))
       if (key.startsWith(owner)) sessionStorage.removeItem(key);
-    notifyDraftsChanged();
+    notifyDraftsChanged(namespace);
   } catch {
     /* private browsing may deny storage */
   }
