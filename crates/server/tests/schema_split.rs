@@ -3712,6 +3712,214 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     );
     let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM lesson_revisions WHERE lesson_id IN ('brioche-foreign-audio-source','brioche-foreign-embedded-audio'))+(SELECT count(*) FROM lesson_import_audit WHERE lesson_id IN ('brioche-foreign-audio-source','brioche-foreign-embedded-audio')) AS n")).await.unwrap().unwrap();
     assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
+    assert!(
+        learning
+            .execute_unprepared("UPDATE audio_assets SET byte_size=byte_size WHERE false")
+            .await
+            .is_err(),
+        "public playback role cannot mutate recordings"
+    );
+    // Public transports use minimal-role connections and fixed product assembly.
+    // Synthetic registry/file fixtures are not Cantonese curriculum evidence.
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#73a5ca"/></svg>"##;
+    let visual_hash = format!("{:x}", Sha256::digest(svg));
+    std::fs::write(root.join(format!("{visual_hash}.svg")), svg).unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT descriptor FROM media_assets WHERE asset_id='foreign-course-illustration' AND revision=1")).await.unwrap().unwrap();
+    let mut visual: serde_json::Value = row.try_get("", "descriptor").unwrap();
+    visual["assetId"] = "public-hargow-image".into();
+    visual["sha256"] = visual_hash.clone().into();
+    visual["url"] = format!("/api/media/{visual_hash}.svg").into();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO media_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size) SELECT 'hargow','public-hargow-image',1,$1,provenance,$2,'svg',$3 FROM media_assets WHERE asset_id='foreign-course-illustration' AND revision=1",[visual.clone().into(),visual_hash.into(),(svg.len() as i32).into()])).await.unwrap();
+    let mut wav = vec![0u8; 4844];
+    wav[..4].copy_from_slice(b"RIFF");
+    wav[4..8].copy_from_slice(&4836u32.to_le_bytes());
+    wav[8..16].copy_from_slice(b"WAVEfmt ");
+    wav[16..20].copy_from_slice(&16u32.to_le_bytes());
+    wav[20..24].copy_from_slice(&[1, 0, 1, 0]);
+    wav[24..28].copy_from_slice(&24000u32.to_le_bytes());
+    wav[28..32].copy_from_slice(&48000u32.to_le_bytes());
+    wav[32..36].copy_from_slice(&[2, 0, 16, 0]);
+    wav[36..40].copy_from_slice(b"data");
+    wav[40..44].copy_from_slice(&4800u32.to_le_bytes());
+    wav[44..46].copy_from_slice(&25i16.to_le_bytes());
+    let decoded = chef_engine::audio::inspect(&wav, "audio/wav").unwrap();
+    let audio_hash = format!("{:x}", Sha256::digest(&wav));
+    std::fs::write(root.join(format!("{audio_hash}.wav")), &wav).unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT descriptor FROM audio_assets WHERE asset_id='foreign-course-recording' AND revision=1")).await.unwrap().unwrap();
+    let mut audio: serde_json::Value = row.try_get("", "descriptor").unwrap();
+    audio["assetId"] = "public-hargow-audio".into();
+    audio["sha256"] = audio_hash.clone().into();
+    audio["url"] = format!("/api/audio/{audio_hash}.wav").into();
+    audio["mimeType"] = "audio/wav".into();
+    audio["durationMs"] = decoded.duration_ms.into();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO audio_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels) SELECT 'hargow','public-hargow-audio',1,$1,provenance,$2,'wav',$3,$4,$5,$6 FROM audio_assets WHERE asset_id='foreign-course-recording' AND revision=1",[audio.clone().into(),audio_hash.into(),(wav.len() as i32).into(),(decoded.duration_ms as i32).into(),(decoded.sample_rate as i32).into(),(decoded.channels as i32).into()])).await.unwrap();
+    let mut public_fixture = mixed_audio.clone();
+    public_fixture
+        .media
+        .push(serde_json::from_value(visual.clone()).unwrap());
+    public_fixture.audio = vec![serde_json::from_value(audio.clone()).unwrap()];
+    let mut public_document = serde_json::to_value(&public_fixture).unwrap();
+    public_document["knowledge"]["vocabulary"][0]["recording"]["asset"] = audio.clone();
+    let public_fixture: brioche_course_contract::PublicLesson =
+        serde_json::from_value(public_document.clone()).unwrap();
+    public_fixture.validate().unwrap();
+    for (product, id) in [
+        ("hargow", "public-hargow-media"),
+        ("brioche", "public-brioche-foreign-media"),
+    ] {
+        owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) VALUES($1,$2,1,false,$3,$4)",[product.into(),id.into(),public_document.clone().into(),serde_json::json!({"editorial":{"status":"draft"}}).into()])).await.unwrap();
+    }
+    let b_media =
+        chef_engine::media::product_router(learning.clone(), root.clone(), ProductId::Brioche)
+            .merge(chef_engine::recording::product_router(
+                learning.clone(),
+                root.clone(),
+                ProductId::Brioche,
+            ));
+    let h_media =
+        chef_engine::media::product_router(learning.clone(), root.clone(), ProductId::Hargow)
+            .merge(chef_engine::recording::product_router(
+                learning.clone(),
+                root.clone(),
+                ProductId::Hargow,
+            ));
+    let visual_path = visual["url"].as_str().unwrap();
+    let audio_path = audio["url"].as_str().unwrap();
+    for path in [visual_path, audio_path] {
+        let response = h_media
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 404, "unpublished {path}");
+    }
+    // A published B document cannot grant access to a foreign registry object.
+    owner.execute_unprepared("UPDATE lesson_revisions SET published=true WHERE lesson_id='public-brioche-foreign-media'").await.unwrap();
+    for app in [&b_media, &h_media] {
+        for path in [visual_path, audio_path] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status().as_u16(),
+                404,
+                "foreign-only publication {path}"
+            );
+        }
+    }
+    owner
+        .execute_unprepared(
+            "UPDATE lesson_revisions SET published=true WHERE lesson_id='public-hargow-media'",
+        )
+        .await
+        .unwrap();
+    for (path, bytes) in [(visual_path, svg.as_slice()), (audio_path, wav.as_slice())] {
+        let response = h_media
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert_eq!(
+            response.headers()["cross-origin-resource-policy"],
+            "same-origin"
+        );
+        assert_eq!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            bytes
+        );
+        let response = b_media
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("x-product-id", "hargow")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 404);
+        let response = h_media
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{path}?product=brioche"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 400);
+    }
+    // H published documents referencing B registry IDs cannot publish B files.
+    let response = h_media
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&mixed_audio.media[0].url)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 404, "reverse product boundary");
+    let response = h_media
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(audio_path)
+                .header("range", "bytes=0-15")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 206);
+    assert_eq!(response.headers()["content-range"], "bytes 0-15/4844");
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        &wav[..16]
+    );
+    owner.execute_unprepared("INSERT INTO content_withdrawals(product_id,lesson_id,revision) VALUES('hargow','public-hargow-media',1)").await.unwrap();
+    for path in [visual_path, audio_path] {
+        let response = h_media
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 404, "withdrawn {path}");
+    }
+    let response = b_media
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&mixed_audio.media[0].url)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "own published B image remains public"
+    );
     let mut h_lesson = lesson.clone();
     let (status, admin_before) = request(
         &content_app,

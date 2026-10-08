@@ -528,22 +528,43 @@ pub(crate) async fn validate_lesson_detailed<C: ConnectionTrait>(
 
 #[derive(Clone)]
 struct AudioState {
+    product: Option<crate::product::ProductId>,
     db: DatabaseConnection,
     root: std::path::PathBuf,
     permits: std::sync::Arc<tokio::sync::Semaphore>,
 }
 pub fn router(db: DatabaseConnection, root: std::path::PathBuf) -> axum::Router {
+    build_router(db, root, None)
+}
+/// Fixed by deployment assembly; clients cannot select another product.
+pub fn product_router(
+    db: DatabaseConnection,
+    root: std::path::PathBuf,
+    product: crate::product::ProductId,
+) -> axum::Router {
+    build_router(db, root, Some(product))
+}
+fn build_router(
+    db: DatabaseConnection,
+    root: std::path::PathBuf,
+    product: Option<crate::product::ProductId>,
+) -> axum::Router {
     axum::Router::new()
         .route("/api/audio/{name}", axum::routing::get(serve))
         .with_state(AudioState {
+            product,
             db,
             root,
             permits: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         })
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublicMediaQuery {}
 async fn serve(
     axum::extract::State(state): axum::extract::State<AudioState>,
     axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(_query): axum::extract::Query<PublicMediaQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, crate::AppError> {
     let (sha, ext) = name.split_once('.').ok_or(crate::AppError::NotFound)?;
@@ -555,7 +576,11 @@ async fn serve(
     {
         return Err(crate::AppError::NotFound);
     }
-    let row = one(&state.db, "SELECT descriptor FROM audio_assets a WHERE sha256=$1 AND extension=$2 AND EXISTS(SELECT 1 FROM lesson_revisions r WHERE r.published AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision)) AND r.public_document->'audio' @> jsonb_build_array(jsonb_build_object('assetId',a.asset_id,'revision',a.revision))) LIMIT 1", vec![sha.into(),ext.into()]).await?.ok_or(crate::AppError::NotFound)?;
+    let row = one(&state.db, &format!("SELECT descriptor FROM audio_assets a WHERE sha256=$1 AND extension=$2{} AND EXISTS(SELECT 1 FROM lesson_revisions r WHERE r.published{} AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) AND r.public_document->'audio' @> jsonb_build_array(jsonb_build_object('assetId',a.asset_id,'revision',a.revision))) LIMIT 1",
+        crate::learning::product_filter(state.product,"a.product_id"),
+        if state.product.is_some() { " AND r.product_id=a.product_id" } else { "" },
+        if state.product.is_some() { " AND w.product_id=r.product_id" } else { "" }),
+        vec![sha.into(),ext.into()]).await?.ok_or(crate::AppError::NotFound)?;
     let descriptor = serde_json::from_value(field(&row, "descriptor")?)
         .map_err(|_| crate::AppError::Unavailable)?;
     asset_response(state.root, descriptor, state.permits, headers).await

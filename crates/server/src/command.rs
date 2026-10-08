@@ -852,11 +852,24 @@ pub async fn run() -> Result<()> {
         app = app.merge(auth);
     }
     if let Some(db) = media_db {
-        app = app.merge(crate::recording::router(
-            db.clone(),
-            crate::media::media_root(),
-        ));
-        app = app.merge(crate::media::router(db, crate::media::media_root()));
+        if remote_identity {
+            app = app.merge(crate::recording::product_router(
+                db.clone(),
+                crate::media::media_root(),
+                crate::product::ProductId::Brioche,
+            ));
+            app = app.merge(crate::media::product_router(
+                db,
+                crate::media::media_root(),
+                crate::product::ProductId::Brioche,
+            ));
+        } else {
+            app = app.merge(crate::recording::router(
+                db.clone(),
+                crate::media::media_root(),
+            ));
+            app = app.merge(crate::media::router(db, crate::media::media_root()));
+        }
     }
     if let Some(qwen) = qwen {
         app = app.layer(axum::Extension(qwen));

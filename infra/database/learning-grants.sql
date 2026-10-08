@@ -18,12 +18,12 @@ GRANT SELECT ON TABLE
     :"schema".review_attempts, :"schema".saved_items,
     :"schema".lesson_revisions, :"schema".content_state,
     :"schema".content_releases, :"schema".release_entries,
-    :"schema".content_withdrawals, :"schema".media_assets,
+    :"schema".content_withdrawals, :"schema".media_assets, :"schema".audio_assets,
     :"schema".character_revisions TO :"role";
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE
     :"schema".lesson_revisions, :"schema".content_state,
     :"schema".content_releases, :"schema".release_entries,
-    :"schema".content_withdrawals, :"schema".media_assets,
+    :"schema".content_withdrawals, :"schema".media_assets, :"schema".audio_assets,
     :"schema".character_revisions FROM :"role";
 GRANT INSERT, UPDATE ON TABLE
     :"schema".product_user_settings, :"schema".learning_sessions,

@@ -1028,22 +1028,43 @@ pub(crate) fn stored_bytes(root: &Path, sha: &str, ext: &str) -> Result<Vec<u8>>
 }
 #[derive(Clone)]
 struct MediaState {
+    product: Option<crate::product::ProductId>,
     db: DatabaseConnection,
     root: PathBuf,
     permits: std::sync::Arc<tokio::sync::Semaphore>,
 }
 pub fn router(db: DatabaseConnection, root: PathBuf) -> axum::Router {
+    build_router(db, root, None)
+}
+/// Fixed by deployment assembly; clients cannot select another product.
+pub fn product_router(
+    db: DatabaseConnection,
+    root: PathBuf,
+    product: crate::product::ProductId,
+) -> axum::Router {
+    build_router(db, root, Some(product))
+}
+fn build_router(
+    db: DatabaseConnection,
+    root: PathBuf,
+    product: Option<crate::product::ProductId>,
+) -> axum::Router {
     axum::Router::new()
         .route("/api/media/{name}", axum::routing::get(serve))
         .with_state(MediaState {
+            product,
             db,
             root,
             permits: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         })
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublicMediaQuery {}
 async fn serve(
     axum::extract::State(state): axum::extract::State<MediaState>,
     axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(_query): axum::extract::Query<PublicMediaQuery>,
 ) -> Result<axum::response::Response, AppError> {
     let Some((sha, ext)) = name.split_once('.') else {
         return Err(AppError::NotFound);
@@ -1057,7 +1078,11 @@ async fn serve(
         return Err(AppError::NotFound);
     }
     // Staged or unreferenced media are never made public by registration alone.
-    let row=one(&state.db,"SELECT descriptor FROM media_assets m WHERE sha256=$1 AND extension=$2 AND EXISTS(SELECT 1 FROM lesson_revisions r WHERE r.published AND r.public_document->'media' @> jsonb_build_array(jsonb_build_object('assetId',m.asset_id,'revision',m.revision))) LIMIT 1",vec![sha.into(),ext.into()]).await?.ok_or(AppError::NotFound)?;
+    let row = one(&state.db, &format!("SELECT descriptor FROM media_assets m WHERE sha256=$1 AND extension=$2{} AND EXISTS(SELECT 1 FROM lesson_revisions r WHERE r.published{} AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) AND r.public_document->'media' @> jsonb_build_array(jsonb_build_object('assetId',m.asset_id,'revision',m.revision))) LIMIT 1",
+        crate::learning::product_filter(state.product,"m.product_id"),
+        if state.product.is_some() { " AND r.product_id=m.product_id" } else { "" },
+        if state.product.is_some() { " AND w.product_id=r.product_id" } else { "" }),
+        vec![sha.into(),ext.into()]).await?.ok_or(AppError::NotFound)?;
     let descriptor: MediaAsset =
         serde_json::from_value(field(&row, "descriptor")?).map_err(|_| AppError::Unavailable)?;
     asset_response(state.root, descriptor, state.permits).await

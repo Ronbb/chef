@@ -1,5 +1,7 @@
 # 身份与学习schema分离
 
+公开媒体产品范围补充：media/recording新增可信product_router，注册对象与授权published课源同产品，撤回记录也匹配归属；图片同时补齐撤回保护，历史已发布且未撤回版本保持可访问。空查询契约拒绝product参数，header不选择产品。独立command仍固定B，并装配带范围媒体；legacy None保持原布局。学习角色audio_assets仅SELECT且明确撤销写入。actual split受限连接与真实SVG/解码WAV验证未发布404、外产品课源不能授予文件访问、双向跨产品404、自有200/no-store/same-origin/精确字节、音频206精确Range、撤回404且B图片200、产品参数400及录音写权限拒绝；学习/录音/身份后台全链路与workspace clippy通过。角色声音/参考录音/配音图及审计历史、全局编号、实际H入口等继续，生产pin保持，产品无媒体实现副本。
+
 课程录音引用补充：hydrate_source_for_product与发布/试听/直接授权录音校验使用可信产品；课程导入另核对嵌入audio描述归属，防止绕过audioRefs。旧CLI包装None保持兼容。actual split以文件、解码及来源都有效的H录音验证跨产品引用/嵌入预检分别定位audioRefs/audio revision，导入400且课源/审计零新增；原不可变登记、独立身份与后台完整回归通过，workspace clippy无警告。公开音频、声音/配音关联、审计历史及局部编号继续；H后台/生产pin保持，实现只Chef，产品无录音业务副本。
 
 独立录音登记接口补充：admin_recordings接收可信产品，列表/搜索/分页及文件读取固定产品；上传核对Operator产品、锁对应状态，register_product_transaction显式写录音与导入审计归属。旧全局编号冲突仅查存在，不加载外产品descriptor/provenance；本机CLI/配音交付register_transaction仍None待迁移。actual split25个靠前且描述无效H录音不改变B整列表/分页，搜索空、文件404、product查询400；外产品冲突409且原记录不变/审计零增加，B上传归属与单审计/重复冲突/文件/撤权及原不可变登记回归保持。课程语音hydrate/validate、公开音频与声音/配音关联、审计历史及局部编号继续，H后台/生产pin保持，实现只Chef。
