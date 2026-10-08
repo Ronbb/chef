@@ -10,6 +10,7 @@ import { getIdentity, getPrivate } from "../lib/api.server";
 import { adminWrite } from "../lib/admin.client";
 import { RecordingPlayer } from "../lib/recording-playback";
 import { useLearning } from "../components/learning";
+import { speechTargetLocale } from "../lib/speech-authoring";
 import type { Route } from "./+types/admin-speech-clips";
 export async function loader({ request }: Route.LoaderArgs) {
   const { user } = await getIdentity(request);
@@ -351,7 +352,7 @@ export default function SpeechClips({
               <p className="muted">
                 {t.voice.characterId} · 声音 v{t.voice.voiceRevision}
               </p>
-              <p className="fr" lang="fr">
+              <p className="fr" lang={speechTargetLocale(plan, t)}>
                 {t.text}
               </p>
               <p>{t.emotion}</p>

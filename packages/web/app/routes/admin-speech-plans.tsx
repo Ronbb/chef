@@ -8,6 +8,7 @@ import type { AdminSpeechSelection } from "@brioche/contracts/AdminSpeechSelecti
 import { ChoiceDialog } from "../components/choice-dialog";
 import { getIdentity, getPrivate } from "../lib/api.server";
 import { adminWrite } from "../lib/admin.client";
+import { speechTargetLocale } from "../lib/speech-authoring";
 import type { Route } from "./+types/admin-speech-plans";
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -317,7 +318,7 @@ export default function SpeechPlans({
             {current.targets.map((t) => (
               <div className="setting-row" key={t.pointer}>
                 <div>
-                  <p lang="fr">{t.text}</p>
+                  <p lang={speechTargetLocale(current, t)}>{t.text}</p>
                   <p className="admin-note">
                     {
                       options.lesson.cast.find(

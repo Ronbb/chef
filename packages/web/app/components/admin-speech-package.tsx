@@ -21,7 +21,7 @@ export function SpeechPackage({
 }) {
   const [revision, setRevision] = useState(String(lessonRevision + 1));
   const [gap, setGap] = useState("250");
-  const [source, setSource] = useState("Qwen 法语语音合成（固定角色声音版本）");
+  const [source, setSource] = useState("Qwen 语音合成（固定角色声音版本）");
   const [license, setLicense] = useState("");
   const [creator, setCreator] = useState("");
   const [credit, setCredit] = useState(`AI 合成语音 · ${product.name}`);

@@ -387,7 +387,7 @@ export default function Auditions({ loaderData }: Route.ComponentProps) {
               {item.characterId} · 角色 v{item.characterRevision}
             </h2>
             <p role="status">{labels[item.status] ?? "未知任务状态"}</p>
-            <p lang="fr">{item.text}</p>
+            <p lang={item.profile.locale}>{item.text}</p>
             <p>{item.emotion}</p>
             <p>音色：{item.voiceId}</p>
             <dl>

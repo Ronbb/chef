@@ -3916,8 +3916,18 @@ test("speech alignment imports and human corrections preserve exact requests aft
       lessonRevision: 1,
       planHash: "a".repeat(64),
       sourceHash: "b".repeat(64),
-      targets: [],
-      voices: [],
+      targets: [
+        {
+          pointer: "/blocks/0/turns/0/text",
+          entryId: "hello",
+          text: "Bonjour !",
+          voice,
+          emotion: "Warm",
+          generationKey: "d".repeat(64),
+          wordCount: 1,
+        },
+      ],
+      voices: speechVoices,
       selection: { voices: [voice], knowledgeNarrator: voice, emotions: {} },
       requestCount: 1,
       totalRequestCharacters: 7,
@@ -4174,6 +4184,12 @@ test("operator configures a Cantonese role and auditions Cantonese defaults with
     await browser("focus", ".admin-dialog[open] .primary");
     await browser("press", "Enter");
     await browser("wait", "--text", "试听已生成");
+    assert.equal(
+      await evaluate(
+        "Array.from(document.querySelectorAll('p[lang]')).find(p => p.textContent.includes('唔該'))?.lang",
+      ),
+      "yue-Hant-HK",
+    );
     assert.equal(adminWrites.length, 2);
     assert.equal(adminWrites[1].candidate.expectedVoiceRevision, 1);
     assert.equal(adminWrites[1].candidate.profile.locale, "yue-Hant-HK");

@@ -1,5 +1,28 @@
 import type { CharacterVoiceProfile } from "@brioche/contracts/CharacterVoiceProfile";
+import type { AdminSpeechPlan } from "@brioche/contracts/AdminSpeechPlan";
+import type { AdminSpeechTarget } from "@brioche/contracts/AdminSpeechTarget";
 import { QWEN_MULTILINGUAL_SYSTEM_VOICES } from "@brioche/contracts/tts-voices";
+
+/** A plan keeps exact role/voice revisions; never infer its language from the current product. */
+export function speechTargetLocale(
+  plan: AdminSpeechPlan,
+  target: AdminSpeechTarget | undefined,
+) {
+  if (!target) throw Error("配音计划缺少对应片段，请核对原计划。");
+  const voice = plan.voices.find(
+    (item) =>
+      item.character.characterId === target.voice.characterId &&
+      item.character.revision === target.voice.characterRevision &&
+      item.voiceRevision === target.voice.voiceRevision,
+  );
+  if (
+    !voice ||
+    (voice.profile && voice.profile.locale !== voice.character.speechLocale)
+  )
+    throw Error("配音计划的固定声音语言不一致，请核对原计划。");
+  speechAuthoring(voice.character.speechLocale);
+  return voice.character.speechLocale;
+}
 
 /** Fixed role language, never a browser-selected provider locale. */
 export function speechAuthoring(locale: string) {

@@ -17,6 +17,7 @@ import { adminWrite, AdminWriteError } from "../lib/admin.client";
 import { useLearning } from "../components/learning";
 import { RecordingPlayer } from "../lib/recording-playback";
 import { SpeechPackage } from "../components/admin-speech-package";
+import { speechTargetLocale } from "../lib/speech-authoring";
 import type { Route } from "./+types/admin-speech-alignments";
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -231,6 +232,13 @@ export default function Alignments({ loaderData }: Route.ComponentProps) {
             key={`${alignment.id}:${index}:${alignment.clips[index].accepted}`}
             alignment={alignment}
             clip={alignment.clips[index]}
+            language={speechTargetLocale(
+              plan,
+              plan.targets.find(
+                (target) =>
+                  target.generationKey === alignment.clips[index].generationKey,
+              ),
+            )}
             onSaved={(result) => {
               setAlignment(result);
               void revalidator.revalidate();
@@ -293,11 +301,13 @@ export default function Alignments({ loaderData }: Route.ComponentProps) {
 function Timeline({
   alignment,
   clip,
+  language,
   onSaved,
   onLocked,
 }: {
   alignment: AdminAlignment;
   clip: AdminAlignmentClip;
+  language: string;
   onSaved: (value: AdminAlignment) => void;
   onLocked: (value: boolean) => void;
 }) {
@@ -432,7 +442,7 @@ function Timeline({
   }
   return (
     <article className="alignment-stage">
-      <p className="fr" lang="fr">
+      <p className="fr" lang={language}>
         {clip.text}
       </p>
       <button type="button" className="text-button" onClick={() => listen()}>
@@ -459,7 +469,7 @@ function Timeline({
           <div className="alignment-word" key={`${word.start}:${word.end}`}>
             <button
               className="fr text-button"
-              lang="fr"
+              lang={language}
               type="button"
               disabled={
                 word.startMs === null ||

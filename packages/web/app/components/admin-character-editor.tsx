@@ -4,6 +4,8 @@ import type { AdminCharacterVoice } from "@brioche/contracts/AdminCharacterVoice
 import type { AdminCharacterRequest } from "@brioche/contracts/AdminCharacterRequest";
 import type { AdminAssets } from "@brioche/contracts/AdminAssets";
 import { adminWrite } from "../lib/admin.client";
+import product from "@chef/product";
+import { speechAuthoring } from "../lib/speech-authoring";
 
 export function CharacterEditor({
   initial,
@@ -167,7 +169,7 @@ export function CharacterEditor({
               required
             />
           </label>
-          <p>新版本 {(initial?.character.revision ?? 0) + 1} · 法语</p>
+          <p>新版本 {(initial?.character.revision ?? 0) + 1} · {speechAuthoring(product.targetLanguage).label}</p>
           <div className="avatar-search">
             <label>
               搜索头像素材
