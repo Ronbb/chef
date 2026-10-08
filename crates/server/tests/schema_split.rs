@@ -606,6 +606,30 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         )
         .await
         .unwrap();
+    owner.execute_unprepared("CREATE TABLE extra_character_edge(character_id TEXT,revision INTEGER,FOREIGN KEY(character_id,revision) REFERENCES character_revisions(character_id,revision))").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let dependency_error = brioche_migration::layout::up(&owner, &source, &target)
+        .await
+        .unwrap_err();
+    assert!(
+        dependency_error
+            .to_string()
+            .contains("Unverified legacy visual dependency")
+    );
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='media_assets' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_visuals::snapshot(&owner).await, visual_snapshot);
+    owner.execute_unprepared("DROP TABLE extra_character_edge; ALTER TABLE character_revisions ADD CONSTRAINT chef_local_character_primary CHECK(true)").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='media_assets' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_visuals::snapshot(&owner).await, visual_snapshot);
+    owner
+        .execute_unprepared(
+            "ALTER TABLE character_revisions DROP CONSTRAINT chef_local_character_primary",
+        )
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -613,7 +637,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=19 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=20 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
@@ -630,6 +654,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     .await;
     assert_eq!(product_visuals::snapshot(&owner).await, visual_snapshot);
     product_visuals::verify(&owner).await;
+    product_visuals::verify_local_keys(&owner).await;
     assert_eq!(
         product_recordings::snapshot(&owner).await,
         recording_snapshot
@@ -3698,6 +3723,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let mut foreign_character = character.clone();
     foreign_character["characterId"] = "aaa-foreign-character-1".into();
     foreign_character["expectedRevision"] = 0.into();
+    foreign_character["avatarId"] = "aaa-foreign-visual-1".into();
     let (status, body) = request(
         &content_app,
         "POST",
@@ -3707,7 +3733,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         &mut csrf,
     )
     .await;
-    assert_eq!(status, 404, "{body}");
+    assert_eq!(status, 400, "{body}");
     let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM character_revisions)+(SELECT count(*) FROM character_voice_profiles)+(SELECT count(*) FROM asset_import_audit) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
     assert_eq!(
         before, after,
@@ -5947,6 +5973,107 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(row.try_get::<i64>("", "releases").unwrap(), 1);
     assert_eq!(row.try_get::<i64>("", "entries").unwrap(), 1);
     assert_eq!(row.try_get::<i64>("", "audits").unwrap(), 2);
+    // Registry IDs are local too: B imports its own bytes and character over H-only names.
+    owner.execute_unprepared("INSERT INTO media_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size) SELECT 'hargow','local-product-upload',1,jsonb_set(descriptor,'{assetId}','\"local-product-upload\"'),provenance,sha256,extension,byte_size FROM media_assets WHERE product_id='brioche' AND asset_id='art-bakery-morning' AND revision=1").await.unwrap();
+    let foreign_visual_hash=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(m)::text) AS hash FROM media_assets m WHERE product_id='hargow' AND asset_id='local-product-upload' AND revision=1")).await.unwrap().unwrap().try_get::<String>("", "hash").unwrap();
+    owner.execute_unprepared("ALTER TABLE media_assets DROP CONSTRAINT chef_local_visual_primary; ALTER TABLE media_assets ADD CONSTRAINT legacy_visual_primary_fixture PRIMARY KEY(asset_id,revision)").await.unwrap();
+    assert_eq!(
+        content_app
+            .clone()
+            .oneshot(asset_upload("local-product-upload", &cookie, &csrf))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        409
+    );
+    owner.execute_unprepared("ALTER TABLE media_assets DROP CONSTRAINT legacy_visual_primary_fixture; ALTER TABLE media_assets ADD CONSTRAINT chef_local_visual_primary PRIMARY KEY(product_id,asset_id,revision)").await.unwrap();
+    assert_eq!(
+        content_app
+            .clone()
+            .oneshot(asset_upload("local-product-upload", &cookie, &csrf))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200
+    );
+    assert_eq!(
+        content_app
+            .clone()
+            .oneshot(asset_upload("local-product-upload", &cookie, &csrf))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        409
+    );
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(m)::text) AS hash,(SELECT count(*) FROM media_assets WHERE product_id='brioche' AND asset_id='local-product-upload' AND revision=1)::bigint AS own FROM media_assets m WHERE product_id='hargow' AND asset_id='local-product-upload' AND revision=1")).await.unwrap().unwrap();
+    assert_eq!(
+        row.try_get::<String>("", "hash").unwrap(),
+        foreign_visual_hash
+    );
+    assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
+    let file = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/operator/assets/local-product-upload/1/file")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(file.status().as_u16(), 200);
+    assert!(
+        file.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("no-store")
+    );
+    assert!(
+        String::from_utf8(
+            file.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec()
+        )
+        .unwrap()
+        .contains("fill=\"red\"")
+    );
+    let h_character_hash=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(c)::text) AS hash FROM character_revisions c WHERE product_id='hargow' AND character_id='aaa-foreign-character-1' AND revision=1")).await.unwrap().unwrap().try_get::<String>("", "hash").unwrap();
+    let mut own_character = character.clone();
+    own_character["characterId"] = "aaa-foreign-character-1".into();
+    own_character["expectedRevision"] = 0.into();
+    let (status, created) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/characters/revisions",
+        Some(own_character.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/characters/revisions",
+            Some(own_character),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT md5(to_jsonb(c)::text) AS hash,(SELECT count(*) FROM character_revisions WHERE product_id='brioche' AND character_id='aaa-foreign-character-1')::bigint AS own FROM character_revisions c WHERE product_id='hargow' AND character_id='aaa-foreign-character-1' AND revision=1")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_character_hash);
+    assert_eq!(row.try_get::<i64>("", "own").unwrap(), 1);
     task.abort();
     let _ = task.await;
     assert_eq!(

@@ -654,8 +654,9 @@ async fn import_bundle_impl(
     .await
     .map_err(anyhow::Error::msg)?
     .context("content state missing")?;
+    let local_ids = product.is_some() && local_visual_keys(&tx).await?;
     if let Some((id, expected)) = operator.and_then(|o| o.expected_character) {
-        if let Some(product) = product {
+        if let Some(product) = product.filter(|_| !local_ids) {
             let foreign = one(&tx,"SELECT 1 AS collision FROM character_revisions WHERE character_id=$1 AND product_id<>$2 LIMIT 1",vec![id.into(),product.as_str().into()]).await?;
             if foreign.is_some() {
                 return Err(AppError::NotFound.into());
@@ -671,7 +672,14 @@ async fn import_bundle_impl(
     for (index, spec) in bundle.assets.iter().enumerate() {
         let existing = one(
             &tx,
-            "SELECT revision FROM media_assets WHERE asset_id=$1 AND revision=$2",
+            &format!(
+                "SELECT revision FROM media_assets WHERE asset_id=$1 AND revision=$2{}",
+                if local_ids {
+                    crate::learning::product_filter(product, "product_id")
+                } else {
+                    String::new()
+                }
+            ),
             vec![spec.asset_id.clone().into(), (spec.revision as i32).into()],
         )
         .await
@@ -685,7 +693,14 @@ async fn import_bundle_impl(
     for (index, character) in bundle.characters.iter().enumerate() {
         let existing = one(
             &tx,
-            "SELECT revision FROM character_revisions WHERE character_id=$1 AND revision=$2",
+            &format!(
+                "SELECT revision FROM character_revisions WHERE character_id=$1 AND revision=$2{}",
+                if local_ids {
+                    crate::learning::product_filter(product, "product_id")
+                } else {
+                    String::new()
+                }
+            ),
             vec![
                 character.snapshot.character_id.clone().into(),
                 (character.snapshot.revision as i32).into(),
@@ -1133,6 +1148,16 @@ pub(crate) async fn asset_response(
         .body(axum::body::Body::from(bytes))
         .map_err(|_| AppError::Unavailable)
 }
+// Scope duplicate/CAS checks only when both registry identities are actually product-local.
+async fn local_visual_keys(db: &impl ConnectionTrait) -> Result<bool, AppError> {
+    let row=one(db,r#"SELECT count(*)=2 AS ready FROM pg_catalog.pg_constraint c
+        WHERE c.contype='p' AND (
+            (c.conrelid='media_assets'::regclass AND (SELECT array_agg(a.attname::text ORDER BY k.position) FROM unnest(c.conkey) WITH ORDINALITY k(column_number,position) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.column_number)=ARRAY['product_id','asset_id','revision']::text[])
+            OR (c.conrelid='character_revisions'::regclass AND (SELECT array_agg(a.attname::text ORDER BY k.position) FROM unnest(c.conkey) WITH ORDINALITY k(column_number,position) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.column_number)=ARRAY['product_id','character_id','revision']::text[])
+        )"#,vec![]).await?.ok_or(AppError::Unavailable)?;
+    field(&row, "ready")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
