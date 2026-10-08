@@ -524,12 +524,16 @@ struct OperatorImport<'a> {
 }
 pub(crate) async fn import_operator_character(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     character: CharacterSpec,
     root: &Path,
     operator: &crate::product_memberships::Operator,
     expected_revision: u32,
     reason: &str,
 ) -> Result<()> {
+    if product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden.into());
+    }
     crate::admin::reason(reason)?;
     let id = character.snapshot.character_id.clone();
     let bundle = AssetBundle {
@@ -539,7 +543,7 @@ pub(crate) async fn import_operator_character(
     };
     import_bundle_impl(
         db,
-        None,
+        product,
         bundle,
         root,
         root,
@@ -651,6 +655,12 @@ async fn import_bundle_impl(
     .map_err(anyhow::Error::msg)?
     .context("content state missing")?;
     if let Some((id, expected)) = operator.and_then(|o| o.expected_character) {
+        if let Some(product) = product {
+            let foreign = one(&tx,"SELECT 1 AS collision FROM character_revisions WHERE character_id=$1 AND product_id<>$2 LIMIT 1",vec![id.into(),product.as_str().into()]).await?;
+            if foreign.is_some() {
+                return Err(AppError::NotFound.into());
+            }
+        }
         let row=one(&tx,&format!("SELECT COALESCE(max(revision),0) AS revision FROM character_revisions WHERE character_id=$1{}",crate::learning::product_filter(product,"product_id")),vec![id.into()]).await?.ok_or(AppError::Unavailable)?;
         if field::<i32>(&row, "revision")? as u32 != expected {
             return Err(AppError::Conflict.into());

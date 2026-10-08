@@ -3124,9 +3124,9 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .header("content-type", "application/json")
         .body(Body::from(serde_json::json!({"document":imported_source.to_string(),"reason":"Must not retain revoked authorization"}).to_string())).unwrap();
     // Test each write separately: concurrent parsing is intentionally capped at two.
-    let mut revoked_character = character;
+    let mut revoked_character = character.clone();
     revoked_character["characterId"] = "split-revoked-character".into();
-    let mut revoked_voice = voice;
+    let mut revoked_voice = voice.clone();
     revoked_voice["expectedVoiceRevision"] = 3.into();
     let mut revoked_audition = audition_request;
     revoked_audition["id"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
@@ -3470,6 +3470,82 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .0,
         400
     );
+    let (status, characters_before) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/characters",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{characters_before}");
+    owner.execute_unprepared("INSERT INTO character_revisions(product_id,character_id,revision,snapshot,avatar_id,avatar_revision) SELECT 'hargow','aaa-foreign-character-'||i,1,'{}','aaa-foreign-visual-1',1 FROM generate_series(1,25) i").await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO character_voice_profiles(product_id,character_id,character_revision,revision,profile,actor_id,reason) SELECT 'hargow',character_id,1,1,'{}',$1,'Poisoned foreign fixture' FROM character_revisions WHERE product_id='hargow' AND character_id LIKE 'aaa-foreign-character-%'",[account.into()])).await.unwrap();
+    let (status, characters_after) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/characters",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{characters_after}");
+    assert_eq!(
+        characters_before, characters_after,
+        "foreign records cannot consume pagination or enter profile parsing"
+    );
+    for path in [
+        "/api/v1/operator/characters/aaa-foreign-character-1/1",
+        "/api/v1/operator/characters/aaa-foreign-character-1/1/avatar",
+        "/api/v1/operator/characters/aaa-foreign-character-1/1/voices/1",
+    ] {
+        let (status, body) = request(&content_app, "GET", path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 404, "{path}: {body}");
+    }
+    for path in [
+        "/api/v1/operator/characters?product=hargow",
+        "/api/v1/operator/characters/split-character/2?product=hargow",
+        "/api/v1/operator/characters/split-character/2/avatar?product=hargow",
+        "/api/v1/operator/characters/split-character/2/voices/3?product=hargow",
+    ] {
+        let (status, body) = request(&content_app, "GET", path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 400, "{path}: {body}");
+    }
+    let before=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM character_revisions)+(SELECT count(*) FROM character_voice_profiles)+(SELECT count(*) FROM asset_import_audit) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    let mut foreign_voice = voice.clone();
+    foreign_voice["characterId"] = "aaa-foreign-character-1".into();
+    foreign_voice["characterRevision"] = 1.into();
+    foreign_voice["expectedVoiceRevision"] = 1.into();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/characters",
+        Some(foreign_voice),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let mut foreign_character = character.clone();
+    foreign_character["characterId"] = "aaa-foreign-character-1".into();
+    foreign_character["expectedRevision"] = 0.into();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/characters/revisions",
+        Some(foreign_character),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM character_revisions)+(SELECT count(*) FROM character_voice_profiles)+(SELECT count(*) FROM asset_import_audit) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    assert_eq!(
+        before, after,
+        "cross-product character/voice writes and import audit remain unchanged"
+    );
     owner.execute_unprepared("INSERT INTO media_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size) SELECT 'hargow','foreign-course-illustration',1,jsonb_set(descriptor,'{assetId}','\"foreign-course-illustration\"'),provenance,sha256,extension,byte_size FROM media_assets WHERE asset_id='art-bakery-morning' AND revision=1").await.unwrap();
     let mut foreign_visual_source: serde_json::Value = serde_json::from_str(
         &imported_source
@@ -3655,6 +3731,24 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         serde_json::json!({})
     );
     owner.execute_unprepared("INSERT INTO audio_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels) SELECT 'hargow','foreign-course-recording',1,jsonb_set(descriptor,'{assetId}','\"foreign-course-recording\"'),jsonb_set(provenance,'{assetId}','\"foreign-course-recording\"'),sha256,extension,byte_size,duration_ms,sample_rate,channels FROM audio_assets WHERE asset_id='layout-recording-fixture' AND revision=1").await.unwrap();
+    let mut foreign_reference = voice.clone();
+    foreign_reference["expectedVoiceRevision"] = 3.into();
+    foreign_reference["profile"]["referenceAudio"] = serde_json::json!({"assetId":"foreign-course-recording","revision":1,"transcript":"Bonjour.","cloningPermission":"Synthetic fixture only"});
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/characters",
+        Some(foreign_reference),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let count=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*)::bigint AS n FROM character_voice_profiles WHERE character_id='split-character' AND character_revision=2 AND revision=4")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    assert_eq!(
+        count, 0,
+        "foreign recording cannot append a voice direction"
+    );
     let mut foreign_audio_source = imported_source.clone();
     foreign_audio_source["id"] = "brioche-foreign-audio-source".into();
     foreign_audio_source["audioRefs"] =
