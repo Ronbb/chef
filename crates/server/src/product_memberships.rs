@@ -326,8 +326,15 @@ mod tests {
         };
         let root = std::path::Path::new(".");
         assert!(matches!(
-            crate::content::stage_operator(&db, &manifest, &stale_operator, "stale request", root)
-                .await,
+            crate::content::stage_operator(
+                &db,
+                None,
+                &manifest,
+                &stale_operator,
+                "stale request",
+                root
+            )
+            .await,
             Err(AppError::Forbidden)
         ));
         assert!(matches!(

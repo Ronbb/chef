@@ -191,14 +191,25 @@ impl ContentActor<'_> {
 }
 pub(crate) async fn stage_operator(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     manifest: &ReleaseManifest,
     operator: &crate::product_memberships::Operator,
     reason: &str,
     root: &std::path::Path,
 ) -> Result<(), AppError> {
-    stage_impl(db, manifest, ContentActor::Operator(operator), reason, root)
-        .await
-        .map_err(|error| error.runtime)
+    if product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
+    stage_impl(
+        db,
+        product,
+        manifest,
+        ContentActor::Operator(operator),
+        reason,
+        root,
+    )
+    .await
+    .map_err(|error| error.runtime)
 }
 pub(crate) async fn activate_operator(
     db: &DatabaseConnection,
@@ -255,9 +266,16 @@ pub async fn stage(
     reason: &str,
     media_root: &std::path::Path,
 ) -> Result<(), AppError> {
-    stage_impl(db, manifest, ContentActor::Local(actor), reason, media_root)
-        .await
-        .map_err(|error| error.runtime)
+    stage_impl(
+        db,
+        None,
+        manifest,
+        ContentActor::Local(actor),
+        reason,
+        media_root,
+    )
+    .await
+    .map_err(|error| error.runtime)
 }
 
 /// Local CLI diagnostics use the same transaction and publication gates as stage.
@@ -268,13 +286,20 @@ pub async fn stage_author(
     reason: &str,
     media_root: &std::path::Path,
 ) -> anyhow::Result<()> {
-    stage_impl(db, manifest, ContentActor::Local(actor), reason, media_root)
-        .await
-        .map_err(|error| {
-            anyhow::anyhow!(error.diagnostic.unwrap_or_else(|| {
-                "/: staging database operation failed; verify release status before retrying".into()
-            }))
-        })
+    stage_impl(
+        db,
+        None,
+        manifest,
+        ContentActor::Local(actor),
+        reason,
+        media_root,
+    )
+    .await
+    .map_err(|error| {
+        anyhow::anyhow!(error.diagnostic.unwrap_or_else(|| {
+            "/: staging database operation failed; verify release status before retrying".into()
+        }))
+    })
 }
 
 struct ReleaseFailure {
@@ -302,14 +327,19 @@ impl ReleaseFailure {
 }
 // The same publication gates run in both staging and the read-only upload check.
 // PostgreSQL read-only transactions cannot acquire row locks; staging retains
-// its singleton lock and revision FOR SHARE locks until the atomic commit.
+// its selected publication-state lock and revision FOR SHARE locks until the atomic commit.
 async fn checked_entries<'a>(
     db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
     manifest: &'a ReleaseManifest,
     media_root: &std::path::Path,
     lock_revisions: bool,
 ) -> Result<(Vec<&'a RevisionRef>, Vec<String>), ReleaseFailure> {
-    let mut revision_query = "SELECT public_document,server_document,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision)) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2".to_owned();
+    let mut revision_query = format!(
+        "SELECT public_document,server_document,EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(r.lesson_id,r.revision){}) AS withdrawn FROM lesson_revisions r WHERE lesson_id=$1 AND revision=$2{}",
+        product_filter(product, "w.product_id"),
+        product_filter(product, "r.product_id")
+    );
     if lock_revisions {
         revision_query.push_str(" FOR SHARE");
     }
@@ -405,12 +435,13 @@ async fn checked_entries<'a>(
 
 pub(crate) async fn check_registered_release(
     db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
     document: &crate::author_json::Document,
     media_root: &std::path::Path,
 ) -> Result<brioche_course_contract::AdminDocumentCheck, AppError> {
     let manifest: ReleaseManifest =
         serde_json::from_value(document.value.clone()).map_err(|_| AppError::InvalidInput)?;
-    match checked_entries(db, &manifest, media_root, false).await {
+    match checked_entries(db, product, &manifest, media_root, false).await {
         Ok(_) => Ok(brioche_course_contract::AdminDocumentCheck {
             valid: true,
             issue: None,
@@ -432,6 +463,7 @@ pub(crate) async fn check_registered_release(
 
 async fn stage_impl(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     manifest: &ReleaseManifest,
     caller: ContentActor<'_>,
     reason: &str,
@@ -453,31 +485,62 @@ async fn stage_impl(
     }
     let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
     caller.lock(&tx).await?;
-    // All content mutations lock the singleton before revision rows: no activation/withdrawal deadlock.
+    // Content mutations lock the selected publication state before revision rows to avoid activation/withdrawal deadlocks.
+    let state_selector = product.map_or_else(
+        || "singleton".to_owned(),
+        |p| format!("product_id='{}'", p.as_str()),
+    );
     let state = one(
         &tx,
-        "SELECT generation FROM content_state WHERE singleton FOR UPDATE",
+        &format!("SELECT generation FROM content_state WHERE {state_selector} FOR UPDATE"),
         vec![],
     )
     .await?
     .ok_or(AppError::Unavailable)?;
-    let (entries, source_hashes) = checked_entries(&tx, manifest, media_root, true).await?;
-    exec(
-        &tx,
-        "INSERT INTO content_releases(id,manifest,content_hash) VALUES($1,$2,$3)",
-        vec![
-            manifest.id.clone().into(),
-            serde_json::to_value(manifest)
-                .map_err(|_| AppError::Unavailable)?
-                .into(),
-            hash(&serde_json::json!({"manifest":manifest,"sources":source_hashes}))?.into(),
-        ],
-    )
-    .await?;
+    let (entries, source_hashes) =
+        checked_entries(&tx, product, manifest, media_root, true).await?;
+    let mut values = vec![
+        manifest.id.clone().into(),
+        serde_json::to_value(manifest)
+            .map_err(|_| AppError::Unavailable)?
+            .into(),
+        hash(&serde_json::json!({"manifest":manifest,"sources":source_hashes}))?.into(),
+    ];
+    let sql = if let Some(product) = product {
+        values.push(product.as_str().into());
+        "INSERT INTO content_releases(id,manifest,content_hash,product_id) VALUES($1,$2,$3,$4)"
+    } else {
+        "INSERT INTO content_releases(id,manifest,content_hash) VALUES($1,$2,$3)"
+    };
+    exec(&tx, sql, values).await?;
     for (position, entry) in entries.into_iter().enumerate() {
-        exec(&tx,"INSERT INTO release_entries(release_id,lesson_id,revision,position) VALUES($1,$2,$3,$4)",vec![manifest.id.clone().into(),entry.lesson_id.clone().into(),(entry.revision as i32).into(),(position as i32).into()]).await?;
+        let mut values = vec![
+            manifest.id.clone().into(),
+            entry.lesson_id.clone().into(),
+            (entry.revision as i32).into(),
+            (position as i32).into(),
+        ];
+        let sql = if let Some(product) = product {
+            values.push(product.as_str().into());
+            "INSERT INTO release_entries(release_id,lesson_id,revision,position,product_id) VALUES($1,$2,$3,$4,$5)"
+        } else {
+            "INSERT INTO release_entries(release_id,lesson_id,revision,position) VALUES($1,$2,$3,$4)"
+        };
+        exec(&tx, sql, values).await?;
     }
-    exec(&tx,"INSERT INTO content_audit(action,actor,reason,release_id,generation) VALUES('stage',$1,$2,$3,$4)",vec![actor.into(),reason.into(),manifest.id.clone().into(),field::<i64>(&state,"generation")?.into()]).await?;
+    let mut values = vec![
+        actor.into(),
+        reason.into(),
+        manifest.id.clone().into(),
+        field::<i64>(&state, "generation")?.into(),
+    ];
+    let sql = if let Some(product) = product {
+        values.push(product.as_str().into());
+        "INSERT INTO content_audit(action,actor,reason,release_id,generation,product_id) VALUES('stage',$1,$2,$3,$4,$5)"
+    } else {
+        "INSERT INTO content_audit(action,actor,reason,release_id,generation) VALUES('stage',$1,$2,$3,$4)"
+    };
+    exec(&tx, sql, values).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(())
 }

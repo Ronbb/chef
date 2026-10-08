@@ -3449,6 +3449,34 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .try_get::<String>("", "hash")
         .unwrap();
     assert_eq!(after_activate, before_withdraw);
+    let foreign_manifest = serde_json::json!({"id":"brioche-foreign-course-release","schemaVersion":"1.0","levels":[{"id":h_lesson.level_id,"label":"Synthetic","units":[{"id":h_lesson.unit_id,"titleZh":"合成单元","lessons":[{"lessonId":h_lesson.id,"revision":h_lesson.revision}]}]}]});
+    let foreign_document = serde_json::json!({"document":foreign_manifest.to_string(),"reason":"Foreign staging rejected"});
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/releases/stage",
+            Some(foreign_document.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        404
+    );
+    let (status, report) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/documents/release/check",
+        Some(foreign_document),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["valid"], false);
+    let count = owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM content_releases WHERE id='brioche-foreign-course-release')+(SELECT count(*) FROM release_entries WHERE release_id='brioche-foreign-course-release')+(SELECT count(*) FROM content_audit WHERE release_id='brioche-foreign-course-release') AS n")).await.unwrap().unwrap();
+    assert_eq!(count.try_get::<i64>("", "n").unwrap(), 0);
     assert_eq!(request(&content_app,"POST",&format!("/api/v1/operator/lessons/{}/revisions/{}/withdraw",h_lesson.id,h_lesson.revision),Some(serde_json::json!({"generation":admin_before["generation"],"reason":"Foreign withdrawal rejected"})),&mut cookie,&mut csrf).await.0,404);
     let after_withdraw = owner
         .query_one_raw(Statement::from_sql_and_values(

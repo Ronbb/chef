@@ -266,7 +266,7 @@ async fn check_document(
             .await
             .map_err(|_| AppError::Unavailable)?;
         let report = if release {
-            crate::content::check_registered_release(&tx, &document, &root).await?
+            crate::content::check_registered_release(&tx, backend.product, &document, &root).await?
         } else {
             crate::author_import::check_registered(&tx, &document, &root).await?
         };
@@ -330,8 +330,15 @@ async fn stage(
     .await
     .map_err(|_| AppError::Unavailable)?
     .map_err(|_| AppError::InvalidInput)?;
-    crate::content::stage_operator(&backend.db, &manifest, &operator, &request.reason, &root)
-        .await?;
+    crate::content::stage_operator(
+        &backend.db,
+        backend.product,
+        &manifest,
+        &operator,
+        &request.reason,
+        &root,
+    )
+    .await?;
     Ok(Json(manifest.id))
 }
 pub(crate) use crate::account_admin::reason;
