@@ -1638,7 +1638,7 @@ button.primary {
   border-color: var(--accent);
 }
 .switch-track {
-  background: #c9c0b1;
+  background: color-mix(in srgb, var(--muted) 75%, var(--surface));
 }
 .translation-switch[aria-checked="true"] .switch-track {
   background: var(--pistachio);
