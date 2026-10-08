@@ -122,10 +122,6 @@ async fn load(
     .await?
     .ok_or(AppError::NotFound)
 }
-// Legacy exporters still select the combined layout until their scoped migration.
-pub(crate) async fn plan(db: &impl ConnectionTrait, id: &str) -> Result<Value, AppError> {
-    plan_for_product(db, None, id).await
-}
 pub(crate) async fn plan_for_product(
     db: &impl ConnectionTrait,
     product: Option<crate::product::ProductId>,
@@ -136,12 +132,6 @@ pub(crate) async fn plan_for_product(
     }
     let row=one(db,&format!("SELECT p.plan FROM course_speech_plans p WHERE p.id=$1{} AND NOT EXISTS(SELECT 1 FROM content_withdrawals w WHERE (w.lesson_id,w.revision)=(p.lesson_id,p.lesson_revision){})",product_filter(product,"p.product_id"),if product.is_some(){" AND w.product_id=p.product_id"}else{""}),vec![id.into()]).await?.ok_or(AppError::NotFound)?;
     field(&row, "plan")
-}
-pub(crate) async fn latest(
-    db: &impl ConnectionTrait,
-    key: &str,
-) -> Result<Option<QueryResult>, AppError> {
-    latest_for_product(db, None, key).await
 }
 pub(crate) async fn latest_for_product(
     db: &impl ConnectionTrait,

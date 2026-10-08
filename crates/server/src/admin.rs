@@ -79,7 +79,7 @@ pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
         .merge(crate::admin_speech_plans::router(db.clone(), product))
         .merge(crate::speech_clips::router(db.clone(), product))
         .merge(crate::speech_export::router(db.clone(), product))
-        .merge(crate::speech_alignments::router(db.clone()))
+        .merge(crate::speech_alignments::router(db.clone(), product))
         .merge(crate::speech_package::router(db.clone()))
         .merge(crate::speech_automatic::router(db.clone()))
         .merge(crate::lesson_audio_reviews::router(db.clone(), product))

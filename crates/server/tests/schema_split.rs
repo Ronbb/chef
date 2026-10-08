@@ -3214,7 +3214,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     let mut revoked_clip = clip_request.clone();
     revoked_clip["id"] = "99999999999999999999999999999999".into();
     revoked_clip["expectedPreviousId"] = "ffffffffffffffffffffffffffffffff".into();
-    let mut revoked_alignment = alignment_request;
+    let mut revoked_alignment = alignment_request.clone();
     revoked_alignment["id"] = "77777777777777777777777777777777".into();
     let mut revoked_package = package_import;
     revoked_package["id"] = "55555555555555555555555555555555".into();
@@ -3995,7 +3995,32 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     .await;
     assert_eq!(status, 200, "{auditions_before}");
     let history_before = history_pages(&content_app, &mut cookie, &mut csrf).await;
+    let own_alignment_list = format!("{plan_route}/{plan_id}/alignments");
+    let (status, alignments_before) = request(
+        &content_app,
+        "GET",
+        &own_alignment_list,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{alignments_before}");
     product_speech_work::seed_foreign(&owner, account).await;
+    let (status, alignments_after) = request(
+        &content_app,
+        "GET",
+        &own_alignment_list,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{alignments_after}");
+    assert_eq!(
+        alignments_before, alignments_after,
+        "foreign reports and decisions do not change own list"
+    );
     let foreign_plan_path = format!("{plan_route}/{}", "4".repeat(32));
     let foreign_options =
         "/api/v1/operator/lessons/layout-h-speech-lesson/revisions/1/speech-options";
@@ -4392,6 +4417,113 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             assert_eq!(exported["humanListeningAsserted"], false);
         }
     }
+
+    let foreign_alignment_path = format!("{alignment_route}/{}", "4".repeat(32));
+    let own_alignment_path = format!("{alignment_route}/{alignment_id}");
+    let foreign_alignment_list = format!("{plan_route}/{}/alignments", "4".repeat(32));
+    for path in [
+        foreign_alignment_path.clone(),
+        foreign_alignment_list.clone(),
+    ] {
+        let (status, body) =
+            request(&content_app, "GET", &path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 404, "{path}: {body}");
+    }
+    for path in [
+        format!("{own_alignment_path}?product=hargow"),
+        format!("{plan_route}/{plan_id}/alignments?product=hargow"),
+    ] {
+        let (status, body) =
+            request(&content_app, "GET", &path, None, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 400, "{body}");
+    }
+    let alignment_calls_before = [
+        enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+        enrollment
+            .syntheses
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ];
+    let before=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_alignments)+(SELECT count(*) FROM speech_alignment_reviews) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    let original_alignment_report: serde_json::Value =
+        serde_json::from_str(alignment_request["reportJson"].as_str().unwrap()).unwrap();
+    let mut foreign_report = original_alignment_report.clone();
+    foreign_report["planId"] = "4".repeat(32).into();
+    let mut foreign_alignment_request = alignment_request.clone();
+    foreign_alignment_request["id"] = format!("{:032x}", 601).into();
+    foreign_alignment_request["planId"] = "4".repeat(32).into();
+    foreign_alignment_request["reportJson"] = foreign_report.to_string().into();
+    let mut foreign_alignment_retry = alignment_request.clone();
+    foreign_alignment_retry["id"] = "4".repeat(32).into();
+    for body in [foreign_alignment_request, foreign_alignment_retry] {
+        let (status, result) = request(
+            &content_app,
+            "POST",
+            alignment_route,
+            Some(body),
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, 404, "{result}");
+    }
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        &format!("{foreign_alignment_path}/clips/{}/review", "4".repeat(32)),
+        Some(alignment_review.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let mut foreign_clip_report = original_alignment_report.clone();
+    let reported_clip = foreign_clip_report["clips"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|c| c["generationKey"] == clip_request["generationKey"])
+        .unwrap();
+    reported_clip["clipId"] = foreign_clip_id.clone().into();
+    let mut foreign_clip_import = alignment_request.clone();
+    foreign_clip_import["id"] = format!("{:032x}", 602).into();
+    foreign_clip_import["reportJson"] = foreign_clip_report.to_string().into();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        alignment_route,
+        Some(foreign_clip_import),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "foreign shared-key clip cannot enter own report: {body}"
+    );
+    let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_alignments)+(SELECT count(*) FROM speech_alignment_reviews) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    assert_eq!(
+        before, after,
+        "foreign alignment import/retry/review writes nothing"
+    );
+    assert_eq!(
+        alignment_calls_before,
+        [
+            enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment
+                .syntheses
+                .load(std::sync::atomic::Ordering::SeqCst)
+        ],
+        "alignment requests do not contact providers"
+    );
+    // Native successful imports and decisions explicitly retain Brioche ownership.
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_alignments WHERE id=repeat('8',32) AND product_id='brioche') AS reports,(SELECT count(*) FROM speech_alignment_reviews WHERE alignment_id=repeat('8',32) AND product_id='brioche') AS reviews")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "reports").unwrap(), 1);
+    assert_eq!(
+        row.try_get::<i64>("", "reviews").unwrap(),
+        keys.len() as i64
+    );
 
     let foreign_audition = format!("{:032x}", 201);
     let foreign_path = format!("{audition_route}/{foreign_audition}");

@@ -36,10 +36,12 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
         )
         .with_state(Store { db, product })
 }
-// Legacy snapshot adapters remain for alignment/package kernels pending product migration.
-// Product HTTP export passes its trusted scope directly to snapshot_policy.
-pub(crate) async fn snapshot(db: &impl ConnectionTrait, id: &str) -> Result<Value, AppError> {
-    snapshot_policy(db, None, id, true).await
+pub(crate) async fn snapshot_for_product(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    id: &str,
+) -> Result<Value, AppError> {
+    snapshot_policy(db, product, id, true).await
 }
 pub(crate) async fn snapshot_direct(
     db: &impl ConnectionTrait,

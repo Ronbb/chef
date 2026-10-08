@@ -3,7 +3,7 @@ use crate::{
     AppError,
     admin_auth::AdminAuth,
     identity::Backend,
-    learning::{exec, field, one},
+    learning::{exec, field, one, product_filter},
     speech_clips,
     voice_references::hex,
 };
@@ -25,10 +25,12 @@ use unicode_segmentation::UnicodeSegmentation;
 const MAX_REPORT: usize = 4 * 1024 * 1024;
 #[derive(Clone)]
 struct Store {
+    product: Option<crate::product::ProductId>,
     db: sea_orm::DatabaseConnection,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route(
@@ -41,7 +43,7 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
             "/api/v1/operator/speech-alignments/{id}/clips/{clip}/review",
             post(review),
         )
-        .with_state(Store { db })
+        .with_state(Store { db, product })
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -207,9 +209,10 @@ fn request_text<'a>(plan: &'a Value, key: &str) -> Result<&'a str, AppError> {
 }
 async fn sources(
     db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
     report: &Report,
 ) -> Result<(Value, Vec<Value>), AppError> {
-    let plan = speech_clips::plan(db, &report.plan_id).await?;
+    let plan = speech_clips::plan_for_product(db, product, &report.plan_id).await?;
     if plan["planHash"] != report.plan_hash {
         return Err(AppError::Conflict);
     }
@@ -224,7 +227,7 @@ async fn sources(
     }
     let mut results = Vec::new();
     for clip in &report.clips {
-        let row = speech_clips::latest(db, &clip.generation_key)
+        let row = speech_clips::latest_for_product(db, product, &clip.generation_key)
             .await?
             .ok_or(AppError::Conflict)?;
         let latest = speech_clips::item(&row)?;
@@ -287,31 +290,51 @@ async fn media(root: PathBuf, results: Vec<Value>) -> Result<(), AppError> {
     .map_err(|_| AppError::Unavailable)?
 }
 const SELECT: &str = "SELECT a.id,a.plan_id,a.report,a.report_hash,to_char(a.created_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at FROM speech_alignments a";
-async fn load(db: &impl ConnectionTrait, id: &str) -> Result<QueryResult, AppError> {
+async fn load(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    id: &str,
+) -> Result<QueryResult, AppError> {
     if !hex(id, 32) {
         return Err(AppError::InvalidInput);
     }
-    one(db, &format!("{SELECT} WHERE a.id=$1"), vec![id.into()])
-        .await?
-        .ok_or(AppError::NotFound)
+    one(
+        db,
+        &format!(
+            "{SELECT} WHERE a.id=$1{}",
+            product_filter(product, "a.product_id")
+        ),
+        vec![id.into()],
+    )
+    .await?
+    .ok_or(AppError::NotFound)
 }
 pub(crate) async fn package_snapshot(
     db: &impl ConnectionTrait,
     id: &str,
     expected_hash: &str,
 ) -> Result<Value, AppError> {
-    let row = load(db, id).await?;
+    package_snapshot_for_product(db, None, id, expected_hash).await
+}
+// Legacy package kernel remains unscoped until its own trusted context migrates.
+async fn package_snapshot_for_product(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    id: &str,
+    expected_hash: &str,
+) -> Result<Value, AppError> {
+    let row = load(db, product, id).await?;
     if field::<String>(&row, "report_hash")? != expected_hash {
         return Err(AppError::Conflict);
     }
     let report: Report =
         serde_json::from_value(field(&row, "report")?).map_err(|_| AppError::Unavailable)?;
-    let (plan, results) = sources(db, &report).await?;
-    let speech = crate::speech_export::snapshot(db, &report.plan_id).await?;
+    let (plan, results) = sources(db, product, &report).await?;
+    let speech = crate::speech_export::snapshot_for_product(db, product, &report.plan_id).await?;
     let mut clips = Vec::new();
     for (clip, result) in report.clips.iter().zip(results) {
         let review = one(db,
-            "SELECT accepted,words,actor_id,reason,request FROM speech_alignment_reviews WHERE alignment_id=$1 AND clip_id=$2",
+            &format!("SELECT accepted,words,actor_id,reason,request FROM speech_alignment_reviews WHERE alignment_id=$1 AND clip_id=$2{}", product_filter(product, "product_id")),
             vec![id.into(), clip.clip_id.clone().into()]).await?.ok_or(AppError::Conflict)?;
         if !field::<bool>(&review, "accepted")? {
             return Err(AppError::Conflict);
@@ -340,11 +363,15 @@ pub(crate) async fn package_snapshot(
         "plan":plan,"clips":clips}),
     )
 }
-async fn view(db: &impl ConnectionTrait, row: &QueryResult) -> Result<AdminAlignment, AppError> {
+async fn view(
+    db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
+    row: &QueryResult,
+) -> Result<AdminAlignment, AppError> {
     let id: String = field(row, "id")?;
     let report: Report =
         serde_json::from_value(field(row, "report")?).map_err(|_| AppError::Unavailable)?;
-    let (plan, _) = sources(db, &report).await?;
+    let (plan, _) = sources(db, product, &report).await?;
     let mut clips = Vec::new();
     for c in report.clips {
         let text = request_text(&plan, &c.generation_key)?.to_owned();
@@ -358,7 +385,7 @@ async fn view(db: &impl ConnectionTrait, row: &QueryResult) -> Result<AdminAlign
         if words.iter().any(|w| w.start_ms.is_none()) {
             issues.push("missingWordTimes".into());
         }
-        let reviewed=one(db,"SELECT accepted,words FROM speech_alignment_reviews WHERE alignment_id=$1 AND clip_id=$2",vec![id.clone().into(),c.clip_id.clone().into()]).await?;
+        let reviewed=one(db,&format!("SELECT accepted,words FROM speech_alignment_reviews WHERE alignment_id=$1 AND clip_id=$2{}", product_filter(product,"product_id")),vec![id.clone().into(),c.clip_id.clone().into()]).await?;
         let accepted = if let Some(row) = reviewed {
             let accepted: bool = field(&row, "accepted")?;
             if accepted {
@@ -418,7 +445,10 @@ pub async fn import_local(
     )
     .await?;
     import_for_actor(
-        &Store { db: b.db.clone() },
+        &Store {
+            db: b.db.clone(),
+            product: None,
+        },
         &operator,
         root,
         Arc::new(tokio::sync::Semaphore::new(2)),
@@ -434,6 +464,9 @@ async fn import_for_actor(
     permits: Arc<tokio::sync::Semaphore>,
     request: AdminAlignmentImport,
 ) -> Result<AdminAlignment, AppError> {
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let actor = operator.actor;
     crate::admin::reason(&request.reason)?;
     if !hex(&request.id, 32) || !hex(&request.plan_id, 32) || !hex(&request.expected_plan_hash, 64)
@@ -454,13 +487,34 @@ async fn import_for_actor(
     operator.lock_content(&tx).await?;
     exec(
         &tx,
-        "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            b.product.map_or_else(
+                || "singleton".to_owned(),
+                |p| format!("product_id='{}'", p.as_str())
+            )
+        ),
         vec![],
     )
     .await?;
+    // Global IDs are temporary: only test foreign ownership, never read its payload.
+    if let Some(product) = b.product
+        && one(
+            &tx,
+            "SELECT 1 FROM speech_alignments WHERE id=$1 AND product_id<>$2",
+            vec![request.id.clone().into(), product.as_str().into()],
+        )
+        .await?
+        .is_some()
+    {
+        return Err(AppError::NotFound);
+    }
     if let Some(row) = one(
         &tx,
-        "SELECT actor_id,request FROM speech_alignments WHERE id=$1",
+        &format!(
+            "SELECT actor_id,request FROM speech_alignments WHERE id=$1{}",
+            product_filter(b.product, "product_id")
+        ),
         vec![request.id.clone().into()],
     )
     .await?
@@ -470,13 +524,14 @@ async fn import_for_actor(
         {
             return Err(AppError::Conflict);
         }
-        return view(&tx, &load(&tx, &request.id).await?).await;
+        return view(&tx, b.product, &load(&tx, b.product, &request.id).await?).await;
     }
     let _permit = permits
         .try_acquire_owned()
         .map_err(|_| AppError::RateLimited)?;
-    sources(&tx, &report).await?;
-    let manifest = crate::speech_export::snapshot(&tx, &report.plan_id).await?;
+    sources(&tx, b.product, &report).await?;
+    let manifest =
+        crate::speech_export::snapshot_for_product(&tx, b.product, &report.plan_id).await?;
     let expected = report.source_archive_sha256.clone();
     tokio::task::spawn_blocking(move || {
         let bytes = crate::speech_export::pack(&root, manifest)?;
@@ -487,18 +542,39 @@ async fn import_for_actor(
     })
     .await
     .map_err(|_| AppError::Unavailable)??;
-    exec(&tx,"INSERT INTO speech_alignments(id,plan_id,request,report,report_hash,actor_id,reason)VALUES($1,$2,$3,$4,$5,$6,$7)",vec![request.id.clone().into(),request.plan_id.into(),request_json.into(),value.into(),report_hash.into(),actor.into(),request.reason.into()]).await?;
-    let view = view(&tx, &load(&tx, &request.id).await?).await?;
+    let mut values = vec![
+        request.id.clone().into(),
+        request.plan_id.into(),
+        request_json.into(),
+        value.into(),
+        report_hash.into(),
+        actor.into(),
+        request.reason.into(),
+    ];
+    let sql = if let Some(product) = b.product {
+        values.push(product.as_str().into());
+        "INSERT INTO speech_alignments(id,plan_id,request,report,report_hash,actor_id,reason,product_id)VALUES($1,$2,$3,$4,$5,$6,$7,$8)"
+    } else {
+        "INSERT INTO speech_alignments(id,plan_id,request,report,report_hash,actor_id,reason)VALUES($1,$2,$3,$4,$5,$6,$7)"
+    };
+    exec(&tx, sql, values).await?;
+    let view = view(&tx, b.product, &load(&tx, b.product, &request.id).await?).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(view)
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ItemQuery {}
 async fn read(
     auth: AdminAuth,
     State(b): State<Store>,
     Path(id): Path<String>,
+    Query(_query): Query<ItemQuery>,
 ) -> Result<Json<AdminAlignment>, AppError> {
     auth.require_operator().await?;
-    Ok(Json(view(&b.db, &load(&b.db, &id).await?).await?))
+    Ok(Json(
+        view(&b.db, b.product, &load(&b.db, b.product, &id).await?).await?,
+    ))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -512,13 +588,13 @@ async fn list(
     Query(query): Query<Cursor>,
 ) -> Result<Json<AdminAlignments>, AppError> {
     auth.require_operator().await?;
-    speech_clips::plan(&b.db, &id).await?;
+    speech_clips::plan_for_product(&b.db, b.product, &id).await?;
     let after = query.after.unwrap_or_default();
     if !after.is_empty() && !hex(&after, 32) {
         return Err(AppError::InvalidInput);
     }
     let rows=b.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-        "SELECT a.id,a.plan_id,a.report->>'planHash' AS plan_hash,a.report_hash,to_char(a.created_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at,jsonb_array_length(a.report->'clips')::integer AS clip_count,(SELECT count(*)::integer FROM speech_alignment_reviews r WHERE r.alignment_id=a.id AND r.accepted) AS accepted_count FROM speech_alignments a WHERE a.plan_id=$1 AND a.id>$2 ORDER BY a.id LIMIT 21",
+        format!("SELECT a.id,a.plan_id,a.report->>'planHash' AS plan_hash,a.report_hash,to_char(a.created_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at,jsonb_array_length(a.report->'clips')::integer AS clip_count,(SELECT count(*)::integer FROM speech_alignment_reviews r WHERE r.alignment_id=a.id AND r.accepted{}) AS accepted_count FROM speech_alignments a WHERE a.plan_id=$1 AND a.id>$2{} ORDER BY a.id LIMIT 21", if b.product.is_some() {" AND r.product_id=a.product_id"} else {""}, product_filter(b.product,"a.product_id")),
         vec![id.into(),after.into()])).await.map_err(|_|AppError::Unavailable)?;
     let mut items = Vec::new();
     for row in rows.iter().take(20) {
@@ -558,16 +634,25 @@ async fn review(
     {
         return Err(AppError::InvalidInput);
     }
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let actor = operator.actor;
     let tx = b.db.begin().await.map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
     exec(
         &tx,
-        "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            b.product.map_or_else(
+                || "singleton".to_owned(),
+                |p| format!("product_id='{}'", p.as_str())
+            )
+        ),
         vec![],
     )
     .await?;
-    let row = load(&tx, &id).await?;
+    let row = load(&tx, b.product, &id).await?;
     if field::<String>(&row, "report_hash")? != request.expected_report_hash {
         return Err(AppError::Conflict);
     }
@@ -578,7 +663,7 @@ async fn review(
         .iter()
         .find(|c| c.clip_id == clip_id)
         .ok_or(AppError::InvalidInput)?;
-    let (plan, results) = sources(&tx, &report).await?;
+    let (plan, results) = sources(&tx, b.product, &report).await?;
     let expected = source_words(request_text(&plan, &clip.generation_key)?);
     if request.accepted || !request.words.is_empty() {
         validate_words(
@@ -614,9 +699,9 @@ async fn review(
         }
     }
     let request_json = serde_json::to_value(&request).map_err(|_| AppError::InvalidInput)?;
-    if let Some(existing)=one(&tx,"SELECT actor_id,request FROM speech_alignment_reviews WHERE alignment_id=$1 AND clip_id=$2",vec![id.clone().into(),clip_id.clone().into()]).await? {
+    if let Some(existing)=one(&tx,&format!("SELECT actor_id,request FROM speech_alignment_reviews WHERE alignment_id=$1 AND clip_id=$2{}", product_filter(b.product,"product_id")),vec![id.clone().into(),clip_id.clone().into()]).await? {
         if field::<i64>(&existing,"actor_id")?!=actor || field::<Value>(&existing,"request")?!=request_json {return Err(AppError::Conflict);}
-        return Ok(Json(view(&tx,&row).await?));
+        return Ok(Json(view(&tx,b.product,&row).await?));
     }
     let _permit = permits
         .try_acquire_owned()
@@ -627,8 +712,25 @@ async fn review(
         .position(|c| c.clip_id == clip_id)
         .ok_or(AppError::InvalidInput)?;
     media(root, vec![results[index].clone()]).await?;
-    exec(&tx,"INSERT INTO speech_alignment_reviews(alignment_id,clip_id,accepted,words,request,actor_id,reason)VALUES($1,$2,$3,$4,$5,$6,$7)",vec![id.into(),clip_id.into(),request.accepted.into(),serde_json::to_value(request.words).map_err(|_|AppError::InvalidInput)?.into(),request_json.into(),actor.into(),request.reason.into()]).await?;
-    let result = view(&tx, &row).await?;
+    let mut values = vec![
+        id.into(),
+        clip_id.into(),
+        request.accepted.into(),
+        serde_json::to_value(request.words)
+            .map_err(|_| AppError::InvalidInput)?
+            .into(),
+        request_json.into(),
+        actor.into(),
+        request.reason.into(),
+    ];
+    let sql = if let Some(product) = b.product {
+        values.push(product.as_str().into());
+        "INSERT INTO speech_alignment_reviews(alignment_id,clip_id,accepted,words,request,actor_id,reason,product_id)VALUES($1,$2,$3,$4,$5,$6,$7,$8)"
+    } else {
+        "INSERT INTO speech_alignment_reviews(alignment_id,clip_id,accepted,words,request,actor_id,reason)VALUES($1,$2,$3,$4,$5,$6,$7)"
+    };
+    exec(&tx, sql, values).await?;
+    let result = view(&tx, b.product, &row).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
