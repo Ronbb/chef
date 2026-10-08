@@ -1,7 +1,12 @@
 import { Link } from "react-router";
 import type { StudyDashboard } from "@brioche/contracts/StudyDashboard";
+import type { NeutralStudyDashboard } from "@brioche/contracts/NeutralStudyDashboard";
 import { Icon } from "./icon";
-export function StudyOverview({ dashboard }: { dashboard: StudyDashboard }) {
+export function StudyOverview({
+  dashboard,
+}: {
+  dashboard: StudyDashboard | NeutralStudyDashboard;
+}) {
   const labels = ["一", "二", "三", "四", "五", "六", "日"];
   return (
     <div className="study-overview">

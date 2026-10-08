@@ -25,8 +25,8 @@ import type { ReadingLesson } from "../app/lib/reading-model";
 import Reviews from "../app/routes/reviews";
 import Library from "../app/routes/library";
 import PendingSaves from "../app/routes/pending-saves";
-import Home from "../app/routes/home";
-import Courses from "../app/routes/courses";
+import { HomeContent as Home } from "../app/routes/home";
+import { CoursesContent as Courses } from "../app/routes/courses";
 import History from "../app/routes/review-history";
 import { Account } from "../app/components/account";
 import AuthorPreview from "../app/routes/author-preview";
@@ -979,26 +979,7 @@ function HomeHarness() {
   return (
     <LearningProvider user={reviewUser}>
       <main>
-        <Home
-          loaderData={loaderData}
-          params={{}}
-          matches={[
-            {
-              id: "root",
-              params: {},
-              pathname: "/",
-              loaderData: { user: reviewUser, enabled: true },
-              handle: undefined,
-            },
-            {
-              id: "routes/home",
-              params: {},
-              pathname: "/",
-              loaderData,
-              handle: undefined,
-            },
-          ]}
-        />
+        <Home {...loaderData} />
       </main>
     </LearningProvider>
   );
@@ -1007,26 +988,7 @@ function CoursesHarness() {
   const loaderData = useLoaderData() as { catalog: Catalog; query: string };
   return (
     <main>
-      <Courses
-        loaderData={loaderData}
-        params={{}}
-        matches={[
-          {
-            id: "root",
-            params: {},
-            pathname: "/",
-            loaderData: { user: null, enabled: true },
-            handle: undefined,
-          },
-          {
-            id: "routes/courses",
-            params: {},
-            pathname: "/courses",
-            loaderData,
-            handle: undefined,
-          },
-        ]}
-      />
+      <Courses {...loaderData} />
     </main>
   );
 }

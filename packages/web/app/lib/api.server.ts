@@ -67,7 +67,10 @@ export const getLesson = (id: string, revision?: number) =>
       encodeURIComponent(id) +
       (revision ? "?revision=" + revision : ""),
   );
-export const getReadingCatalog = () => api<NeutralCatalog>("/api/v2/catalog");
+export const getReadingCatalog = (query?: string) =>
+  api<NeutralCatalog>(
+    "/api/v2/catalog" + (query ? "?q=" + encodeURIComponent(query) : ""),
+  );
 export const getReadingLesson = (id: string, revision?: number) =>
   api<NeutralLesson>(
     "/api/v2/lessons/" +

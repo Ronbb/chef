@@ -269,7 +269,11 @@ const server = createServer((request, response) => {
             id: "a1",
             label: "A1",
             units: [
-              { id: lesson.unitId, titleZh: "早餐与面包店", lessons: [lesson] },
+              {
+                id: (neutralPublicLesson ?? lesson).unitId,
+                titleZh: "日常场景",
+                lessons: [neutralPublicLesson ?? lesson],
+              },
             ],
           },
         ],
@@ -1144,6 +1148,22 @@ test("public lesson SSR reads v2 and renders native Cantonese words and pronunci
     assert.ok(requests.some((r) => r.path === `/api/v2/lessons/${source.id}`));
     assert.ok(requests.some((r) => r.path === "/api/v2/catalog"));
     assert.ok(!requests.some((r) => r.path.startsWith("/api/lessons/")));
+    requests.length = 0;
+    const home = await request("/");
+    assert.equal(home.status, 200);
+    const homeHtml = await home.text();
+    assert.ok(homeHtml.includes('lang="yue-Hant-HK"'));
+    assert.ok(homeHtml.includes("<rt>nei5 hou2</rt>"));
+    assert.ok(!homeHtml.includes("[object Object]"));
+    const courses = await request("/courses");
+    assert.equal(courses.status, 200);
+    assert.ok((await courses.text()).includes('lang="yue-Hant-HK"'));
+    assert.ok(
+      requests.some(
+        (r) => r.path === `/api/v2/lessons/${source.id}?revision=1`,
+      ),
+    );
+    assert.ok(!requests.some((r) => r.path === "/api/catalog"));
   } finally {
     neutralPublicLesson = null;
   }

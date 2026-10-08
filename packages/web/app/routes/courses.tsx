@@ -1,17 +1,30 @@
 import { Form, Link, useNavigation } from "react-router";
 import { useEffect, useRef } from "react";
-import { getCatalog } from "../lib/api.server";
+import { getReadingCatalog } from "../lib/api.server";
+import type { Catalog } from "@brioche/contracts/Catalog";
+import type { NeutralCatalog } from "@brioche/contracts/NeutralCatalog";
+import { titleText } from "../lib/reading-model";
+import product from "@chef/product";
 import type { Route } from "./+types/courses";
 
 export async function loader({ request }: Route.LoaderArgs) {
   const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
   if ([...query].length > 120)
     throw new Response("搜索内容请控制在 120 字以内。", { status: 400 });
-  return { catalog: await getCatalog(query), query };
+  return { catalog: await getReadingCatalog(query), query };
 }
 export default function Courses({
   loaderData: { catalog, query },
 }: Route.ComponentProps) {
+  return <CoursesContent catalog={catalog} query={query} />;
+}
+export function CoursesContent({
+  catalog,
+  query,
+}: {
+  catalog: Catalog | NeutralCatalog;
+  query: string;
+}) {
   const navigation = useNavigation();
   const field = useRef<HTMLInputElement>(null);
   const submitted = useRef<string | null>(null);
@@ -56,7 +69,11 @@ export default function Courses({
             type="search"
             maxLength={120}
             defaultValue={query}
-            placeholder="早餐、面包店、bonjour…"
+            placeholder={
+              product.targetLanguage === "fr-FR"
+                ? "早餐、面包店、bonjour…"
+                : "飲茶、點心、nei5 hou2…"
+            }
           />
           <button
             type="submit"
@@ -92,7 +109,15 @@ export default function Courses({
                   </span>
                   <span className="lesson-label">
                     <b>{lesson.title.zh}</b>
-                    <small lang="fr">{lesson.title.fr}</small>
+                    <small
+                      lang={
+                        "targetLanguage" in lesson
+                          ? lesson.targetLanguage
+                          : "fr-FR"
+                      }
+                    >
+                      {titleText(lesson.title)}
+                    </small>
                     <small>{lesson.summaryZh}</small>
                   </span>
                 </Link>
@@ -106,7 +131,7 @@ export default function Courses({
           <h2>{query ? "还没有找到这个场景" : "课程正在准备中"}</h2>
           <p>
             {query
-              ? "试试中文场景、法语表达或中文词义。"
+              ? "试试中文场景、课程表达或中文词义。"
               : "发布课程后，就可以开始学习。"}
           </p>
           {query && (

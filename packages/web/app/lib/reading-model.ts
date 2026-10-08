@@ -86,3 +86,7 @@ export function readingTokens(segment: ReadingSegment): ReadingToken[] {
     });
   return tokens;
 }
+
+export const titleText = (
+  title: { fr: string; zh: string } | { target: string; zh: string },
+) => ("target" in title ? title.target : title.fr);

@@ -1,14 +1,19 @@
 import { Link } from "react-router";
 import { useState, useRef, useEffect } from "react";
-import type { Vocabulary } from "@brioche/contracts/Vocabulary";
+import type { ReadingVocabulary, ReadingLesson } from "../lib/reading-model";
+import { lessonLanguage, titleText } from "../lib/reading-model";
+import { ReadingTextLabel } from "../components/reading-text";
+import type { Catalog } from "@brioche/contracts/Catalog";
+import type { NeutralCatalog } from "@brioche/contracts/NeutralCatalog";
+import type { NeutralStudyDashboard } from "@brioche/contracts/NeutralStudyDashboard";
 import {
-  getCatalog,
+  getReadingCatalog,
   getIdentity,
-  getLesson,
+  getReadingLesson,
   getPrivate,
 } from "../lib/api.server";
 import type { StudyDashboard } from "@brioche/contracts/StudyDashboard";
-import type { LearningSession } from "@brioche/contracts/LearningSession";
+import type { NeutralLearningSession } from "@brioche/contracts/NeutralLearningSession";
 import { StudyOverview } from "../components/study-overview";
 import { StartLearning } from "../components/start-learning";
 import { useLearning } from "../components/learning";
@@ -17,16 +22,16 @@ import type { Route } from "./+types/home";
 import product from "@chef/product";
 export async function loader({ request }: Route.LoaderArgs) {
   const [initialCatalog, identity] = await Promise.all([
-    getCatalog(),
+    getReadingCatalog(),
     getIdentity(request),
   ]);
   let catalog = initialCatalog;
-  let learning: StudyDashboard | null = null;
+  let learning: NeutralStudyDashboard | null = null;
   if (identity.user) {
     try {
-      learning = await getPrivate<StudyDashboard>(
+      learning = await getPrivate<NeutralStudyDashboard>(
         request,
-        "/api/v1/me/dashboard",
+        "/api/v2/me/dashboard",
       );
       catalog = learning.catalog;
     } catch (error) {
@@ -40,18 +45,18 @@ export async function loader({ request }: Route.LoaderArgs) {
     catalog,
     lesson: learning?.resume
       ? (
-          await getPrivate<LearningSession>(
+          await getPrivate<NeutralLearningSession>(
             request,
-            "/api/v1/learning-sessions/" + learning.resume.sessionId,
+            "/api/v2/learning-sessions/" + learning.resume.sessionId,
           )
         ).lesson
       : learning?.recommendedLesson
-        ? await getLesson(
+        ? await getReadingLesson(
             learning.recommendedLesson.id,
             learning.recommendedLesson.revision,
           )
         : first
-          ? await getLesson(first.id, first.revision)
+          ? await getReadingLesson(first.id, first.revision)
           : null,
     learning,
   };
@@ -59,6 +64,17 @@ export async function loader({ request }: Route.LoaderArgs) {
 export default function Home({
   loaderData: { catalog, lesson, learning },
 }: Route.ComponentProps) {
+  return <HomeContent catalog={catalog} lesson={lesson} learning={learning} />;
+}
+export function HomeContent({
+  catalog,
+  lesson,
+  learning,
+}: {
+  catalog: Catalog | NeutralCatalog;
+  lesson: ReadingLesson | null;
+  learning: StudyDashboard | NeutralStudyDashboard | null;
+}) {
   const context = useLearning();
   const resume = learning?.resume;
   const expression = lesson?.knowledge.vocabulary.find((entry) =>
@@ -97,9 +113,12 @@ export default function Home({
                   ?.label ?? lesson.levelId.toUpperCase()}{" "}
                 ·{" "}
                 {catalog.levels
-                  .flatMap((level) => level.units)
-                  .find((unit) => unit.id === lesson.unitId)?.titleZh ??
-                  product.defaultUnit}
+                  .map(
+                    (level) =>
+                      level.units.find((unit) => unit.id === lesson.unitId)
+                        ?.titleZh,
+                  )
+                  .find((title) => title !== undefined) ?? product.defaultUnit}
               </span>
               <h1>
                 {product.heroLines[0]}
@@ -174,7 +193,15 @@ export default function Home({
                           </span>
                           <span className="lesson-label">
                             <b>{entry.title.zh}</b>
-                            <small lang="fr">{entry.title.fr}</small>
+                            <small
+                              lang={
+                                "targetLanguage" in entry
+                                  ? entry.targetLanguage
+                                  : "fr-FR"
+                              }
+                            >
+                              {titleText(entry.title)}
+                            </small>
                           </span>
                           <span className="row-state">
                             {learning?.courseStates.find(
@@ -199,6 +226,7 @@ export default function Home({
                 <ExpressionCard
                   key={lesson.id + ":" + expression.id}
                   expression={expression}
+                  language={lessonLanguage(lesson)}
                   summary={lesson.summaryZh}
                 />
               )}
@@ -234,8 +262,10 @@ export default function Home({
 function ExpressionCard({
   expression,
   summary,
+  language,
 }: {
-  expression: Vocabulary;
+  expression: ReadingVocabulary;
+  language: string;
   summary: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -278,8 +308,8 @@ function ExpressionCard({
       }}
     >
       <span className="eyebrow">记住一句日常表达</span>
-      <span className="fr" lang="fr">
-        {expression.lemma}
+      <span className="fr" lang={language}>
+        <ReadingTextLabel reading={expression.lemma} />
       </span>
       <span className="review-description">{summary}</span>
       {open && (
