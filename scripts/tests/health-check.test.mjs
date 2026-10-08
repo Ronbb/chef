@@ -49,6 +49,16 @@ test("health options fix project scope and reject credentials, paths and ambiguo
     ["--project", "brioche", "--timeout-ms", "0"],
     ["--project", "brioche", "--timeout-ms", "Infinity"],
     ["--project", "brioche", "--minimum-free-gib", "2"],
+    ["--project", "brioche", "--layout", "unknown"],
+    ["--project", "brioche", "--database-project", "shared"],
+    [
+      "--project",
+      "brioche",
+      "--layout",
+      "product",
+      "--database-project",
+      "bad/name",
+    ],
     ...[
       "http://user:secret@example.test",
       "http://example.test/api",
@@ -58,6 +68,99 @@ test("health options fix project scope and reject credentials, paths and ambiguo
     ].map((origin) => ["--project", "brioche", "--origin", origin]),
   ])
     assert.throws(() => argumentsFor(args));
+});
+
+test("split product inventory checks identity and learning, preserving legacy layout", () => {
+  const productRows = ["identity", "learning", "web", "router"].map(
+    (service) => ({ ...rows()[2], service }),
+  );
+  assert(
+    assessContainers(productRows, "brioche-test", "product").every(
+      (item) => item.ok,
+    ),
+  );
+  assert(
+    assessContainers(productRows, "brioche-test").some((item) => !item.ok),
+  );
+  for (const change of [
+    (r) => {
+      r[0].health = "unhealthy";
+    },
+    (r) => {
+      r[1].oomKilled = true;
+    },
+    (r) => {
+      r[1].project = "other-product";
+    },
+    (r) => {
+      r.push({ ...r[3] });
+    },
+    (r) => {
+      r.pop();
+    },
+  ]) {
+    const changed = structuredClone(productRows);
+    change(changed);
+    assert(
+      assessContainers(changed, "brioche-test", "product").some(
+        (item) => !item.ok,
+      ),
+    );
+  }
+});
+
+test("shared database is explicitly scoped and cannot be omitted from a requested check", async () => {
+  const config = argumentsFor([
+    "--project",
+    "chef-hargow",
+    "--layout",
+    "product",
+    "--database-project",
+    "shared-db",
+  ]);
+  let databaseHealth = "healthy";
+  const calls = [];
+  const splitRun = async (args) => {
+    calls.push(args);
+    if (args[0] === "ps")
+      return (
+        args.includes("label=com.docker.compose.project=shared-db") ? "b" : "a"
+      ).repeat(64);
+    const database = args.includes("b".repeat(64));
+    const found = (
+      database ? ["postgres"] : ["identity", "learning", "web", "router"]
+    ).map((service) => ({
+      ...rows()[2],
+      project: database ? "shared-db" : "chef-hargow",
+      service,
+      health: database ? databaseHealth : "healthy",
+    }));
+    return found.map((row) => JSON.stringify(row)).join("\n");
+  };
+  const healthy = await checkHealth(config, { run: splitRun, fetcher });
+  assert.equal(healthy.status, "healthy");
+  assert.equal(healthy.containers.length, 4);
+  assert.equal(healthy.database.length, 1);
+  assert(
+    calls.some(
+      (args) =>
+        args.includes("label=com.docker.compose.project=shared-db") &&
+        args.includes("label=com.docker.compose.service=postgres"),
+    ),
+  );
+  databaseHealth = "unhealthy";
+  const failed = await checkHealth(config, { run: splitRun, fetcher });
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.database[0].ok, false);
+  const missing = await checkHealth(config, {
+    run: async (args) =>
+      args.includes("label=com.docker.compose.project=shared-db")
+        ? ""
+        : splitRun(args),
+    fetcher,
+  });
+  assert.equal(missing.status, "failed");
+  assert.equal(missing.database[0].reason, "missing-service");
 });
 
 test("invalid CLI options exit 2 without reporting supplied credentials", () => {

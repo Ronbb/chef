@@ -23,6 +23,7 @@
 | 课程和录音直接发布 | 直接授权与目录激活内核 | 已按所有者指示发布；保留来源/媒体/版本检查和审计，不伪造人工试听字段 |
 | 共用账号，产品学习数据隔离，产品仓库轻量 | 独立身份服务、固定产品上下文、schema/角色及客户端 namespace | 生产已拆分；隔离测试证明跨产品拒绝。不同域名使用独立产品会话，共用身份不表示浏览器自动跨域登录 |
 | 实际 Docker 生产启动 | Chef 共享 Compose + 产品根装配 | 八服务健康、两个产品 HTTPS 实际访问；数据库和原发布状态保持 |
+| 双产品健康巡检 | `scripts/health-check.mjs` 与 [运行检查](operations.md) | product模式检查各四服务及显式共享数据库；实际两入口/容器/磁盘检查通过，失败回归覆盖缺失、不健康、OOM与跨项目。一次巡检不代表长期容量验收 |
 | 域名校验忽略端口 | `crates/server/src/csrf.rs`，身份服务与学习 API 共用 | 生产服务981bf21；协议与精确域名保持、端口忽略。恢复副本带8443登录/学习保存及三公网入口8443/443来源校验通过；错误协议/域名与缺CSRF拒绝，账号/课源/发布/layout指纹保持 |
 | GitHub Actions | 各仓库 workflow 与精确提交 run | 旧启动断言和身份夹具问题已修复；只能以对应提交 completed/success 为通过，新运行不能借用旧结果 |
 | 备份与恢复 | `scripts/backup.mjs`、`scripts/backup-seal.mjs`、`infra/database/restore-boundaries.sql` | 双产品最新快照与1504媒体恢复/hash、密文verify、账号/课源/发布/layout指纹、受限身份与学习服务登录/启动重放/步骤续学均通过。恢复使用 no-owner/no-acl，先收紧PUBLIC函数权限，再装配专用数据库授权与私有配置 |

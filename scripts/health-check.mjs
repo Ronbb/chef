@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const services = ["postgres", "migrate", "server", "web", "traefik"];
+const productServices = ["identity", "learning", "web", "router"];
 const limit = 512 * 1024;
 function requireCondition(value) {
   if (!value) throw new Error("Invalid health-check options");
@@ -16,6 +17,8 @@ export function argumentsFor(args) {
     "timeout-ms",
     "disk-path",
     "minimum-free-gib",
+    "layout",
+    "database-project",
   ];
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i]?.slice(2);
@@ -29,6 +32,13 @@ export function argumentsFor(args) {
     options[key] = args[i + 1];
   }
   requireCondition(/^[a-z0-9][a-z0-9_-]{0,62}$/.test(options.project ?? ""));
+  const layout = options.layout ?? "combined";
+  requireCondition(["combined", "product"].includes(layout));
+  requireCondition(
+    !options["database-project"] ||
+      (layout === "product" &&
+        /^[a-z0-9][a-z0-9_-]{0,62}$/.test(options["database-project"])),
+  );
   const origin = new URL(options.origin ?? "http://127.0.0.1:30075");
   requireCondition(
     ["http:", "https:"].includes(origin.protocol) &&
@@ -51,6 +61,8 @@ export function argumentsFor(args) {
   requireCondition(!options["minimum-free-gib"] || options["disk-path"]);
   return {
     project: options.project,
+    layout,
+    databaseProject: options["database-project"] ?? null,
     origin: origin.origin,
     timeoutMs,
     diskPath: options["disk-path"] ? resolve(options["disk-path"]) : null,
@@ -92,9 +104,15 @@ export function dockerOutput(args, timeoutMs) {
 // Read only selected state fields and Compose identity labels, never Env or health logs.
 const format =
   '{"service":{{json (index .Config.Labels "com.docker.compose.service")}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"oneoff":{{json (index .Config.Labels "com.docker.compose.oneoff")}},"status":{{json .State.Status}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}},"exitCode":{{.State.ExitCode}},"oomKilled":{{.State.OOMKilled}},"restarts":{{.RestartCount}}}';
-export function assessContainers(rows, project) {
+export function assessContainers(rows, project, layout = "combined") {
+  const expected =
+    layout === "product"
+      ? productServices
+      : layout === "database"
+        ? ["postgres"]
+        : services;
   const regular = rows.filter((row) => row.oneoff !== "True");
-  const result = services.map((service) => {
+  const result = expected.map((service) => {
     const matches = regular.filter(
       (row) => row.project === project && row.service === service,
     );
@@ -125,7 +143,7 @@ export function assessContainers(rows, project) {
   });
   if (
     regular.some(
-      (row) => row.project !== project || !services.includes(row.service),
+      (row) => row.project !== project || !expected.includes(row.service),
     )
   )
     result.push({
@@ -135,7 +153,7 @@ export function assessContainers(rows, project) {
     });
   return result;
 }
-async function containers(options, run) {
+async function containers(options, run, databaseOnly = false) {
   try {
     const listed = await run(
       [
@@ -145,6 +163,9 @@ async function containers(options, run) {
         "--no-trunc",
         "--filter",
         `label=com.docker.compose.project=${options.project}`,
+        ...(databaseOnly
+          ? ["--filter", "label=com.docker.compose.service=postgres"]
+          : []),
       ],
       options.timeoutMs,
     );
@@ -160,7 +181,11 @@ async function containers(options, run) {
     const rows = output
       ? output.split(/\r?\n/).map((line) => JSON.parse(line))
       : [];
-    return assessContainers(rows, options.project);
+    return assessContainers(
+      rows,
+      options.project,
+      databaseOnly ? "database" : options.layout,
+    );
   } catch {
     return [
       {
@@ -234,8 +259,11 @@ export async function checkHealth(
   options,
   { run = dockerOutput, fetcher = fetch, filesystem = statfs } = {},
 ) {
-  const [inventory, http] = await Promise.all([
+  const [inventory, database, http] = await Promise.all([
     containers(options, run),
+    options.databaseProject
+      ? containers({ ...options, project: options.databaseProject }, run, true)
+      : null,
     Promise.all(
       [
         ["/api/health", "ok"],
@@ -263,6 +291,7 @@ export async function checkHealth(
   }
   const ok =
     inventory.every((item) => item.ok) &&
+    (!database || database.every((item) => item.ok)) &&
     http.every((item) => item.ok) &&
     (!disk || disk.ok);
   return {
@@ -270,6 +299,7 @@ export async function checkHealth(
     checkedAt: new Date().toISOString(),
     status: ok ? "healthy" : "failed",
     containers: inventory,
+    database,
     http,
     disk,
   };
