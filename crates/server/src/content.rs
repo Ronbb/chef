@@ -286,9 +286,19 @@ pub async fn stage_author(
     reason: &str,
     media_root: &std::path::Path,
 ) -> anyhow::Result<()> {
+    stage_author_product(db, None, manifest, actor, reason, media_root).await
+}
+pub(crate) async fn stage_author_product(
+    db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
+    manifest: &ReleaseManifest,
+    actor: &str,
+    reason: &str,
+    media_root: &std::path::Path,
+) -> anyhow::Result<()> {
     stage_impl(
         db,
-        None,
+        product,
         manifest,
         ContentActor::Local(actor),
         reason,
@@ -592,9 +602,20 @@ pub async fn activate_author(
     reason: &str,
     media_root: &std::path::Path,
 ) -> anyhow::Result<i64> {
+    activate_author_product(db, None, id, expected, actor, reason, media_root).await
+}
+pub(crate) async fn activate_author_product(
+    db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
+    id: &str,
+    expected: i64,
+    actor: &str,
+    reason: &str,
+    media_root: &std::path::Path,
+) -> anyhow::Result<i64> {
     activate_impl(
         db,
-        None,
+        product,
         id,
         expected,
         ContentActor::Local(actor),
@@ -759,9 +780,20 @@ pub async fn withdraw_author(
     actor: &str,
     reason: &str,
 ) -> anyhow::Result<i64> {
+    withdraw_author_product(db, None, id, revision, expected, actor, reason).await
+}
+pub(crate) async fn withdraw_author_product(
+    db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
+    id: &str,
+    revision: u32,
+    expected: i64,
+    actor: &str,
+    reason: &str,
+) -> anyhow::Result<i64> {
     withdraw_impl(
         db,
-        None,
+        product,
         id,
         revision,
         expected,

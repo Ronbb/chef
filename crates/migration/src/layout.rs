@@ -214,7 +214,32 @@ pub async fn up(
     }
     tx.execute_unprepared(&format!("CREATE TABLE IF NOT EXISTS \"{learning}\".chef_layout_migrations(version TEXT PRIMARY KEY,scope TEXT NOT NULL CHECK(scope IN ('identity','learning')),schema_name TEXT NOT NULL,definition TEXT NOT NULL,applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")).await?;
     // Reject unknown or changed definitions before executing any pending DDL.
-    let rows=tx.query_all_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT version,scope,schema_name,definition FROM \"{learning}\".chef_layout_migrations ORDER BY version"))).await?;
+    let applied = verified_steps(&tx, learning, identity).await?;
+    for step in STEPS {
+        if applied.contains(step.version) {
+            continue;
+        }
+        let schema = if step.identity { identity } else { learning };
+        // A Windows checkout must record the same definition as a Linux build.
+        let definition = step.sql.replace("\r\n", "\n");
+        tx.execute_unprepared(&format!(
+            "SET LOCAL search_path TO \"{schema}\"; {}",
+            definition
+        ))
+        .await?;
+        tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("INSERT INTO \"{learning}\".chef_layout_migrations(version,scope,schema_name,definition) VALUES($1,$2,$3,$4)"),[step.version.into(),if step.identity {"identity"} else {"learning"}.into(),schema.into(),definition.into()])).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+// Shared by owner upgrade and read-only CLI readiness; definitions stay in one place.
+async fn verified_steps<C: ConnectionTrait>(
+    db: &C,
+    learning: &str,
+    identity: &str,
+) -> Result<std::collections::BTreeSet<String>, DbErr> {
+    let rows=db.query_all_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT version,scope,schema_name,definition FROM \"{learning}\".chef_layout_migrations ORDER BY version"))).await?;
     let mut applied = std::collections::BTreeSet::new();
     for row in rows {
         let version = row.try_get::<String>("", "version")?;
@@ -236,20 +261,28 @@ pub async fn up(
         }
         applied.insert(version);
     }
-    for step in STEPS {
-        if applied.contains(step.version) {
-            continue;
-        }
-        let schema = if step.identity { identity } else { learning };
-        // A Windows checkout must record the same definition as a Linux build.
-        let definition = step.sql.replace("\r\n", "\n");
-        tx.execute_unprepared(&format!(
-            "SET LOCAL search_path TO \"{schema}\"; {}",
-            definition
-        ))
-        .await?;
-        tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,format!("INSERT INTO \"{learning}\".chef_layout_migrations(version,scope,schema_name,definition) VALUES($1,$2,$3,$4)"),[step.version.into(),if step.identity {"identity"} else {"learning"}.into(),schema.into(),definition.into()])).await?;
+    Ok(applied)
+}
+
+/// Read-only readiness for product-aware author commands. Never executes DDL.
+pub async fn verify_complete<C: ConnectionTrait>(
+    db: &C,
+    learning: &str,
+    identity: &str,
+) -> Result<(), DbErr> {
+    if !identifier(learning) || !identifier(identity) || learning == identity {
+        return Err(error("Invalid split author layout"));
     }
-    tx.commit().await?;
+    let row=db.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT current_schema() AS current_schema,learning_schema,identity_schema,(SELECT version FROM \"{learning}\".seaql_migrations ORDER BY version DESC LIMIT 1) AS version FROM \"{learning}\".chef_schema_layout WHERE singleton"))).await?.ok_or_else(||error("Recorded split author layout required"))?;
+    if row.try_get::<String>("", "current_schema")? != learning
+        || row.try_get::<String>("", "learning_schema")? != learning
+        || row.try_get::<String>("", "identity_schema")? != identity
+        || row.try_get::<String>("", "version")? != "m20261008_000032_schema_layout"
+    {
+        return Err(error("Split author layout mismatch"));
+    }
+    if verified_steps(db, learning, identity).await?.len() != STEPS.len() {
+        return Err(error("Complete layout migration required"));
+    }
     Ok(())
 }

@@ -167,3 +167,5 @@ SSR会话边界：Product.sessionNamespace是可信构建配置（brioche/hargow
 计划/片段接口局部编号补充：product_keys只接受内部闭合表枚举，在授权事务内核对真实产品主键列。计划/片段在确认完成后才移除外编号临时保护，旧/部分布局拒绝、错误失败关闭；读/精确重试保持本产品快照和原请求条件，片段缓存复用不借其他产品来源。对齐/打包接口、本机CLI和实际H运行仍待迁移，不更新产品pin或生产。该内核和回归只在Chef。
 
 对齐/打包接口局部编号补充：product_keys闭合枚举增加对齐和打包，授权事务内对齐核对实际产品主键，打包同时核对产品主键和product+lesson+revision唯一键；旧/部分布局保持外编号拒绝，元数据错误关闭。实际受限PG以当前本产品真实归档生成合成报告、显式合成时序决定和原子打包导入，双产品同编号读写/精确重试及改参冲突、H报告/评价/包/课源全指纹不变、供应商三计数不增通过。合成heard/timingsChecked只是测试协议，不证明人工审听或粤语质量。实现与测试只Chef，CLI/真实H/语言中立及生产验收继续，不更新产品pin或生产。
+
+作者CLI布局补充：command对import/release-stage/release-activate/content-withdraw/release-status用固定CHEF_PRODUCT和author_scope，旧B组合布局None兼容；已登记split必须read-only verify_complete核对精确32边界、当前/登记schema和全部已知步骤定义/范围/数量，未完成/未知/漂移拒绝，不执行DDL或回退。产品author封装复用原导入与发布事务，保持重复导入拒绝、原校验与代数/撤回规则；其他未适配数据库CLI在split先require_combined（邀请拒绝先于输出文件创建），serve/显式维护保留各自门槛。author-grants复用content-grants，仅另加三张布局账本SELECT，专用非所有者维护登录无身份表/账本写权限；不是Web管理员证明。实际非所有者B同编号导入/暂存/激活/撤回与H完整哨兵指纹不变、外ID拒绝、缺失/未知/漂移零新增课源通过。H写CLI/serve仍关闭，余下配音/账号CLI、语言中立/真实H及完整上线继续，生产/pin不变；实现模板/测试仅Chef。

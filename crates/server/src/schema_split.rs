@@ -140,3 +140,37 @@ pub async fn migrate_layout(db: &DatabaseConnection, learning: &str) -> anyhow::
     brioche_migration::layout::up(db, learning, &identity).await?;
     Ok(())
 }
+
+/// Trusted CLI scope: legacy Brioche or a fully recorded split learning schema.
+/// Does not migrate, read identity rows, or derive a product from database/request data.
+pub(crate) async fn author_scope(
+    db: &DatabaseConnection,
+    product: crate::product::ProductId,
+) -> anyhow::Result<Option<crate::product::ProductId>> {
+    let row=db.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT to_regclass('chef_schema_layout') IS NOT NULL AS present,current_schema() AS name")).await?.ok_or_else(||anyhow::anyhow!("Author database scope missing"))?;
+    if !row.try_get::<bool>("", "present")? {
+        anyhow::ensure!(
+            product == crate::product::ProductId::Brioche,
+            "Split author layout required"
+        );
+        return Ok(None);
+    }
+    let learning = row.try_get::<String>("", "name")?;
+    crate::database_scope::validate(&learning)?;
+    let layout = db
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT identity_schema FROM chef_schema_layout WHERE singleton",
+        ))
+        .await?;
+    let Some(layout) = layout else {
+        anyhow::ensure!(
+            product == crate::product::ProductId::Brioche,
+            "Split author layout required"
+        );
+        return Ok(None);
+    };
+    let identity = layout.try_get::<String>("", "identity_schema")?;
+    brioche_migration::layout::verify_complete(db, &learning, &identity).await?;
+    Ok(Some(product))
+}

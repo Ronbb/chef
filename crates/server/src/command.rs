@@ -226,6 +226,22 @@ pub async fn run() -> Result<()> {
                 .map_err(|_| anyhow::anyhow!("database connection failed"))?,
         )
     };
+    let author_command = matches!(
+        command.as_str(),
+        "import" | "release-stage" | "release-activate" | "content-withdraw" | "release-status"
+    );
+    let author_product = if author_command {
+        crate::schema_split::author_scope(db.as_ref().unwrap(), product).await
+            .map_err(|_| anyhow::anyhow!("Author command layout not ready; verify the recorded learning schema and complete migration history"))?
+    } else {
+        if !matches!(
+            command.as_str(),
+            "serve" | "migrate" | "split-identity-schema" | "migrate-layout"
+        ) {
+            crate::schema_split::require_combined(db.as_ref().unwrap()).await?;
+        }
+        None
+    };
     match command.as_str() {
         "speech-package-automatic" => {
             let args: Vec<String> = std::env::args().skip(2).collect();
@@ -611,8 +627,9 @@ pub async fn run() -> Result<()> {
                 bail!("usage: release-stage <manifest.json> <actor> <reason>");
             }
             let (document, manifest) = release_source.as_ref().unwrap();
-            crate::content::stage_author(
+            crate::content::stage_author_product(
                 db.as_ref().unwrap(),
+                author_product,
                 manifest,
                 &args[1],
                 &args[2],
@@ -631,8 +648,9 @@ pub async fn run() -> Result<()> {
                         "usage: release-activate <release-id> <expected-generation> <actor> <reason>"
                     );
                 }
-                crate::content::activate_author(
+                crate::content::activate_author_product(
                     db.as_ref().unwrap(),
+                    author_product,
                     &args[0],
                     args[1].parse()?,
                     &args[2],
@@ -646,8 +664,9 @@ pub async fn run() -> Result<()> {
                         "usage: content-withdraw <lesson-id> <revision> <expected-generation> <actor> <reason>"
                     );
                 }
-                crate::content::withdraw_author(
+                crate::content::withdraw_author_product(
                     db.as_ref().unwrap(),
+                    author_product,
                     &args[0],
                     args[1].parse()?,
                     args[2].parse()?,
@@ -665,7 +684,13 @@ pub async fn run() -> Result<()> {
                 .unwrap()
                 .query_one_raw(sea_orm::Statement::from_string(
                     sea_orm::DbBackend::Postgres,
-                    "SELECT active_release,generation FROM content_state WHERE singleton",
+                    format!(
+                        "SELECT active_release,generation FROM content_state WHERE {}",
+                        author_product.map_or_else(
+                            || "singleton".to_owned(),
+                            |p| format!("product_id='{}'", p.as_str())
+                        )
+                    ),
                 ))
                 .await?
                 .context("content state missing")?;
@@ -707,8 +732,9 @@ pub async fn run() -> Result<()> {
         }
         "import" => {
             let document = import_document.as_ref().unwrap();
-            crate::author_import::import(
+            crate::author_import::import_author_product(
                 db.as_ref().unwrap(),
+                author_product,
                 document.value.clone(),
                 "local-author-cli",
                 "local author import",

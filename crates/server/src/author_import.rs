@@ -111,7 +111,7 @@ pub async fn import(
     actor: &str,
     reason: &str,
 ) -> anyhow::Result<brioche_course_contract::AdminImportResult> {
-    import_impl(db, source, actor, reason, false).await
+    import_impl(db, None, source, actor, reason, false).await
 }
 pub async fn import_retry(
     db: &DatabaseConnection,
@@ -119,30 +119,31 @@ pub async fn import_retry(
     actor: &str,
     reason: &str,
 ) -> anyhow::Result<brioche_course_contract::AdminImportResult> {
-    import_impl(db, source, actor, reason, true).await
+    import_impl(db, None, source, actor, reason, true).await
+}
+pub(crate) async fn import_author_product(
+    db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
+    source: Value,
+    actor: &str,
+    reason: &str,
+) -> anyhow::Result<brioche_course_contract::AdminImportResult> {
+    import_impl(db, product, source, actor, reason, false).await
 }
 async fn import_impl(
     db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
     source: Value,
     actor: &str,
     reason: &str,
     allow_identical_retry: bool,
 ) -> anyhow::Result<brioche_course_contract::AdminImportResult> {
     let tx = db.begin().await.map_err(|_| AppError::Unavailable)?;
-    let result = import_transaction(&tx, source, actor, reason, allow_identical_retry).await?;
+    let result =
+        import_product_transaction(&tx, product, source, actor, reason, allow_identical_retry)
+            .await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(result)
-}
-/// The caller owns the transaction, allowing recording registration and draft import
-/// to commit together. CLI and standalone imports use this same validation path.
-pub(crate) async fn import_transaction(
-    db: &impl ConnectionTrait,
-    source: Value,
-    actor: &str,
-    reason: &str,
-    allow_identical_retry: bool,
-) -> anyhow::Result<brioche_course_contract::AdminImportResult> {
-    import_product_transaction(db, None, source, actor, reason, allow_identical_retry).await
 }
 // Caller owns the transaction and authorization; product comes from trusted assembly.
 pub(crate) async fn import_product_transaction(
