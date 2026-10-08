@@ -325,6 +325,17 @@ impl ReleaseFailure {
         }
     }
 }
+async fn local_release_keys(db: &impl ConnectionTrait) -> Result<bool, AppError> {
+    let ready=one(db,r#"SELECT count(*)=3 AS ready FROM pg_catalog.pg_constraint c
+        WHERE (c.conrelid='content_releases'::regclass AND c.contype='p'
+            AND (SELECT array_agg(a.attname::text ORDER BY k.position) FROM unnest(c.conkey) WITH ORDINALITY k(column_number,position) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.column_number)=ARRAY['product_id','id']::text[])
+        OR (c.conrelid='release_entries'::regclass AND c.contype='p'
+            AND (SELECT array_agg(a.attname::text ORDER BY k.position) FROM unnest(c.conkey) WITH ORDINALITY k(column_number,position) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.column_number)=ARRAY['product_id','release_id','lesson_id']::text[])
+        OR (c.conrelid='release_entries'::regclass AND c.contype='u'
+            AND (SELECT array_agg(a.attname::text ORDER BY k.position) FROM unnest(c.conkey) WITH ORDINALITY k(column_number,position) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.column_number)=ARRAY['product_id','release_id','position']::text[])"#,vec![]).await?.ok_or(AppError::Unavailable)?;
+    field(&ready, "ready")
+}
+
 // The same publication gates run in both staging and the read-only upload check.
 // PostgreSQL read-only transactions cannot acquire row locks; staging retains
 // its selected publication-state lock and revision FOR SHARE locks until the atomic commit.
@@ -343,9 +354,15 @@ async fn checked_entries<'a>(
     if lock_revisions {
         revision_query.push_str(" FOR SHARE");
     }
+    // Old layouts keep their global conflict gate; opt in only after all release keys are local.
+    let id_scope = if product.is_some() && local_release_keys(db).await? {
+        product_filter(product, "product_id")
+    } else {
+        String::new()
+    };
     if one(
         db,
-        "SELECT id FROM content_releases WHERE id=$1",
+        &format!("SELECT id FROM content_releases WHERE id=$1{id_scope}"),
         vec![manifest.id.clone().into()],
     )
     .await?
@@ -903,13 +920,14 @@ pub async fn catalog_matching_for_product<C: ConnectionTrait>(
         LEFT JOIN LATERAL jsonb_to_record(r.public_document) AS p(
             id text,revision integer,"levelId" text,"unitId" text,title jsonb,
             "summaryZh" text,"estimatedMinutes" integer,knowledge jsonb) ON true
-        WHERE {} GROUP BY cr.id
+        WHERE {} GROUP BY cr.id{}
     "#,
         if scoped{" AND cr.product_id=s.product_id"}else{""},
         if scoped{" AND e.product_id=cr.product_id"}else{""},
         if scoped{" AND r.product_id=e.product_id"}else{""},
         if scoped{" AND w.product_id=r.product_id"}else{""},
         product.map_or_else(||"s.singleton".to_owned(),|p|format!("s.product_id='{}'",p.as_str())),
+        if scoped{",cr.product_id"}else{",cr.manifest"},
     ),[(!terms.is_empty()).into()])).await.map_err(|_|AppError::Unavailable)?;
     let Some(first) = rows.first() else {
         return Ok(Catalog {

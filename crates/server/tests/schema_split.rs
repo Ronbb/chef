@@ -577,6 +577,35 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         )
         .await
         .unwrap();
+    owner
+        .execute_unprepared(
+            "CREATE TABLE extra_release_edge(release_id TEXT REFERENCES content_releases(id))",
+        )
+        .await
+        .unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let dependency_error = brioche_migration::layout::up(&owner, &source, &target)
+        .await
+        .unwrap_err();
+    assert!(
+        dependency_error
+            .to_string()
+            .contains("Unverified legacy release dependency")
+    );
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='content_releases' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_content::snapshot(&owner).await, content_snapshot);
+    owner.execute_unprepared("DROP TABLE extra_release_edge; ALTER TABLE release_entries ADD CONSTRAINT chef_local_release_position CHECK(true)").await.unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='content_releases' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_content::snapshot(&owner).await, content_snapshot);
+    owner
+        .execute_unprepared(
+            "ALTER TABLE release_entries DROP CONSTRAINT chef_local_release_position",
+        )
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -584,13 +613,14 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=18 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=19 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
     assert_eq!(product_content::snapshot(&owner).await, content_snapshot);
     product_content::verify(&owner, &lesson.id, lesson.revision as i32).await;
     product_content::verify_local_lesson_keys(&owner, &lesson.id, lesson.revision as i32).await;
+    product_content::verify_local_release_keys(&owner, &lesson.id, lesson.revision as i32).await;
     product_content::verify_local_lesson_records(
         &owner,
         &lesson.id,
@@ -5786,6 +5816,137 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .0,
         409
     );
+    // Same release ID is legitimate in B; H's staged graph must remain immutable and unchanged.
+    owner.execute_unprepared("INSERT INTO content_audit(product_id,action,release_id,actor,reason,generation) VALUES('hargow','stage','hargow-catalog-release','synthetic','Isolated staging sentinel',0)").await.unwrap();
+    let release_snapshot_sql = "SELECT md5(jsonb_build_array(to_jsonb(r),(SELECT jsonb_agg(to_jsonb(e) ORDER BY position) FROM release_entries e WHERE e.product_id=r.product_id AND e.release_id=r.id),(SELECT jsonb_agg(to_jsonb(a) ORDER BY id) FROM content_audit a WHERE a.product_id=r.product_id AND a.release_id=r.id),(SELECT to_jsonb(s) FROM content_state s WHERE s.product_id=r.product_id))::text) AS hash FROM content_releases r WHERE product_id='hargow' AND id='hargow-catalog-release'";
+    let h_release_before = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            release_snapshot_sql,
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "hash")
+        .unwrap();
+    let version=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT coalesce(max(version),0)::integer AS version FROM editorial_reviews WHERE product_id='brioche' AND lesson_id=$1 AND revision=$2",[h_lesson.id.clone().into(),(h_lesson.revision as i32).into()])).await.unwrap().unwrap().try_get::<i32>("", "version").unwrap();
+    let (status,review)=request(&content_app,"POST",&format!("/api/v1/operator/lessons/{}/revisions/{}/review",h_lesson.id,h_lesson.revision),Some(serde_json::json!({"version":version,"approved":true,"reason":"Isolated protocol fixture editorial decision"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 200, "{review}");
+    let local_manifest = serde_json::json!({"id":"hargow-catalog-release","schemaVersion":"1.0","levels":[{"id":lesson.level_id,"label":"Synthetic B fixture","units":[{"id":lesson.unit_id,"titleZh":"合成B目录","lessons":[{"lessonId":h_lesson.id,"revision":h_lesson.revision}]}]}]});
+    let local_stage = serde_json::json!({"document":local_manifest.to_string(),"reason":"Own product-local release"});
+    // An old position key means the partial layout must still keep the global ID guard.
+    owner.execute_unprepared("ALTER TABLE release_entries DROP CONSTRAINT chef_local_release_position; ALTER TABLE release_entries ADD CONSTRAINT legacy_release_position_fixture UNIQUE(release_id,position)").await.unwrap();
+    let (status, legacy_check) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/documents/release/check",
+        Some(local_stage.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{legacy_check}");
+    assert_eq!(legacy_check["valid"], false);
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/releases/stage",
+            Some(local_stage.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    owner.execute_unprepared("ALTER TABLE release_entries DROP CONSTRAINT legacy_release_position_fixture; ALTER TABLE release_entries ADD CONSTRAINT chef_local_release_position UNIQUE(product_id,release_id,position)").await.unwrap();
+    let (status, checked) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/documents/release/check",
+        Some(local_stage.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{checked}");
+    assert_eq!(checked["valid"], true, "{checked}");
+    let (status, staged) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/releases/stage",
+        Some(local_stage.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{staged}");
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/releases/stage",
+            Some(local_stage),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
+    let b_generation = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT generation FROM content_state WHERE product_id='brioche'",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "generation")
+        .unwrap();
+    let (status,activated)=request(&content_app,"POST","/api/v1/operator/releases/activate",Some(serde_json::json!({"releaseId":"hargow-catalog-release","generation":b_generation.to_string(),"reason":"Own product-local activation"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 200, "{activated}");
+    assert_eq!(activated, (b_generation + 1).to_string());
+    let h_release_after = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            release_snapshot_sql,
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "hash")
+        .unwrap();
+    assert_eq!(h_release_after, h_release_before);
+    let (status, b_body) = request(
+        &remote,
+        "GET",
+        &format!("/api/lessons/{}", h_lesson.id),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{b_body}");
+    assert_eq!(b_body["id"], h_lesson.id);
+    assert_ne!(b_body, serde_json::to_value(&h_lesson).unwrap());
+    let (status, h_body) = request(
+        &h_public,
+        "GET",
+        &format!("/api/lessons/{}", h_lesson.id),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{h_body}");
+    assert_eq!(h_body, serde_json::to_value(&h_lesson).unwrap());
+
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM content_releases WHERE product_id='brioche' AND id='hargow-catalog-release')::bigint AS releases,(SELECT count(*) FROM release_entries WHERE product_id='brioche' AND release_id='hargow-catalog-release')::bigint AS entries,(SELECT count(*) FROM content_audit WHERE product_id='brioche' AND release_id='hargow-catalog-release')::bigint AS audits")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "releases").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "entries").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "audits").unwrap(), 2);
     task.abort();
     let _ = task.await;
     assert_eq!(

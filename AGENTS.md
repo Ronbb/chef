@@ -151,3 +151,5 @@ SSR会话边界：Product.sessionNamespace是可信构建配置（brioche/hargow
 课程本地编号迁移补充：layout第17步 learning_000016_local_lesson_keys仅替换课程主表PK和已核对同产品替代的旧父引用；保持chef_lesson_product候选键、旧行/审计及事务账本，不CASCADE未知依赖。隔离PG同编号双产品/同产品重复/目录父引用/原指纹/未知外键整批回滚属于Chef。子表旧全局主键、author_import临时全局冲突保护、本机CLI仍待迁移，Hargow serve继续关闭，不更新生产/pin。产品库不复制SQL或通用测试。
 
 课程关联本地编号补充：layout第18步learning_000017_local_lesson_records为撤回/导入审计/内容审核/音频审核/直接发布五表PK加入产品；保护课程快照函数的撤回查找也限定NEW.product_id，原不可变/同产品FK保留。双产品同编号五类结构记录、逐表重复拒绝、撤回互不影响/本产品不能恢复、原指纹及末步冲突整批回滚在隔离PG验证；不是人工审听或真实粤语课程证明。author_import可信产品模式只有从pg_catalog确认课程及导入审计的精确产品主键后才跳过全局编号保护；错误失败关闭，旧布局保留保护，固定素材校验/授权/不可变精确重试保持。实际B接口在H已有同编号下的自有导入验证属于Chef，不冒充H入口已开放；CLI、目录局部键与H入口继续待迁移，生产/pin保持。
+
+目录本地编号补充：layout第19步learning_000018_local_release_keys在核对每条旧父引用的同产品替代后替换目录PK/条目PK/位置唯一键，不CASCADE；protect_release_insert限定NEW.product_id。预检/暂存从真实键元数据确认三类键完成后才解除全局ID保护；旧/部分布局保留拒绝，查询错误失败关闭。catalog聚合必须按实际复合主键分组，不能继续依赖全局id的函数依赖。结构图/未知引用和末尾碰撞整批回滚、同名目录实际B暂存/激活与H图不变的受限PG回归在Chef；H serve仍关闭，角色/媒体/CLI/语言中立待迁移，生产/pin不改。

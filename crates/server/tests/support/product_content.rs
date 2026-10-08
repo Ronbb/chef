@@ -169,3 +169,57 @@ pub async fn verify_local_lesson_records(
     assert!(error.to_string().contains("immutable"), "{error}");
     tx.rollback().await.unwrap();
 }
+
+pub async fn verify_local_release_keys(db: &DatabaseConnection, lesson: &str, revision: i32) {
+    let tx = db.begin().await.unwrap();
+    tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) SELECT p.id,'local-release-course',1,false,l.public_document,l.server_document FROM lesson_revisions l CROSS JOIN (VALUES('brioche'),('hargow')) p(id) WHERE l.product_id='brioche' AND l.lesson_id=$1 AND l.revision=$2",[lesson.into(),revision.into()])).await.unwrap();
+    tx.execute_unprepared("INSERT INTO content_releases(product_id,id,manifest,content_hash) VALUES('brioche','local-release-fixture','{}',repeat('e',64)),('hargow','local-release-fixture','{}',repeat('e',64)); INSERT INTO release_entries(product_id,release_id,lesson_id,revision,position) VALUES('brioche','local-release-fixture','local-release-course',1,0),('hargow','local-release-fixture','local-release-course',1,0); INSERT INTO content_audit(product_id,action,actor,reason,release_id,generation) VALUES('brioche','stage','synthetic','Isolated structural fixture','local-release-fixture',0)").await.unwrap();
+    tx.execute_unprepared("INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) SELECT 'hargow','local-release-position',revision,published,public_document,server_document FROM lesson_revisions WHERE product_id='hargow' AND lesson_id='local-release-course'; SAVEPOINT release_position").await.unwrap();
+    let error=tx.execute_unprepared("INSERT INTO release_entries(product_id,release_id,lesson_id,revision,position) VALUES('hargow','local-release-fixture','local-release-position',1,0)").await.unwrap_err();
+    assert!(
+        error.to_string().contains("chef_local_release_position"),
+        "{error}"
+    );
+    tx.execute_unprepared("ROLLBACK TO SAVEPOINT release_position")
+        .await
+        .unwrap();
+    tx.execute_unprepared("INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) SELECT 'hargow','local-release-next',revision,published,public_document,server_document FROM lesson_revisions WHERE product_id='hargow' AND lesson_id='local-release-course'; INSERT INTO release_entries(product_id,release_id,lesson_id,revision,position) VALUES('hargow','local-release-fixture','local-release-next',1,1); INSERT INTO content_audit(product_id,action,actor,reason,release_id,generation) VALUES('hargow','stage','synthetic','Isolated structural fixture','local-release-fixture',0); INSERT INTO content_state(product_id,singleton,active_release,generation) VALUES('hargow',false,'local-release-fixture',8); UPDATE content_state SET active_release='local-release-fixture',generation=3 WHERE product_id='brioche'").await.unwrap();
+    for product in ["brioche", "hargow"] {
+        tx.execute_unprepared("SAVEPOINT release_immutable")
+            .await
+            .unwrap();
+        let error=tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO release_entries(product_id,release_id,lesson_id,revision,position) VALUES($1,'local-release-fixture','missing-course',1,9)",[product.into()])).await.unwrap_err();
+        assert!(
+            error.to_string().contains("staged directory is immutable"),
+            "{error}"
+        );
+        tx.execute_unprepared("ROLLBACK TO SAVEPOINT release_immutable")
+            .await
+            .unwrap();
+    }
+    tx.execute_unprepared("SAVEPOINT release_duplicate")
+        .await
+        .unwrap();
+    let error=tx.execute_unprepared("INSERT INTO content_releases(product_id,id,manifest,content_hash) VALUES('hargow','local-release-fixture','{}',repeat('e',64))").await.unwrap_err();
+    assert!(error.to_string().contains("duplicate key"), "{error}");
+    tx.execute_unprepared("ROLLBACK TO SAVEPOINT release_duplicate; INSERT INTO content_releases(product_id,id,manifest,content_hash) VALUES('brioche','local-release-foreign','{}',repeat('e',64)); SAVEPOINT release_parent").await.unwrap();
+    let error=tx.execute_unprepared("UPDATE content_state SET active_release='local-release-foreign' WHERE product_id='hargow'").await.unwrap_err();
+    assert!(
+        error.to_string().contains("chef_state_product_release"),
+        "{error}"
+    );
+    tx.execute_unprepared("ROLLBACK TO SAVEPOINT release_parent")
+        .await
+        .unwrap();
+    let rows = tx
+        .query_all_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT product_id,generation FROM content_state ORDER BY product_id",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].try_get::<i64>("", "generation").unwrap(), 3);
+    assert_eq!(rows[1].try_get::<i64>("", "generation").unwrap(), 8);
+    tx.rollback().await.unwrap();
+}
