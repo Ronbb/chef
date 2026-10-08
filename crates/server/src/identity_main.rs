@@ -24,14 +24,7 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .with_env_filter("chef_engine=info,tower_http=info")
         .init();
-    let product = match std::env::var("IDENTITY_PRODUCT")
-        .as_deref()
-        .unwrap_or("brioche")
-    {
-        "brioche" => ProductId::Brioche,
-        "hargow" => ProductId::Hargow,
-        _ => anyhow::bail!("Invalid configured identity product"),
-    };
+    let product = ProductId::configured("IDENTITY_PRODUCT")?;
     let config = ServiceConfig::new(
         product,
         &std::env::var("IDENTITY_INTERNAL_KEY")

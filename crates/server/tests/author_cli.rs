@@ -1482,3 +1482,42 @@ fn offline_revision_bounds_locate_the_original_definition() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn process_product_configuration_is_checked_before_database_or_private_work() {
+    for (binary, variable) in [
+        (env!("CARGO_BIN_EXE_chef-server"), "CHEF_PRODUCT"),
+        (env!("CARGO_BIN_EXE_chef-identity"), "IDENTITY_PRODUCT"),
+    ] {
+        let output = Command::new(binary)
+            .env(variable, "private-invalid-product-marker")
+            .env("DATABASE_URL", "postgres://invalid@127.0.0.1:1/unavailable")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(error.contains("Invalid configured product"), "{error}");
+        assert!(!error.contains("private-invalid-product-marker"));
+        assert!(!error.contains("database connection"));
+    }
+    for (command, message) in [
+        ("serve", "Product learning data migration incomplete"),
+        (
+            "speech-clip-generate",
+            "Product-scoped command migration incomplete",
+        ),
+        ("invite", "Product-scoped command migration incomplete"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_chef-server"))
+            .arg(command)
+            .env("CHEF_PRODUCT", "hargow")
+            .env("CONTENT_MODE", "database")
+            .env("DATABASE_URL", "postgres://invalid@127.0.0.1:1/unavailable")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(error.contains(message), "{error}");
+        assert!(!error.contains("database connection"));
+    }
+}

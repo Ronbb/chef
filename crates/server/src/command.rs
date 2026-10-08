@@ -13,6 +13,8 @@ pub async fn run() -> Result<()> {
         )
         .init();
     let command = std::env::args().nth(1).unwrap_or_else(|| "serve".into());
+    let product = crate::product::ProductId::configured("CHEF_PRODUCT")?;
+    product.validate_command(&command)?;
     if command == "speech-plan" {
         let args: Vec<String> = std::env::args().skip(2).collect();
         if args.len() != 2 {
@@ -196,6 +198,11 @@ pub async fn run() -> Result<()> {
         std::env::var("APP_ENV").unwrap_or_else(|_| "production".into()) != "development";
     if fixture && production {
         bail!("fixture content is only permitted with APP_ENV=development");
+    }
+    if product == crate::product::ProductId::Hargow && command == "serve" {
+        // Keep the startup boundary closed until local keys and language contracts
+        // are verified. Never initialize the legacy Brioche backend or fixture.
+        bail!("Product learning data migration incomplete");
     }
     let db = if fixture && command == "serve" {
         None
@@ -783,12 +790,7 @@ pub async fn run() -> Result<()> {
         Some(if let Some(origin) = remote_origin {
             let key = std::env::var("IDENTITY_INTERNAL_KEY")
                 .map_err(|_| anyhow::anyhow!("Identity service credential required"))?;
-            let client = crate::learning_identity::Client::new(
-                &origin,
-                &key,
-                crate::product::ProductId::Brioche,
-                secure,
-            )?;
+            let client = crate::learning_identity::Client::new(&origin, &key, product, secure)?;
             let learning = crate::learning_identity::router(db.clone(), client.clone())?;
             if let Some(url) = content_url {
                 let mut options = ConnectOptions::new(url);
@@ -844,7 +846,7 @@ pub async fn run() -> Result<()> {
         },
     };
     let mut app = if remote_identity {
-        crate::independent_learning_router(state)
+        crate::independent_product_router(state, product)
     } else {
         router(state)
     };
@@ -856,12 +858,12 @@ pub async fn run() -> Result<()> {
             app = app.merge(crate::recording::product_router(
                 db.clone(),
                 crate::media::media_root(),
-                crate::product::ProductId::Brioche,
+                product,
             ));
             app = app.merge(crate::media::product_router(
                 db,
                 crate::media::media_root(),
-                crate::product::ProductId::Brioche,
+                product,
             ));
         } else {
             app = app.merge(crate::recording::router(
