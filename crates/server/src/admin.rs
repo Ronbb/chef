@@ -82,7 +82,7 @@ pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
         .merge(crate::speech_alignments::router(db.clone()))
         .merge(crate::speech_package::router(db.clone()))
         .merge(crate::speech_automatic::router(db.clone()))
-        .merge(crate::lesson_audio_reviews::router(db.clone()))
+        .merge(crate::lesson_audio_reviews::router(db.clone(), product))
         .merge(crate::preview::router(root.clone(), db.clone(), product))
         .route("/api/v1/operator/overview", get(overview))
         .route("/api/v1/operator/history", get(history))
@@ -359,11 +359,12 @@ pub(crate) fn revision(id: &str, rev: u32) -> Result<(), AppError> {
 use crate::account_admin::generation;
 pub(crate) async fn approved<C: ConnectionTrait>(
     db: &C,
+    product: Option<crate::product::ProductId>,
     id: &str,
     rev: u32,
     source: &Value,
 ) -> Result<bool, AppError> {
-    let latest = one(db,"SELECT approved FROM editorial_reviews WHERE lesson_id=$1 AND revision=$2 ORDER BY version DESC LIMIT 1",vec![id.into(),(rev as i32).into()]).await?;
+    let latest = one(db,&format!("SELECT approved FROM editorial_reviews WHERE lesson_id=$1 AND revision=$2{} ORDER BY version DESC LIMIT 1",product_filter(product,"product_id")),vec![id.into(),(rev as i32).into()]).await?;
     let editorial_approved = match latest {
         Some(row) => field(&row, "approved"),
         None => Ok(matches!(
@@ -373,7 +374,8 @@ pub(crate) async fn approved<C: ConnectionTrait>(
             crate::author_source::EditorialStatus::Reviewed
         )),
     }?;
-    Ok(editorial_approved && crate::lesson_audio_reviews::accepted(db, id, rev, source).await?)
+    Ok(editorial_approved
+        && crate::lesson_audio_reviews::accepted(db, product, id, rev, source).await?)
 }
 #[derive(serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -454,6 +456,7 @@ async fn overview(
         let audio_accepted = audio_required
             && crate::lesson_audio_reviews::accepted(
                 &tx,
+                backend.product,
                 &field::<String>(&row, "lesson_id")?,
                 field::<i32>(&row, "revision")? as u32,
                 &source,
@@ -583,6 +586,7 @@ async fn review(
     if request.approved
         && !crate::lesson_audio_reviews::accepted(
             &tx,
+            backend.product,
             &id,
             rev,
             &field::<Value>(&row, "server_document")?,

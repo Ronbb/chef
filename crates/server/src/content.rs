@@ -388,7 +388,9 @@ async fn checked_entries<'a>(
                     ));
                 }
                 let source: serde_json::Value = field(&row, "server_document")?;
-                if !crate::admin::approved(db, &entry.lesson_id, entry.revision, &source).await? {
+                if !crate::admin::approved(db, product, &entry.lesson_id, entry.revision, &source)
+                    .await?
+                {
                     return Err(ReleaseFailure::at(
                         AppError::InvalidInput,
                         &path,
@@ -672,6 +674,7 @@ async fn activate_impl(
             .map_err(|_| AppError::Unavailable)?;
         if !crate::admin::approved(
             &tx,
+            product,
             &lesson.id,
             lesson.revision,
             &field(&row, "server_document")?,

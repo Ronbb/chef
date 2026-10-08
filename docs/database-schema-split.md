@@ -1,5 +1,7 @@
 # 身份与学习schema分离
 
+独立课音频发布门槛补充：lesson_audio_reviews::Store由可信装配接收产品，课程/撤回读取、状态锁、试听决定、直接授权/相同重试及后续拒绝覆盖均固定产品，新增决定与授权显式product_id。admin::approved与音频accepted核对同产品记录，目录检查/暂存/激活、概览及编辑审核传同一上下文。actual split外产品音频状态/试听写入/直接授权404且两表计数不变；B直接授权不伪造试听、后续拒绝覆盖、正向试听/CAS/重试/撤权与发布保持。旧CLI authorize_local仍None待迁移；录音validate/素材归属及配音交付/产品局部ID尚待，H后台/生产pin保持，产品无门槛副本。
+
 独立私有预览补充：preview::Store接收部署装配的固定产品；目录/条目/课源/撤回、课程详情与预览判分只读取同产品，图片与音频先走同产品课源门槛再访问文件。actual split跨产品私有目录、课源、真实图片引用、音频路径及判分404，原B草稿预览/私有字段移除/文件与Range/no-store/撤权回归保持。legacy None不访问新列；仍待媒体录音注册归属、审批音频下层、CLI/配音交付和产品局部ID，H后台/生产pin保持，实现只Chef。
 
 独立课程导入补充：后台导入和lesson/check使用可信Store.product，管理员证明产品必须一致。相同版本重试查询固定产品，新lesson_revisions及lesson_import_audit显式写产品并原子提交。全局ID迁移前仅查询归属的碰撞保护先于素材hydration，并在全局导入锁后重新核对，避免并发写入成为异产品重试；不读取外产品server_document。actual split外课源编号导入404、上传valid=false，原外课源私有document及审计不变；B新课归属与相同重试单审计回归通过。CLI/配音交付、媒体录音hydrate/权限、私有预览与产品局部ID仍需迁移，H后台和生产pin保持。

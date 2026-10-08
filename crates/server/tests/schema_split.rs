@@ -2847,7 +2847,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
             &content_app,
             "POST",
             &audio_path,
-            Some(audio_request),
+            Some(audio_request.clone()),
             &mut cookie,
             &mut csrf
         )
@@ -3442,6 +3442,46 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     )
     .await;
     assert_eq!(status, 404, "{body}");
+    let audio_counts_sql = "SELECT (SELECT count(*) FROM lesson_audio_reviews)::bigint AS reviews,(SELECT count(*) FROM lesson_direct_publications)::bigint AS direct";
+    let audio_counts_before = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            audio_counts_sql,
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    for (method, path, body) in [
+        ("GET", format!("{foreign_preview}/audio-review"), None),
+        (
+            "POST",
+            format!("{foreign_preview}/audio-review"),
+            Some(audio_request.clone()),
+        ),
+        (
+            "POST",
+            format!("{foreign_preview}/direct-publication"),
+            Some(direct_request.clone()),
+        ),
+    ] {
+        let (status, result) =
+            request(&content_app, method, &path, body, &mut cookie, &mut csrf).await;
+        assert_eq!(status, 404, "{path}: {result}");
+    }
+    let audio_counts_after = owner
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            audio_counts_sql,
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    for column in ["reviews", "direct"] {
+        assert_eq!(
+            audio_counts_before.try_get::<i64>("", column).unwrap(),
+            audio_counts_after.try_get::<i64>("", column).unwrap()
+        );
+    }
     let foreign_review = format!(
         "/api/v1/operator/lessons/{}/revisions/{}/review",
         h_lesson.id, h_lesson.revision
