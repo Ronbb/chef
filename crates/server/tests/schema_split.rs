@@ -561,6 +561,22 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .execute_unprepared("DROP TABLE extra_lesson_edge")
         .await
         .unwrap();
+    owner
+        .execute_unprepared(
+            "ALTER TABLE lesson_import_audit ADD CONSTRAINT chef_local_import_primary CHECK(true)",
+        )
+        .await
+        .unwrap();
+    assert!(!invoke(&["migrate-layout", &source]).status.success());
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='lesson_revisions' AND column_name='product_id') AND to_regclass($2) IS NULL AS rolled_back",[source.clone().into(),format!("{source}.chef_layout_migrations").into()])).await.unwrap().unwrap();
+    assert!(row.try_get::<bool>("", "rolled_back").unwrap());
+    assert_eq!(product_content::snapshot(&owner).await, content_snapshot);
+    owner
+        .execute_unprepared(
+            "ALTER TABLE lesson_import_audit DROP CONSTRAINT chef_local_import_primary",
+        )
+        .await
+        .unwrap();
     let output = invoke(&["migrate-layout", &source]);
     assert!(
         output.status.success(),
@@ -568,13 +584,20 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(invoke(&["migrate-layout", &source]).status.success());
-    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=17 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT to_regclass('{target}.chef_throttle_expiry') IS NOT NULL AND to_regclass('{source}.chef_attempt_owner_time') IS NOT NULL AND to_regclass('{source}.chef_throttle_expiry') IS NULL AND (SELECT count(*)=18 FROM chef_layout_migrations) AS correct"))).await.unwrap().unwrap();
     assert!(row.try_get::<bool>("", "correct").unwrap());
     assert_eq!(product_facts::snapshot(&owner).await, fact_snapshot);
     product_facts::verify(&owner).await;
     assert_eq!(product_content::snapshot(&owner).await, content_snapshot);
     product_content::verify(&owner, &lesson.id, lesson.revision as i32).await;
     product_content::verify_local_lesson_keys(&owner, &lesson.id, lesson.revision as i32).await;
+    product_content::verify_local_lesson_records(
+        &owner,
+        &lesson.id,
+        lesson.revision as i32,
+        account,
+    )
+    .await;
     assert_eq!(product_visuals::snapshot(&owner).await, visual_snapshot);
     product_visuals::verify(&owner).await;
     assert_eq!(
@@ -5416,37 +5439,6 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .try_get::<String>("", "hash")
         .unwrap();
     assert_eq!(after_activate, before_withdraw);
-    let mut foreign_source = imported_source.clone();
-    foreign_source["id"] = h_lesson.id.clone().into();
-    let foreign_import = serde_json::json!({"document":foreign_source.to_string(),"reason":"Foreign import rejected"});
-    let (status, result) = request(
-        &content_app,
-        "POST",
-        "/api/v1/operator/lessons/import",
-        Some(foreign_import.clone()),
-        &mut cookie,
-        &mut csrf,
-    )
-    .await;
-    assert_eq!(status, 404, "{result}");
-    let (status, report) = request(
-        &content_app,
-        "POST",
-        "/api/v1/operator/documents/lesson/check",
-        Some(foreign_import),
-        &mut cookie,
-        &mut csrf,
-    )
-    .await;
-    assert_eq!(status, 200, "{report}");
-    assert_eq!(report["valid"], false);
-    let row = owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT server_document, (SELECT count(*) FROM lesson_import_audit WHERE lesson_id=$1 AND revision=$2)::bigint AS n FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2",[h_lesson.id.clone().into(),(h_lesson.revision as i32).into()])).await.unwrap().unwrap();
-    assert_eq!(
-        row.try_get::<serde_json::Value>("", "server_document")
-            .unwrap(),
-        serde_json::json!({})
-    );
-    assert_eq!(row.try_get::<i64>("", "n").unwrap(), 0);
     let foreign_manifest = serde_json::json!({"id":"brioche-foreign-course-release","schemaVersion":"1.0","levels":[{"id":h_lesson.level_id,"label":"Synthetic","units":[{"id":h_lesson.unit_id,"titleZh":"合成单元","lessons":[{"lessonId":h_lesson.id,"revision":h_lesson.revision}]}]}]});
     let foreign_document = serde_json::json!({"document":foreign_manifest.to_string(),"reason":"Foreign staging rejected"});
     assert_eq!(
@@ -5705,6 +5697,95 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         .unwrap()
     );
     tx.rollback().await.unwrap();
+    // Owning an identifier in H does not reserve it globally: import a valid B source.
+    let mut local_import_source = imported_source.clone();
+    local_import_source["id"] = h_lesson.id.clone().into();
+    local_import_source["revision"] = h_lesson.revision.into();
+    let local_import = serde_json::json!({"document":local_import_source.to_string(),"reason":"Own product-local source"});
+    // A partial/legacy layout still rejects the foreign global identity; schema errors do not opt in.
+    owner.execute_unprepared("ALTER TABLE lesson_import_audit DROP CONSTRAINT chef_local_import_primary; ALTER TABLE lesson_import_audit ADD CONSTRAINT legacy_import_primary_fixture PRIMARY KEY(lesson_id,revision)").await.unwrap();
+    let (status, legacy_check) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/documents/lesson/check",
+        Some(local_import.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{legacy_check}");
+    assert_eq!(legacy_check["valid"], false, "{legacy_check}");
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/lessons/import",
+            Some(local_import.clone()),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        404
+    );
+    owner.execute_unprepared("ALTER TABLE lesson_import_audit DROP CONSTRAINT legacy_import_primary_fixture; ALTER TABLE lesson_import_audit ADD CONSTRAINT chef_local_import_primary PRIMARY KEY(product_id,lesson_id,revision)").await.unwrap();
+
+    let h_snapshot=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT md5(to_jsonb(l)::text) AS hash FROM lesson_revisions l WHERE product_id='hargow' AND lesson_id=$1 AND revision=$2",[h_lesson.id.clone().into(),(h_lesson.revision as i32).into()])).await.unwrap().unwrap().try_get::<String>("", "hash").unwrap();
+    let (status, check) = request(
+        &content_app,
+        "POST",
+        "/api/v1/operator/documents/lesson/check",
+        Some(local_import.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{check}");
+    assert_eq!(check["valid"], true, "{check}");
+    for _ in 0..2 {
+        let (status, result) = request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/lessons/import",
+            Some(local_import.clone()),
+            &mut cookie,
+            &mut csrf,
+        )
+        .await;
+        assert_eq!(status, 200, "{result}");
+        assert_eq!(result["lessonId"], h_lesson.id);
+    }
+    let row=owner.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT md5(to_jsonb(l)::text) AS hash,(SELECT count(*) FROM lesson_revisions WHERE product_id='brioche' AND lesson_id=$1 AND revision=$2)::bigint AS lessons,(SELECT count(*) FROM lesson_import_audit WHERE product_id='brioche' AND lesson_id=$1 AND revision=$2)::bigint AS audits,(SELECT count(*) FROM lesson_import_audit WHERE product_id='hargow' AND lesson_id=$1 AND revision=$2)::bigint AS foreign_audits FROM lesson_revisions l WHERE l.product_id='hargow' AND l.lesson_id=$1 AND l.revision=$2",[h_lesson.id.clone().into(),(h_lesson.revision as i32).into()])).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<String>("", "hash").unwrap(), h_snapshot);
+    assert_eq!(row.try_get::<i64>("", "lessons").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "audits").unwrap(), 1);
+    assert_eq!(row.try_get::<i64>("", "foreign_audits").unwrap(), 0);
+    let (status, detail) = request(
+        &h_public,
+        "GET",
+        &format!("/api/lessons/{}", h_lesson.id),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(detail, serde_json::to_value(&h_lesson).unwrap());
+    local_import_source["title"]["zh"] = "Changed immutable own course".into();
+    let changed = serde_json::json!({"document":local_import_source.to_string(),"reason":"Immutable conflict"});
+    assert_eq!(
+        request(
+            &content_app,
+            "POST",
+            "/api/v1/operator/lessons/import",
+            Some(changed),
+            &mut cookie,
+            &mut csrf
+        )
+        .await
+        .0,
+        409
+    );
     task.abort();
     let _ = task.await;
     assert_eq!(

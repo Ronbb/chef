@@ -178,8 +178,8 @@ pub(crate) async fn import_product_transaction(
         vec![format!("lesson-import:{}:{}", lesson.id, lesson.revision).into()],
     )
     .await?;
-    // Recheck after the global identity lock to prevent a concurrent foreign
-    // import becoming an identical retry. Product-local keys are still pending.
+    // Conservative shared identity lock also serializes legacy-layout imports.
+    // Recheck the legacy guard; local layouts read retries only in their product.
     check_owner(db, product, &source).await?;
     let identity = vec![lesson.id.clone().into(), (lesson.revision as i32).into()];
     if let Some(existing) = one(
@@ -229,8 +229,8 @@ pub(crate) async fn import_product_transaction(
     })
 }
 
-// Temporary global-ID collision guard: do not read another product's private
-// document. Product-local identities will replace this global ownership lookup.
+// Legacy layouts still need the global-ID collision guard. After both immutable
+// lesson and import-audit keys are product-local, foreign identities are irrelevant.
 async fn check_owner(
     db: &impl ConnectionTrait,
     product: Option<crate::product::ProductId>,
@@ -239,6 +239,10 @@ async fn check_owner(
     let Some(product) = product else {
         return Ok(());
     };
+    let ready=one(db,"SELECT count(*)=2 AS ready FROM pg_catalog.pg_constraint c WHERE c.contype='p' AND c.conrelid IN ('lesson_revisions'::regclass,'lesson_import_audit'::regclass) AND (SELECT array_agg(a.attname::text ORDER BY k.position) FROM unnest(c.conkey) WITH ORDINALITY k(column_number,position) JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.column_number)=ARRAY['product_id','lesson_id','revision']::text[]",vec![]).await?.ok_or(AppError::Unavailable)?;
+    if field::<bool>(&ready, "ready")? {
+        return Ok(());
+    }
     let id = source["id"].as_str().ok_or(AppError::InvalidInput)?;
     let revision = source["revision"]
         .as_i64()

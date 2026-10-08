@@ -112,3 +112,60 @@ pub async fn verify_local_lesson_keys(db: &DatabaseConnection, lesson: &str, rev
     assert!(error.to_string().contains("duplicate key"), "{error}");
     tx.rollback().await.unwrap();
 }
+
+// Synthetic structural records: not language content, rights or real human listening evidence.
+pub async fn verify_local_lesson_records(
+    db: &DatabaseConnection,
+    lesson: &str,
+    revision: i32,
+    actor: i64,
+) {
+    let tx = db.begin().await.unwrap();
+    tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_revisions(product_id,lesson_id,revision,published,public_document,server_document) SELECT p.id,'local-record-fixture',1,false,l.public_document,l.server_document FROM lesson_revisions l CROSS JOIN (VALUES('brioche'),('hargow')) p(id) WHERE l.product_id='brioche' AND l.lesson_id=$1 AND l.revision=$2",[lesson.into(),revision.into()])).await.unwrap();
+    tx.execute_unprepared("INSERT INTO content_withdrawals(product_id,lesson_id,revision) VALUES('hargow','local-record-fixture',1); UPDATE lesson_revisions SET published=true WHERE product_id='brioche' AND lesson_id='local-record-fixture'").await.unwrap();
+    tx.execute_unprepared("SAVEPOINT local_withdrawal")
+        .await
+        .unwrap();
+    let error=tx.execute_unprepared("UPDATE lesson_revisions SET published=true WHERE product_id='hargow' AND lesson_id='local-record-fixture'").await.unwrap_err();
+    assert!(error.to_string().contains("withdrawn revision"), "{error}");
+    tx.execute_unprepared("ROLLBACK TO SAVEPOINT local_withdrawal")
+        .await
+        .unwrap();
+    tx.execute_unprepared("INSERT INTO content_withdrawals(product_id,lesson_id,revision) VALUES('brioche','local-record-fixture',1); INSERT INTO lesson_import_audit(product_id,lesson_id,revision,actor,reason) SELECT product_id,lesson_id,revision,'synthetic-author','Isolated structural fixture' FROM lesson_revisions WHERE lesson_id='local-record-fixture'").await.unwrap();
+    tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO editorial_reviews(product_id,lesson_id,revision,version,approved,actor_id,reason) SELECT product_id,lesson_id,revision,1,false,$1,'Isolated structural fixture' FROM lesson_revisions WHERE lesson_id='local-record-fixture'",[actor.into()])).await.unwrap();
+    tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_audio_reviews(product_id,lesson_id,revision,version,lesson_hash,accepted,heard,actor_id,reason) SELECT product_id,lesson_id,revision,1,repeat('e',64),false,false,$1,'Isolated structural fixture' FROM lesson_revisions WHERE lesson_id='local-record-fixture'",[actor.into()])).await.unwrap();
+    tx.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO lesson_direct_publications(product_id,lesson_id,revision,lesson_hash,actor_id,reason,request,review_version) SELECT product_id,lesson_id,revision,repeat('e',64),$1,'Isolated structural fixture','{}',0 FROM lesson_revisions WHERE lesson_id='local-record-fixture'",[actor.into()])).await.unwrap();
+    for table in [
+        "content_withdrawals",
+        "lesson_import_audit",
+        "editorial_reviews",
+        "lesson_audio_reviews",
+        "lesson_direct_publications",
+    ] {
+        let row=tx.query_one_raw(Statement::from_string(DbBackend::Postgres,format!("SELECT count(*)::bigint AS n FROM {table} WHERE lesson_id='local-record-fixture'"))).await.unwrap().unwrap();
+        assert_eq!(row.try_get::<i64>("", "n").unwrap(), 2, "{table}");
+        tx.execute_unprepared("SAVEPOINT local_duplicate")
+            .await
+            .unwrap();
+        let error=tx.execute_unprepared(&format!("INSERT INTO {table} SELECT * FROM {table} WHERE product_id='hargow' AND lesson_id='local-record-fixture'")).await.unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate key"),
+            "{table}: {error}"
+        );
+        tx.execute_unprepared("ROLLBACK TO SAVEPOINT local_duplicate")
+            .await
+            .unwrap();
+    }
+    tx.execute_unprepared("SAVEPOINT local_restore")
+        .await
+        .unwrap();
+    let error=tx.execute_unprepared("UPDATE lesson_revisions SET published=true WHERE product_id='brioche' AND lesson_id='local-record-fixture'").await.unwrap_err();
+    assert!(error.to_string().contains("withdrawn revision"), "{error}");
+    tx.execute_unprepared("ROLLBACK TO SAVEPOINT local_restore")
+        .await
+        .unwrap();
+    // Retain both immutable row guards after replacing uniqueness.
+    let error=tx.execute_unprepared("UPDATE lesson_import_audit SET reason='changed' WHERE lesson_id='local-record-fixture'").await.unwrap_err();
+    assert!(error.to_string().contains("immutable"), "{error}");
+    tx.rollback().await.unwrap();
+}

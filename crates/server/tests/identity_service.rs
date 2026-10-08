@@ -952,6 +952,11 @@ async fn shared_identity_sessions_are_product_bound_and_revoked_globally() {
     ))
     .await
     .unwrap();
+    db.execute_unprepared(include_str!(
+        "../../migration/src/learning_local_lesson_records.sql"
+    ))
+    .await
+    .unwrap();
     db.execute_unprepared(&format!(
         "CREATE ROLE {learner_role} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE"
     ))
