@@ -2,7 +2,7 @@
 use crate::{
     AppError,
     admin_auth::AdminAuth,
-    learning::{exec, field, one},
+    learning::{exec, field, one, product_filter},
     voice_references::hex,
 };
 use axum::{
@@ -28,10 +28,12 @@ use std::{
 const MAX_PACKAGE: usize = 128 * 1024 * 1024;
 #[derive(Clone)]
 struct Store {
+    product: Option<crate::product::ProductId>,
     db: sea_orm::DatabaseConnection,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route(
@@ -46,7 +48,7 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
             "/api/v1/operator/speech-alignments/{id}/packages",
             get(list),
         )
-        .with_state(Store { db })
+        .with_state(Store { db, product })
 }
 fn import_error(error: anyhow::Error) -> AppError {
     if error.is::<sea_orm::DbErr>() {
@@ -64,13 +66,29 @@ fn import_error(error: anyhow::Error) -> AppError {
 }
 async fn replay(
     db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
     alignment: &str,
     actor: i64,
     request: &AdminSpeechPackageImport,
 ) -> Result<Option<AdminSpeechPackageResult>, AppError> {
+    // The old global key remains temporarily; never read another product's retry payload.
+    if let Some(product) = product
+        && one(
+            db,
+            "SELECT 1 FROM speech_package_imports WHERE id=$1 AND product_id<>$2",
+            vec![request.id.clone().into(), product.as_str().into()],
+        )
+        .await?
+        .is_some()
+    {
+        return Err(AppError::NotFound);
+    }
     let row = one(
         db,
-        "SELECT actor_id,alignment_id,request,result FROM speech_package_imports WHERE id=$1",
+        &format!(
+            "SELECT actor_id,alignment_id,request,result FROM speech_package_imports WHERE id=$1{}",
+            product_filter(product, "product_id")
+        ),
         vec![request.id.clone().into()],
     )
     .await?;
@@ -101,17 +119,20 @@ async fn import(
     if !hex(&id, 32) || !hex(&request.id, 32) {
         return Err(AppError::InvalidInput);
     }
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let actor = operator.actor;
     let tx =
         b.db.begin_with_config(Some(IsolationLevel::RepeatableRead), None)
             .await
             .map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
-    if let Some(result) = replay(&tx, &id, actor, &request).await? {
+    if let Some(result) = replay(&tx, b.product, &id, actor, &request).await? {
         tx.commit().await.map_err(|_| AppError::Unavailable)?;
         return Ok(Json(result));
     }
-    let original = snapshot(&tx, &id, &request.package).await?;
+    let original = snapshot(&tx, b.product, &id, &request.package).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     let _permit = permits
         .try_acquire_many_owned(2)
@@ -143,20 +164,27 @@ async fn import(
     operator.lock_content(&tx).await?;
     exec(
         &tx,
-        "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            b.product.map_or_else(
+                || "singleton".to_owned(),
+                |p| format!("product_id='{}'", p.as_str())
+            )
+        ),
         vec![],
     )
     .await?;
-    if let Some(result) = replay(&tx, &id, actor, &request).await? {
+    if let Some(result) = replay(&tx, b.product, &id, actor, &request).await? {
         tx.commit().await.map_err(|_| AppError::Unavailable)?;
         return Ok(Json(result));
     }
-    if snapshot(&tx, &id, &request.package).await? != expected {
+    if snapshot(&tx, b.product, &id, &request.package).await? != expected {
         return Err(AppError::Conflict);
     }
     let actor_name = format!("user:{actor}");
-    crate::recording::register_transaction(
+    crate::recording::register_product_transaction(
         &tx,
+        b.product,
         &assembled.bundle,
         recordings,
         &actor_name,
@@ -165,8 +193,9 @@ async fn import(
     )
     .await
     .map_err(import_error)?;
-    let imported = crate::author_import::import_transaction(
+    let imported = crate::author_import::import_product_transaction(
         &tx,
+        b.product,
         assembled.source,
         &actor_name,
         &request.package.reason,
@@ -180,10 +209,28 @@ async fn import(
         revision: imported.revision,
         recording_count: assembled.bundle.assets.len() as u32,
     };
-    exec(&tx,"INSERT INTO speech_package_imports(id,alignment_id,actor_id,request,result,manifest,reason,lesson_id,revision) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-        vec![request.id.clone().into(),id.into(),actor.into(),serde_json::to_value(&request).map_err(|_|AppError::Unavailable)?.into(),
-        serde_json::to_value(&result).map_err(|_|AppError::Unavailable)?.into(),assembled.manifest.into(),request.package.reason.into(),
-        result.lesson_id.clone().into(),(result.revision as i32).into()]).await?;
+    let mut values = vec![
+        request.id.clone().into(),
+        id.into(),
+        actor.into(),
+        serde_json::to_value(&request)
+            .map_err(|_| AppError::Unavailable)?
+            .into(),
+        serde_json::to_value(&result)
+            .map_err(|_| AppError::Unavailable)?
+            .into(),
+        assembled.manifest.into(),
+        request.package.reason.into(),
+        result.lesson_id.clone().into(),
+        (result.revision as i32).into(),
+    ];
+    let sql = if let Some(product) = b.product {
+        values.push(product.as_str().into());
+        "INSERT INTO speech_package_imports(id,alignment_id,actor_id,request,result,manifest,reason,lesson_id,revision,product_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"
+    } else {
+        "INSERT INTO speech_package_imports(id,alignment_id,actor_id,request,result,manifest,reason,lesson_id,revision) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)"
+    };
+    exec(&tx, sql, values).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
 }
@@ -205,13 +252,16 @@ async fn list(
     }
     one(
         &b.db,
-        "SELECT id FROM speech_alignments WHERE id=$1",
+        &format!(
+            "SELECT id FROM speech_alignments WHERE id=$1{}",
+            product_filter(b.product, "product_id")
+        ),
         vec![id.clone().into()],
     )
     .await?
     .ok_or(AppError::NotFound)?;
     let rows=b.db.query_all_raw(Statement::from_sql_and_values(DbBackend::Postgres,
-        "SELECT result FROM speech_package_imports WHERE alignment_id=$1 AND id>$2 ORDER BY id LIMIT 21",vec![id.into(),after.into()]))
+        format!("SELECT result FROM speech_package_imports WHERE alignment_id=$1 AND id>$2{} ORDER BY id LIMIT 21",product_filter(b.product,"product_id")),vec![id.into(),after.into()]))
         .await.map_err(|_|AppError::Unavailable)?;
     let items = rows
         .iter()
@@ -243,11 +293,17 @@ pub(crate) fn settings(r: &AdminSpeechPackageRequest) -> Result<(), AppError> {
 }
 async fn snapshot(
     db: &impl ConnectionTrait,
+    product: Option<crate::product::ProductId>,
     id: &str,
     r: &AdminSpeechPackageRequest,
 ) -> Result<Value, AppError> {
-    let mut snapshot =
-        crate::speech_alignments::package_snapshot(db, id, &r.expected_report_hash).await?;
+    let mut snapshot = crate::speech_alignments::package_snapshot_for_product(
+        db,
+        product,
+        id,
+        &r.expected_report_hash,
+    )
+    .await?;
     let plan = &snapshot["plan"];
     let lesson = plan["lessonId"].as_str().ok_or(AppError::Unavailable)?;
     let revision = plan["lessonRevision"]
@@ -256,7 +312,10 @@ async fn snapshot(
         .ok_or(AppError::Unavailable)?;
     let row = one(
         db,
-        "SELECT server_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2",
+        &format!(
+            "SELECT server_document FROM lesson_revisions WHERE lesson_id=$1 AND revision=$2{}",
+            product_filter(product, "product_id")
+        ),
         vec![lesson.into(), revision.into()],
     )
     .await?
@@ -269,7 +328,10 @@ async fn snapshot(
     }
     let latest = one(
         db,
-        "SELECT MAX(revision) AS revision FROM lesson_revisions WHERE lesson_id=$1",
+        &format!(
+            "SELECT MAX(revision) AS revision FROM lesson_revisions WHERE lesson_id=$1{}",
+            product_filter(product, "product_id")
+        ),
         vec![lesson.into()],
     )
     .await?
@@ -290,6 +352,9 @@ async fn export(
 ) -> Result<Response, AppError> {
     let operator = auth.require_operator().await?;
     settings(&request)?;
+    if b.product.is_some_and(|product| product != operator.product) {
+        return Err(AppError::Forbidden);
+    }
     let actor = operator.actor;
     // Assembly holds originals, decoded PCM and the archive in memory. Reserve
     // both shared media slots so two maximum-sized packages cannot overlap.
@@ -301,7 +366,7 @@ async fn export(
             .await
             .map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
-    let original = snapshot(&tx, &id, &request).await?;
+    let original = snapshot(&tx, b.product, &id, &request).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     let expected = original.clone();
     let config = request.clone();
@@ -312,11 +377,17 @@ async fn export(
     operator.lock_content(&tx).await?;
     exec(
         &tx,
-        "SELECT singleton FROM content_state WHERE singleton FOR UPDATE",
+        &format!(
+            "SELECT generation FROM content_state WHERE {} FOR UPDATE",
+            b.product.map_or_else(
+                || "singleton".to_owned(),
+                |p| format!("product_id='{}'", p.as_str())
+            )
+        ),
         vec![],
     )
     .await?;
-    if snapshot(&tx, &id, &request).await? != expected {
+    if snapshot(&tx, b.product, &id, &request).await? != expected {
         return Err(AppError::Conflict);
     }
     tx.commit().await.map_err(|_| AppError::Unavailable)?;

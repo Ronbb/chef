@@ -309,15 +309,7 @@ async fn load(
     .await?
     .ok_or(AppError::NotFound)
 }
-pub(crate) async fn package_snapshot(
-    db: &impl ConnectionTrait,
-    id: &str,
-    expected_hash: &str,
-) -> Result<Value, AppError> {
-    package_snapshot_for_product(db, None, id, expected_hash).await
-}
-// Legacy package kernel remains unscoped until its own trusted context migrates.
-async fn package_snapshot_for_product(
+pub(crate) async fn package_snapshot_for_product(
     db: &impl ConnectionTrait,
     product: Option<crate::product::ProductId>,
     id: &str,

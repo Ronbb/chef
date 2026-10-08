@@ -144,7 +144,8 @@ pub(crate) async fn import_transaction(
 ) -> anyhow::Result<brioche_course_contract::AdminImportResult> {
     import_product_transaction(db, None, source, actor, reason, allow_identical_retry).await
 }
-async fn import_product_transaction(
+// Caller owns the transaction and authorization; product comes from trusted assembly.
+pub(crate) async fn import_product_transaction(
     db: &impl ConnectionTrait,
     product: Option<crate::product::ProductId>,
     source: Value,

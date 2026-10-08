@@ -260,27 +260,8 @@ pub(crate) fn prepare_recordings(
     }
     Ok(result)
 }
-/// The caller must hold the content lock and reauthorize its operator.
-pub(crate) async fn register_transaction(
-    db: &impl ConnectionTrait,
-    bundle: &AudioBundle,
-    recordings: PreparedRecordings,
-    actor: &str,
-    operator: Option<(i64, &str)>,
-    reuse_identical: bool,
-) -> Result<()> {
-    register_product_transaction(
-        db,
-        None,
-        bundle,
-        recordings,
-        actor,
-        operator,
-        reuse_identical,
-    )
-    .await
-}
-async fn register_product_transaction(
+// Caller must hold the product content lock and reauthorize its operator.
+pub(crate) async fn register_product_transaction(
     db: &impl ConnectionTrait,
     product: Option<crate::product::ProductId>,
     bundle: &AudioBundle,

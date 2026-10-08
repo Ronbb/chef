@@ -3216,7 +3216,7 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     revoked_clip["expectedPreviousId"] = "ffffffffffffffffffffffffffffffff".into();
     let mut revoked_alignment = alignment_request.clone();
     revoked_alignment["id"] = "77777777777777777777777777777777".into();
-    let mut revoked_package = package_import;
+    let mut revoked_package = package_import.clone();
     revoked_package["id"] = "55555555555555555555555555555555".into();
     revoked_package["package"]["lessonRevision"] = (lesson.revision + 3).into();
     let revoked_package_export = revoked_package["package"].clone();
@@ -4006,7 +4006,32 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     )
     .await;
     assert_eq!(status, 200, "{alignments_before}");
+    let own_package_list = format!("{alignment_route}/{alignment_id}/packages");
+    let (status, packages_before) = request(
+        &content_app,
+        "GET",
+        &own_package_list,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{packages_before}");
     product_speech_work::seed_foreign(&owner, account).await;
+    let (status, packages_after) = request(
+        &content_app,
+        "GET",
+        &own_package_list,
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{packages_after}");
+    assert_eq!(
+        packages_before, packages_after,
+        "foreign package receipts do not affect own list"
+    );
     let (status, alignments_after) = request(
         &content_app,
         "GET",
@@ -4523,6 +4548,99 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
     assert_eq!(
         row.try_get::<i64>("", "reviews").unwrap(),
         keys.len() as i64
+    );
+
+    let foreign_package_path = format!("{alignment_route}/{}/package", "4".repeat(32));
+    let (status, body) = request(
+        &content_app,
+        "GET",
+        &format!("{foreign_package_path}s"),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let (status, body) = request(
+        &content_app,
+        "GET",
+        &format!("{own_package_list}?product=hargow"),
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    let before=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_package_imports)+(SELECT count(*) FROM audio_assets)+(SELECT count(*) FROM audio_import_audit)+(SELECT count(*) FROM lesson_revisions)+(SELECT count(*) FROM lesson_import_audit) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        &foreign_package_path,
+        Some(package_import["package"].clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "foreign export: {body}");
+    let mut foreign_import = package_import.clone();
+    foreign_import["id"] = format!("{:032x}", 701).into();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        &format!("{foreign_package_path}/import"),
+        Some(foreign_import),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "foreign import: {body}");
+    let mut foreign_retry = package_import.clone();
+    foreign_retry["id"] = "4".repeat(32).into();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        &import_path,
+        Some(foreign_retry),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "foreign import id retry: {body}");
+    let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM speech_package_imports)+(SELECT count(*) FROM audio_assets)+(SELECT count(*) FROM audio_import_audit)+(SELECT count(*) FROM lesson_revisions)+(SELECT count(*) FROM lesson_import_audit) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    assert_eq!(
+        before, after,
+        "foreign package requests have no registration/import writes"
+    );
+    let (status, retry) = request(
+        &content_app,
+        "POST",
+        &import_path,
+        Some(package_import.clone()),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{retry}");
+    assert_eq!(
+        retry, imported,
+        "own precise import retry remains stable with foreign receipts"
+    );
+    let row=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT count(*) AS n FROM speech_package_imports p JOIN lesson_revisions l ON (l.lesson_id,l.revision,l.product_id)=(p.lesson_id,p.revision,p.product_id) JOIN lesson_import_audit a ON (a.lesson_id,a.revision,a.product_id)=(p.lesson_id,p.revision,p.product_id) WHERE p.id=repeat('6',32) AND p.product_id='brioche'")).await.unwrap().unwrap();
+    assert_eq!(
+        row.try_get::<i64>("", "n").unwrap(),
+        1,
+        "native package/source/import audit all belong to Brioche"
+    );
+    assert_eq!(
+        alignment_calls_before,
+        [
+            enrollment.creates.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment.queries.load(std::sync::atomic::Ordering::SeqCst),
+            enrollment
+                .syntheses
+                .load(std::sync::atomic::Ordering::SeqCst)
+        ],
+        "package delivery/retries do not contact providers"
     );
 
     let foreign_audition = format!("{:032x}", 201);
