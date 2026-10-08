@@ -228,7 +228,13 @@ pub async fn run() -> Result<()> {
     };
     let author_command = matches!(
         command.as_str(),
-        "import" | "release-stage" | "release-activate" | "content-withdraw" | "release-status"
+        "import"
+            | "release-stage"
+            | "release-activate"
+            | "content-withdraw"
+            | "release-status"
+            | "assets-import"
+            | "audio-import"
     );
     let author_product = if author_command {
         crate::schema_split::author_scope(db.as_ref().unwrap(), product).await
@@ -589,8 +595,9 @@ pub async fn run() -> Result<()> {
             let document = media_document.as_ref().unwrap();
             let bundle = crate::author_json::from_value(document.value.clone(), "")
                 .map_err(|error| document.semantic(error))?;
-            crate::recording::import_bundle(
+            crate::recording::import_author_bundle(
                 db.as_ref().unwrap(),
+                author_product,
                 bundle,
                 std::path::Path::new(&args[1]),
                 &crate::media::media_root(),
@@ -609,8 +616,9 @@ pub async fn run() -> Result<()> {
             let document = media_document.as_ref().unwrap();
             let bundle = crate::author_json::from_value(document.value.clone(), "")
                 .map_err(|error| document.semantic(error))?;
-            crate::media::import_bundle(
+            crate::media::import_author_bundle(
                 db.as_ref().unwrap(),
+                author_product,
                 bundle,
                 std::path::Path::new(&args[1]),
                 &crate::media::media_root(),

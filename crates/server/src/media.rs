@@ -488,6 +488,17 @@ pub async fn import_bundle(
 ) -> Result<()> {
     import_bundle_impl(db, None, bundle, source_root, store, actor, None).await
 }
+/// Trusted author CLI; the dispatcher verifies layout and supplies its fixed product.
+pub(crate) async fn import_author_bundle(
+    db: &DatabaseConnection,
+    product: Option<crate::product::ProductId>,
+    bundle: AssetBundle,
+    source_root: &Path,
+    store: &Path,
+    actor: &str,
+) -> Result<()> {
+    import_bundle_impl(db, product, bundle, source_root, store, actor, None).await
+}
 pub(crate) async fn import_operator_bundle(
     db: &DatabaseConnection,
     product: Option<crate::product::ProductId>,

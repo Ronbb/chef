@@ -1,9 +1,12 @@
 //! Product-aware author CLI against disposable schemas; synthetic H records are isolation sentinels.
-use sea_orm::{ConnectOptions, ConnectionTrait, Database, DbBackend, Statement};
+use sea_orm::{
+    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement,
+};
 use sea_orm_migration::MigratorTrait;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 #[path = "support/assets.rs"]
@@ -62,6 +65,7 @@ async fn split_author_cli_uses_own_product_and_requires_complete_history() {
     brioche_migration::Migrator::up(&db, None).await.unwrap();
     let root = assets::fixture_assets(&db, &learning).await;
     std::fs::write(root.join(".env"), "").unwrap();
+    let media_inputs = prepare_media_inputs(&root);
     let mut source: Value =
         serde_json::from_str(include_str!("../../../docs/examples/a1-bakery.lesson.json")).unwrap();
     source["id"] = "author-split-own-lesson".into();
@@ -81,6 +85,25 @@ async fn split_author_cli_uses_own_product_and_requires_complete_history() {
         invoke(&base, &learning, &root, &["release-status"]),
         "Author command layout not ready",
     );
+    for (command, file) in [
+        ("assets-import", &media_inputs.visual_file),
+        ("audio-import", &media_inputs.audio_file),
+    ] {
+        rejected(
+            invoke(
+                &base,
+                &learning,
+                &root,
+                &[
+                    command,
+                    file.to_str().unwrap(),
+                    media_inputs.sources.to_str().unwrap(),
+                    "media-cli",
+                ],
+            ),
+            "Author command layout not ready",
+        );
+    }
     brioche_migration::layout::up(&db, &learning, &identity)
         .await
         .unwrap();
@@ -131,6 +154,8 @@ async fn split_author_cli_uses_own_product_and_requires_complete_history() {
             .await
             .is_err()
     );
+    let h_media_before =
+        verify_media_commands(&db, &cli_base, &learning, &root, &media_inputs).await;
     let manifest = json!({"schemaVersion":"1.0","id":"author-shared-release","levels":[{"id":"a1","label":"A1","units":[{"id":source["unitId"],"titleZh":"隔离协议测试","lessons":[{"lessonId":lesson_id,"revision":1}]}]}]});
     let release_file = root.join("release.json");
     std::fs::write(&release_file, serde_json::to_vec(&manifest).unwrap()).unwrap();
@@ -292,6 +317,24 @@ async fn split_author_cli_uses_own_product_and_requires_complete_history() {
     let next_file = root.join("next-lesson.json");
     std::fs::write(&next_file, serde_json::to_vec(&next_source).unwrap()).unwrap();
     let next_file = next_file.to_str().unwrap();
+    let mut layout_visual = media_inputs.visual.clone();
+    layout_visual["assets"][0]["assetId"] = "author-layout-avatar".into();
+    layout_visual["characters"][0]["snapshot"]["characterId"] = "author-layout-character".into();
+    layout_visual["characters"][0]["snapshot"]["avatarId"] = "author-layout-avatar".into();
+    let mut layout_audio = media_inputs.audio.clone();
+    layout_audio["assets"][0]["assetId"] = "author-layout-recording".into();
+    let layout_visual_file = root.join("layout-visual.json");
+    let layout_audio_file = root.join("layout-audio.json");
+    std::fs::write(
+        &layout_visual_file,
+        serde_json::to_vec(&layout_visual).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        &layout_audio_file,
+        serde_json::to_vec(&layout_audio).unwrap(),
+    )
+    .unwrap();
     // Missing/unknown/drifted ledger entries cannot silently choose legacy scope.
     db.execute_unprepared("CREATE TEMP TABLE held_author_step AS SELECT * FROM chef_layout_migrations WHERE version='learning_000023_local_speech_work_keys'; DELETE FROM chef_layout_migrations WHERE version='learning_000023_local_speech_work_keys'").await.unwrap();
     rejected(
@@ -302,6 +345,25 @@ async fn split_author_cli_uses_own_product_and_requires_complete_history() {
         invoke(&cli_base, &learning, &root, &["import", next_file]),
         "Author command layout not ready",
     );
+    for (command, file) in [
+        ("assets-import", &layout_visual_file),
+        ("audio-import", &layout_audio_file),
+    ] {
+        rejected(
+            invoke(
+                &cli_base,
+                &learning,
+                &root,
+                &[
+                    command,
+                    file.to_str().unwrap(),
+                    media_inputs.sources.to_str().unwrap(),
+                    "media-cli",
+                ],
+            ),
+            "Author command layout not ready",
+        );
+    }
     db.execute_unprepared("INSERT INTO chef_layout_migrations SELECT * FROM held_author_step; DROP TABLE held_author_step").await.unwrap();
     db.execute_unprepared(
         "UPDATE chef_layout_migrations SET version='unknown_author_step' WHERE scope='identity'",
@@ -316,6 +378,25 @@ async fn split_author_cli_uses_own_product_and_requires_complete_history() {
         invoke(&cli_base, &learning, &root, &["import", next_file]),
         "Author command layout not ready",
     );
+    for (command, file) in [
+        ("assets-import", &layout_visual_file),
+        ("audio-import", &layout_audio_file),
+    ] {
+        rejected(
+            invoke(
+                &cli_base,
+                &learning,
+                &root,
+                &[
+                    command,
+                    file.to_str().unwrap(),
+                    media_inputs.sources.to_str().unwrap(),
+                    "media-cli",
+                ],
+            ),
+            "Author command layout not ready",
+        );
+    }
     db.execute_unprepared("UPDATE chef_layout_migrations SET version='identity_000001_throttle_expiry',definition='changed' WHERE scope='identity'").await.unwrap();
     rejected(
         invoke(&cli_base, &learning, &root, &["release-status"]),
@@ -325,6 +406,25 @@ async fn split_author_cli_uses_own_product_and_requires_complete_history() {
         invoke(&cli_base, &learning, &root, &["import", next_file]),
         "Author command layout not ready",
     );
+    for (command, file) in [
+        ("assets-import", &layout_visual_file),
+        ("audio-import", &layout_audio_file),
+    ] {
+        rejected(
+            invoke(
+                &cli_base,
+                &learning,
+                &root,
+                &[
+                    command,
+                    file.to_str().unwrap(),
+                    media_inputs.sources.to_str().unwrap(),
+                    "media-cli",
+                ],
+            ),
+            "Author command layout not ready",
+        );
+    }
     db.execute_unprepared("UPDATE chef_layout_migrations SET definition='CREATE INDEX chef_throttle_expiry ON auth_throttle(resets_at)' WHERE scope='identity'").await.unwrap();
     rejected(
         invoke(
@@ -348,6 +448,21 @@ async fn split_author_cli_uses_own_product_and_requires_complete_history() {
     );
     let absent=db.query_one_raw(Statement::from_sql_and_values(DbBackend::Postgres,"SELECT NOT EXISTS(SELECT 1 FROM lesson_revisions WHERE product_id='brioche' AND lesson_id=$1 AND revision=2) AS absent",[lesson_id.into()])).await.unwrap().unwrap();
     assert!(absent.try_get::<bool>("", "absent").unwrap());
+    let row=db.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM media_assets WHERE product_id='brioche' AND asset_id='author-layout-avatar')+(SELECT count(*) FROM character_revisions WHERE product_id='brioche' AND character_id='author-layout-character')+(SELECT count(*) FROM audio_assets WHERE product_id='brioche' AND asset_id='author-layout-recording') AS blocked,(SELECT count(*) FROM asset_import_audit WHERE product_id='brioche' AND actor='media-cli')+(SELECT count(*) FROM audio_import_audit WHERE product_id='brioche' AND actor='media-cli') AS audits")).await.unwrap().unwrap();
+    assert_eq!(row.try_get::<i64>("", "blocked").unwrap(), 0);
+    assert_eq!(row.try_get::<i64>("", "audits").unwrap(), 2);
+    assert_eq!(
+        db.query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            MEDIA_FINGERPRINT_SQL
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "hash")
+        .unwrap(),
+        h_media_before
+    );
     role_db.close().await.unwrap();
     // Delete only known files beneath this task's canonical fixture root.
     let canonical = root.canonicalize().unwrap();
@@ -370,3 +485,197 @@ async fn split_author_cli_uses_own_product_and_requires_complete_history() {
         .await
         .unwrap();
 }
+
+struct MediaInputs {
+    visual: Value,
+    audio: Value,
+    sources: PathBuf,
+    visual_file: PathBuf,
+    audio_file: PathBuf,
+}
+fn prepare_media_inputs(root: &Path) -> MediaInputs {
+    let sources = root.join("author-source");
+    std::fs::create_dir(&sources).unwrap();
+    let svg=br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect x="12" y="12" width="72" height="72" rx="18" fill="#FFC96F"/></svg>"##;
+    std::fs::write(sources.join("avatar.svg"), svg).unwrap();
+    let visual = json!({"schemaVersion":"1.0","assets":[{"assetId":"author-shared-avatar","revision":1,"sha256":format!("{:x}",Sha256::digest(svg)),"mimeType":"image/svg+xml","width":96,"height":96,"altZh":"合成协议头像","creditZh":"仅隔离测试","file":"avatar.svg","status":"ready","source":"synthetic SVG fixture","license":"LicenseRef-TestOnly","creator":"author-cli-fixture","rightsConfirmed":true}],"characters":[{"snapshot":{"characterId":"author-shared-character","revision":1,"displayName":"Fixture","avatarId":"author-shared-avatar","speechLocale":"fr-FR"},"avatarRevision":1}]});
+    let bytes = include_bytes!("fixtures/audio/synthetic.mp3");
+    std::fs::write(sources.join("recording.mp3"), bytes).unwrap();
+    let info = chef_engine::audio::inspect(bytes, "audio/mpeg").unwrap();
+    let audio = json!({"schemaVersion":"1.0","assets":[{"assetId":"author-shared-recording","revision":1,"sha256":format!("{:x}",Sha256::digest(bytes)),"mimeType":"audio/mpeg","durationMs":info.duration_ms,"creditZh":"仅隔离测试","file":"recording.mp3","status":"ready","source":"synthetic audio fixture","license":"LicenseRef-TestOnly","creator":"author-cli-fixture","rightsConfirmed":true}]});
+    let visual_file = root.join("author-visual.json");
+    let audio_file = root.join("author-audio.json");
+    std::fs::write(&visual_file, serde_json::to_vec(&visual).unwrap()).unwrap();
+    std::fs::write(&audio_file, serde_json::to_vec(&audio).unwrap()).unwrap();
+    MediaInputs {
+        visual,
+        audio,
+        sources,
+        visual_file,
+        audio_file,
+    }
+}
+async fn verify_media_commands(
+    db: &DatabaseConnection,
+    url: &str,
+    schema: &str,
+    root: &Path,
+    inputs: &MediaInputs,
+) -> String {
+    let image = &inputs.visual["assets"][0];
+    let image_id = image["assetId"].as_str().unwrap();
+    let image_sha = image["sha256"].as_str().unwrap();
+    let descriptor = json!({"assetId":image_id,"revision":1,"sha256":image_sha,"mimeType":"image/svg+xml","width":96,"height":96,"altZh":"foreign synthetic avatar","creditZh":"foreign fixture","url":format!("/api/media/{image_sha}.svg")});
+    let mut provenance = image.clone();
+    provenance["creator"] = "foreign-fixture".into();
+    let size = std::fs::read(inputs.sources.join("avatar.svg"))
+        .unwrap()
+        .len() as i64;
+    db.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO media_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size) VALUES('hargow',$1,1,$2,$3,$4,'svg',$5)",[image_id.into(),descriptor.into(),provenance.into(),image_sha.into(),size.into()])).await.unwrap();
+    let character = &inputs.visual["characters"][0]["snapshot"];
+    db.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO character_revisions(product_id,character_id,revision,snapshot,avatar_id,avatar_revision) VALUES('hargow',$1,1,$2,$3,1)",[character["characterId"].as_str().unwrap().into(),character.clone().into(),image_id.into()])).await.unwrap();
+    db.execute_unprepared("INSERT INTO asset_import_audit(product_id,actor,bundle_hash,asset_count,character_count) VALUES('hargow','foreign-cli-sentinel',repeat('0',64),1,1)").await.unwrap();
+    let audio = &inputs.audio["assets"][0];
+    let audio_id = audio["assetId"].as_str().unwrap();
+    let audio_sha = audio["sha256"].as_str().unwrap();
+    let bytes = include_bytes!("fixtures/audio/synthetic.mp3");
+    let info = chef_engine::audio::inspect(bytes, "audio/mpeg").unwrap();
+    let descriptor = json!({"assetId":audio_id,"revision":1,"sha256":audio_sha,"mimeType":"audio/mpeg","durationMs":info.duration_ms,"creditZh":"foreign fixture","url":format!("/api/audio/{audio_sha}.mp3")});
+    let mut provenance = audio.clone();
+    provenance["creator"] = "foreign-fixture".into();
+    db.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO audio_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels) VALUES('hargow',$1,1,$2,$3,$4,'mp3',$5,$6,$7,$8)",[audio_id.into(),descriptor.into(),provenance.into(),audio_sha.into(),(bytes.len() as i64).into(),(info.duration_ms as i32).into(),(info.sample_rate as i32).into(),(info.channels as i32).into()])).await.unwrap();
+    db.execute_unprepared("INSERT INTO audio_import_audit(product_id,actor,bundle_hash,asset_count) VALUES('hargow','foreign-cli-sentinel',repeat('0',64),1)").await.unwrap();
+    // A valid square avatar belonging only to Hargow cannot satisfy a B character.
+    db.execute_unprepared("INSERT INTO media_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size) SELECT product_id,'author-foreign-avatar',revision,descriptor||jsonb_build_object('assetId','author-foreign-avatar'),provenance||jsonb_build_object('assetId','author-foreign-avatar'),sha256,extension,byte_size FROM media_assets WHERE product_id='hargow' AND asset_id='author-shared-avatar'").await.unwrap();
+    let hash_sql = MEDIA_FINGERPRINT_SQL;
+    let before = db
+        .query_one_raw(Statement::from_string(DbBackend::Postgres, hash_sql))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "hash")
+        .unwrap();
+    let visual_file = inputs.visual_file.to_str().unwrap();
+    let audio_file = inputs.audio_file.to_str().unwrap();
+    let sources = inputs.sources.to_str().unwrap();
+    for (command, file) in [("assets-import", visual_file), ("audio-import", audio_file)] {
+        success(invoke(
+            url,
+            schema,
+            root,
+            &[command, file, sources, "media-cli"],
+        ));
+        assert!(
+            !invoke(url, schema, root, &[command, file, sources, "media-cli"])
+                .status
+                .success()
+        );
+    }
+    assert_eq!(
+        std::fs::read(root.join(format!("{image_sha}.svg"))).unwrap(),
+        std::fs::read(inputs.sources.join("avatar.svg")).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(root.join(format!("{audio_sha}.mp3"))).unwrap(),
+        bytes
+    );
+    let bad_file = root.join("invalid-media.json");
+    let bad_file = bad_file.to_str().unwrap();
+    let mut foreign_avatar = inputs.visual.clone();
+    foreign_avatar["assets"][0]["assetId"] = "author-rollback-avatar".into();
+    foreign_avatar["characters"][0]["snapshot"]["characterId"] = "author-rollback-character".into();
+    foreign_avatar["characters"][0]["snapshot"]["avatarId"] = "author-foreign-avatar".into();
+    std::fs::write(bad_file, serde_json::to_vec(&foreign_avatar).unwrap()).unwrap();
+    rejected(
+        invoke(
+            url,
+            schema,
+            root,
+            &["assets-import", bad_file, sources, "media-cli"],
+        ),
+        "character avatar revision is missing",
+    );
+    let mut duplicate_visual = inputs.visual.clone();
+    let mut pending = duplicate_visual["assets"][0].clone();
+    pending["assetId"] = "author-batch-avatar".into();
+    duplicate_visual["assets"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, pending);
+    duplicate_visual["characters"] = json!([]);
+    let mut duplicate_audio = inputs.audio.clone();
+    let mut pending = duplicate_audio["assets"][0].clone();
+    pending["assetId"] = "author-batch-recording".into();
+    duplicate_audio["assets"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, pending);
+    for (command, bundle) in [
+        ("assets-import", duplicate_visual),
+        ("audio-import", duplicate_audio),
+    ] {
+        std::fs::write(bad_file, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        rejected(
+            invoke(
+                url,
+                schema,
+                root,
+                &[command, bad_file, sources, "media-cli"],
+            ),
+            "revision already registered",
+        );
+    }
+    for (command, mut bundle) in [
+        ("assets-import", inputs.visual.clone()),
+        ("audio-import", inputs.audio.clone()),
+    ] {
+        bundle["assets"][0]["sha256"] = "0".repeat(64).into();
+        std::fs::write(bad_file, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        rejected(
+            invoke(
+                url,
+                schema,
+                root,
+                &[command, bad_file, sources, "media-cli"],
+            ),
+            "hash mismatch",
+        );
+    }
+    let row=db.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM media_assets WHERE product_id='brioche' AND asset_id='author-shared-avatar')::bigint AS images,(SELECT count(*) FROM character_revisions WHERE product_id='brioche' AND character_id='author-shared-character')::bigint AS characters,(SELECT count(*) FROM audio_assets WHERE product_id='brioche' AND asset_id='author-shared-recording')::bigint AS recordings,(SELECT count(*) FROM asset_import_audit WHERE product_id='brioche' AND actor='media-cli')::bigint AS visual_audits,(SELECT count(*) FROM audio_import_audit WHERE product_id='brioche' AND actor='media-cli')::bigint AS audio_audits,(SELECT count(*) FROM media_assets WHERE product_id='brioche' AND asset_id IN ('author-rollback-avatar','author-batch-avatar'))+(SELECT count(*) FROM character_revisions WHERE product_id='brioche' AND character_id='author-rollback-character')+(SELECT count(*) FROM audio_assets WHERE product_id='brioche' AND asset_id='author-batch-recording') AS rejected_members")).await.unwrap().unwrap();
+    for field in [
+        "images",
+        "characters",
+        "recordings",
+        "visual_audits",
+        "audio_audits",
+    ] {
+        assert_eq!(row.try_get::<i64>("", field).unwrap(), 1);
+    }
+    assert_eq!(row.try_get::<i64>("", "rejected_members").unwrap(), 0);
+    let own=db.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT m.descriptor,m.provenance,c.snapshot FROM media_assets m JOIN character_revisions c ON c.product_id=m.product_id AND c.avatar_id=m.asset_id AND c.avatar_revision=m.revision WHERE m.product_id='brioche' AND m.asset_id='author-shared-avatar'")).await.unwrap().unwrap();
+    assert_eq!(
+        own.try_get::<Value>("", "provenance").unwrap(),
+        inputs.visual["assets"][0]
+    );
+    assert_eq!(
+        own.try_get::<Value>("", "snapshot").unwrap(),
+        inputs.visual["characters"][0]["snapshot"]
+    );
+    let own=db.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT provenance FROM audio_assets WHERE product_id='brioche' AND asset_id='author-shared-recording'")).await.unwrap().unwrap();
+    assert_eq!(
+        own.try_get::<Value>("", "provenance").unwrap(),
+        inputs.audio["assets"][0]
+    );
+    assert_eq!(
+        db.query_one_raw(Statement::from_string(DbBackend::Postgres, hash_sql))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get::<String>("", "hash")
+            .unwrap(),
+        before
+    );
+    before
+}
+
+const MEDIA_FINGERPRINT_SQL: &str = "SELECT md5(jsonb_build_array((SELECT jsonb_agg(to_jsonb(m) ORDER BY m.asset_id,m.revision) FROM media_assets m WHERE product_id='hargow'),(SELECT jsonb_agg(to_jsonb(c) ORDER BY c.character_id,c.revision) FROM character_revisions c WHERE product_id='hargow'),(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM asset_import_audit a WHERE product_id='hargow'),(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.asset_id,m.revision) FROM audio_assets m WHERE product_id='hargow'),(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM audio_import_audit a WHERE product_id='hargow'))::text) AS hash";
