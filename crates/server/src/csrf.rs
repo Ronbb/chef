@@ -17,7 +17,7 @@ pub struct CsrfPolicy {
     origins: HashSet<String>,
 }
 impl CsrfPolicy {
-    /// Origins are explicit configuration, not untrusted forwarded headers.
+    /// Trusted schemes and hosts are explicit configuration; ports are ignored.
     pub fn new(origins: impl IntoIterator<Item = String>) -> anyhow::Result<Self> {
         let mut allowed = HashSet::new();
         for origin in origins {
@@ -32,7 +32,7 @@ impl CsrfPolicy {
                     && parsed.fragment().is_none(),
                 "invalid trusted origin"
             );
-            allowed.insert(parsed.origin().ascii_serialization());
+            allowed.insert(host_origin(parsed));
         }
         anyhow::ensure!(
             !allowed.is_empty(),
@@ -41,8 +41,20 @@ impl CsrfPolicy {
         Ok(Self { origins: allowed })
     }
     pub fn allows(&self, origin: &str) -> bool {
-        self.origins.contains(origin)
+        let Ok(parsed) = url::Url::parse(origin) else {
+            return false;
+        };
+        // Require an actual serialized browser origin before dropping its port.
+        // Do not accept credentials, paths, queries or fragments as origins.
+        if parsed.origin().ascii_serialization() != origin {
+            return false;
+        }
+        self.origins.contains(&host_origin(parsed))
     }
+}
+fn host_origin(mut origin: url::Url) -> String {
+    origin.set_port(None).expect("HTTP origin supports ports");
+    origin.origin().ascii_serialization()
 }
 fn nonce() -> Result<String, AppError> {
     let mut bytes = [0u8; 32];
@@ -130,18 +142,33 @@ pub(crate) async fn validate_write(
 mod tests {
     use super::*;
     #[test]
-    fn origin_policy_is_exact_and_rejects_non_origins() {
+    fn origin_policy_ignores_ports_but_preserves_scheme_host_and_origin_shape() {
         let policy = CsrfPolicy::new([
             "https://brioche.example".into(),
             "http://localhost:5173".into(),
+            "https://hargow.example:443".into(),
+            "http://[::1]:5173".into(),
         ])
         .unwrap();
         assert!(policy.allows("http://localhost:5173"));
+        assert!(policy.allows("http://localhost:30075"));
+        assert!(policy.allows("http://localhost"));
+        assert!(policy.allows("https://brioche.example:8443"));
+        assert!(policy.allows("https://brioche.example:30075"));
+        assert!(policy.allows("https://hargow.example"));
+        assert!(policy.allows("https://hargow.example:8443"));
+        assert!(policy.allows("http://[::1]:30075"));
         for origin in [
             "null",
             "https://brioche.example.evil",
             "http://brioche.example",
-            "https://brioche.example:8443",
+            "https://localhost:5173",
+            "https://user@brioche.example:8443",
+            "https://brioche.example:8443/path",
+            "https://brioche.example:8443/",
+            "https://brioche.example:8443?x",
+            "https://brioche.example:8443#x",
+            "https://brioche.example:99999",
         ] {
             assert!(!policy.allows(origin));
         }

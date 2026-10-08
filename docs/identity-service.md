@@ -124,7 +124,7 @@ Chef 提供 `chef-identity` 独立进程和 `infra/Dockerfile.identity`。产品
 
 每个实例固定一个 `IDENTITY_PRODUCT`，只接受 `brioche` 或 `hargow`。两个实例可以连接同一账号数据库，共用稳定账号 ID 和密码；各入口使用 host-only Cookie，并在服务器会话数据中记录产品。客户端更换 Cookie 名称不能跨产品登录，也不能撤销另一产品的会话。旧无产品字段的会话只允许 Brioche，成功保存时补上范围。
 
-公共端点为 `/api/v1/auth/csrf`、`login`、`logout`、`accept-invite`、`reset-password` 以及 `/api/v1/account`。前五项位于 `/api/v1/auth/` 下。账号响应只包含 id、email、displayName、role、version；不包含学习设置、密码哈希或私有 token。公共写入保留精确 Origin、CSRF、限流和 Cookie 策略。单产品退出只撤销该产品会话，密码重置撤销同一账号的所有产品会话。
+公共端点为 `/api/v1/auth/csrf`、`login`、`logout`、`accept-invite`、`reset-password` 以及 `/api/v1/account`。前五项位于 `/api/v1/auth/` 下。账号响应只包含 id、email、displayName、role、version；不包含学习设置、密码哈希或私有 token。公共写入按配置中的协议与精确域名校验 Origin，忽略端口；仍要求合法的浏览器 Origin，拒绝路径、用户凭据、查询与 fragment，并保留 CSRF、限流和 Cookie 策略。单产品退出只撤销该产品会话，密码重置撤销同一账号的所有产品会话。
 
 内网 `GET /internal/v1/session` 要求单一 `Authorization: Bearer <服务密钥>` 和单一 `x-chef-product`，产品必须等于该实例配置。密钥为 64 位十六进制随机值，配置中只保留其 SHA256 摘要，比较使用恒定时间方法。凭据与产品验证在会话/数据库查询之前完成；无效客户端拒绝访问。有效客户端仍须提供该产品真实 Cookie，匿名或失效会话返回 401。服务每次从数据库读取当前账号状态，响应 `product` 和 `account`，使用 `private, no-store`。全局 role 不是其他产品的管理授权。
 
@@ -164,7 +164,7 @@ docker build -f infra/Dockerfile.identity -t chef-identity:local .
 
 每个私有请求只转发当前产品唯一的会话 Cookie 与必要 Origin/CSRF，不转发其他 Cookie、浏览器 Authorization 或伪造身份头。消费者禁用环境代理、重定向和自动重试，1秒连接/2秒完整请求超时、32个同时验证、4096bytes响应上限。严格解析产品、规范账号ID、role和version；失效会话401、CSRF/来源拒绝403、上游故障/错误载荷/产品不匹配503。响应private,no-store，不转发服务密钥或上游Set-Cookie，不缓存账号身份或权限。
 
-写请求通过内部x-chef-request-method交给身份服务核验同一会话中的CSRF和产品精确Origin，不向学习服务返回CSRF秘密。学习服务不生成/保存登录会话、验证密码或清理身份token；只读取已验证账号，并在产品设置版本上执行CAS。全局账号名称修改在新学习设置接口明确拒绝，后续接入身份账号编辑API。旧部署的组合路由和回归保持，但远端验证失败不能进入旧路由。
+写请求通过内部x-chef-request-method交给身份服务核验同一会话中的CSRF和产品配置的协议与域名（忽略端口），不向学习服务返回CSRF秘密。学习服务不生成/保存登录会话、验证密码或清理身份token；只读取已验证账号，并在产品设置版本上执行CAS。全局账号名称修改在新学习设置接口明确拒绝，后续接入身份账号编辑API。旧部署的组合路由和回归保持，但远端验证失败不能进入旧路由。
 
 2026-10-08真实TCP+PostgreSQL验证覆盖远端profile、有效/错误CSRF设置写入、收藏列表、Brioche/Hargow设置独立、另一产品Cookie拒绝及身份服务关闭后503。独立HTTP边界回归覆盖错误产品/坏JSON/超大响应/503/重定向/超时/401、重复或缺失产品Cookie本地拒绝，响应不发Cookie。既有13项实际PG回归和全工作区测试通过；完整多产品成员授权、管理员原子权限复核、账号后台、数据库最小权限和正式双服务部署仍需实施。
 
