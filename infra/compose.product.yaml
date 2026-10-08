@@ -32,6 +32,9 @@ services:
     <<: *runtime
     container_name: ${CHEF_PRODUCT}-learning
     image: ${CHEF_IMAGE}
+    env_file:
+      - path: ${TTS_ENV_FILE:-./tts.env}
+        required: false
     environment:
       CHEF_PRODUCT: ${CHEF_PRODUCT}
       APP_ENV: production
