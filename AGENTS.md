@@ -1,5 +1,7 @@
 # Chef 协作约定
 
+独立参考录音接口补充：voice_references::Store由可信后台产品装配，临时delivery产品取固定identity Client；列表/游标及撤销/访问统计同产品，签发读取同产品声音与录音、有效授权冲突同产品；签发/撤销核对Operator，新grant/revocation/read显式归属。delivery token/expiry预检先限产品再取得account-admin锁，事务内撤销/32次上限/到期复检同产品，原真实hash/解码/PCM/Range与角色复核保持；legacy None仍原布局。actual split25条排序靠前H授权不改变B整列表/分页，H声音签发/授权撤销404且三审计表零增量；已知有效H bearer在持有账号管理锁时及时404，产品查询400，原B授权/撤销/到期/角色撤权/克隆试听配音与身份全链路、workspace clippy通过。任务/试听/课程配音及审计历史范围、局部编号、真实H业务继续，生产pin保持，实现仅Chef。
+
 独立角色库接口补充：character_voices::Store由可信装配接收产品，列表/游标、角色固定版本、头像与声音固定版本限制归属且关联同产品声音/素材，查询product拒绝。HTTP声音写入核对Operator产品，同产品角色/声音CAS/参考录音查询，新声音显式product；角色新版本复用media内核传相同产品、状态锁/头像/审计归属，临时全局角色编号冲突仅检查外产品存在并404。旧CLI/试听调用authorized_in包装None仍待迁移。actual split25条靠前无效H角色/声音不改变B整列表/分页，三种外产品读取404、四种product查询400、外产品角色与声音写入404且记录/素材审计零增量、有效H参考录音不能追加B声音；原版本/CAS/权限/头像/克隆试听配音与独立身份全链路、workspace clippy通过。参考录音接口/任务/试听/配音与历史范围、局部编号、实际H业务继续，生产pin保持，产品无角色库业务副本。
 
 角色声音关联准备补充：learning_000013_product_voices给character_voice_profiles与参考录音grant/revocation/read四表添加默认B的固定产品枚举和不可变归属；声音到同产品角色、声音JSON referenceAudio经生成列到同产品录音、授权到同产品声音/录音及撤销/访问到同产品授权均立即验证外键。可选referenceAudio=null保持，半个引用拒绝；旧全局编号/内容与审计不可变保护保留。actual split维护账本14步，迁移前四张非空表旧字段指纹保持；最后访问约束冲突整批DDL/账本与生成列回滚，跨产品角色/参考音频/授权/撤销/读取拒绝，H数据库合成正向链及无参考声音事务回滚。身份与原后台克隆/试听/配音全链路、workspace clippy通过。运行角色/参考录音接口、任务/试听/课程配音与审计历史范围、局部编号等待继续，H后台/生产pin保持，SQL与回归仅Chef。

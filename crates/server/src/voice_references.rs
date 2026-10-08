@@ -2,7 +2,7 @@
 use crate::{
     AppError,
     admin_auth::AdminAuth,
-    learning::{exec, field, one},
+    learning::{exec, field, one, product_filter},
 };
 use axum::{
     Json, Router,
@@ -20,11 +20,13 @@ use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 struct Store {
+    product: Option<crate::product::ProductId>,
     db: sea_orm::DatabaseConnection,
     identity: Option<crate::learning_identity::Client>,
 }
 pub(crate) fn router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
+    product: Option<crate::product::ProductId>,
 ) -> Router<S> {
     Router::new()
         .route("/api/v1/operator/voice-references", get(list).post(issue))
@@ -32,15 +34,26 @@ pub(crate) fn router<S: Clone + Send + Sync + 'static>(
             "/api/v1/operator/voice-references/{id}/revoke",
             axum::routing::post(revoke),
         )
-        .with_state(Store { db, identity: None })
+        .with_state(Store {
+            db,
+            product,
+            identity: None,
+        })
 }
 pub(crate) fn delivery_router<S: Clone + Send + Sync + 'static>(
     db: sea_orm::DatabaseConnection,
     identity: Option<crate::learning_identity::Client>,
 ) -> Router<S> {
+    let product = identity
+        .as_ref()
+        .map(crate::learning_identity::Client::product);
     Router::new()
         .route("/api/v1/voice-references/{id}/{token}", get(download))
-        .with_state(Store { db, identity })
+        .with_state(Store {
+            db,
+            product,
+            identity,
+        })
 }
 pub(crate) fn hex(value: &str, length: usize) -> bool {
     value.len() == length
@@ -63,7 +76,25 @@ fn grant(row: &QueryResult) -> Result<AdminReferenceGrant, AppError> {
         read_count: field::<i64>(row, "read_count")? as u32,
     })
 }
-const PROJECTION: &str = r#"SELECT g.id,g.character_id,g.character_revision,g.voice_revision,g.asset_id,g.asset_revision,g.model,to_char(g.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,to_char(g.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS expires_at,EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id) AS revoked,(SELECT count(*) FROM voice_reference_reads a WHERE a.grant_id=g.id) AS read_count FROM voice_reference_grants g"#;
+fn projection(product: Option<crate::product::ProductId>) -> String {
+    format!(
+        r#"SELECT g.id,g.character_id,g.character_revision,g.voice_revision,g.asset_id,g.asset_revision,g.model,to_char(g.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,to_char(g.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS expires_at,EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id{}) AS revoked,(SELECT count(*) FROM voice_reference_reads a WHERE a.grant_id=g.id{}) AS read_count FROM voice_reference_grants g"#,
+        if product.is_some() {
+            " AND r.product_id=g.product_id"
+        } else {
+            ""
+        },
+        if product.is_some() {
+            " AND a.product_id=g.product_id"
+        } else {
+            ""
+        }
+    )
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReferenceQuery {}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Cursor {
@@ -83,7 +114,11 @@ async fn list(
         .db
         .query_all_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            format!("{PROJECTION} WHERE g.id>$1 ORDER BY g.id LIMIT 21"),
+            format!(
+                "{} WHERE g.id>$1{} ORDER BY g.id LIMIT 21",
+                projection(backend.product),
+                product_filter(backend.product, "g.product_id")
+            ),
             vec![after.into()],
         ))
         .await
@@ -161,6 +196,12 @@ async fn issue(
     Json(request): Json<AdminReferenceGrantRequest>,
 ) -> Result<Json<AdminReferenceGrantResult>, AppError> {
     let operator = auth.require_operator().await?;
+    if backend
+        .product
+        .is_some_and(|product| product != operator.product)
+    {
+        return Err(AppError::Forbidden);
+    }
     crate::admin::reason(&request.reason)?;
     if !request.single_speaker_confirmed
         || !brioche_course_contract::valid_content_id(&request.character_id)
@@ -176,7 +217,7 @@ async fn issue(
         .await
         .map_err(|_| AppError::Unavailable)?;
     operator.lock_content(&tx).await?;
-    let row=one(&tx,"SELECT profile FROM character_voice_profiles WHERE character_id=$1 AND character_revision=$2 AND revision=$3",
+    let row=one(&tx,&format!("SELECT profile FROM character_voice_profiles WHERE character_id=$1 AND character_revision=$2 AND revision=$3{}",product_filter(backend.product,"product_id")),
         vec![request.character_id.clone().into(),(request.character_revision as i32).into(),(request.voice_revision as i32).into()]).await?.ok_or(AppError::NotFound)?;
     let profile: CharacterVoiceProfile =
         serde_json::from_value(field(&row, "profile")?).map_err(|_| AppError::Unavailable)?;
@@ -192,7 +233,10 @@ async fn issue(
     }
     let row = one(
         &tx,
-        "SELECT descriptor,provenance FROM audio_assets WHERE asset_id=$1 AND revision=$2",
+        &format!(
+            "SELECT descriptor,provenance FROM audio_assets WHERE asset_id=$1 AND revision=$2{}",
+            product_filter(backend.product, "product_id")
+        ),
         vec![
             reference.asset_id.clone().into(),
             (reference.revision as i32).into(),
@@ -210,7 +254,7 @@ async fn issue(
         return Err(AppError::InvalidInput);
     }
     inspect(root, descriptor.clone(), permits).await?;
-    let existing=one(&tx,"SELECT id FROM voice_reference_grants g WHERE character_id=$1 AND character_revision=$2 AND voice_revision=$3 AND expires_at>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id) LIMIT 1",
+    let existing=one(&tx,&format!("SELECT id FROM voice_reference_grants g WHERE character_id=$1 AND character_revision=$2 AND voice_revision=$3{} AND expires_at>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id{}) LIMIT 1",product_filter(backend.product,"g.product_id"),if backend.product.is_some(){" AND r.product_id=g.product_id"}else{""}),
         vec![request.character_id.clone().into(),(request.character_revision as i32).into(),(request.voice_revision as i32).into()]).await?;
     if existing.is_some() {
         return Err(AppError::Conflict);
@@ -221,11 +265,38 @@ async fn issue(
         crate::learning::random_id()?,
         crate::learning::random_id()?
     );
-    exec(&tx,"INSERT INTO voice_reference_grants(id,token_hash,character_id,character_revision,voice_revision,asset_id,asset_revision,descriptor,reference,actor_id,reason,model,single_speaker_confirmed,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,CURRENT_TIMESTAMP+interval '15 minutes')",
-        vec![id.clone().into(),crate::media::digest(token.as_bytes()).into(),request.character_id.into(),(request.character_revision as i32).into(),(request.voice_revision as i32).into(),reference.asset_id.clone().into(),(reference.revision as i32).into(),serde_json::to_value(descriptor).map_err(|_|AppError::Unavailable)?.into(),serde_json::to_value(reference).map_err(|_|AppError::Unavailable)?.into(),actor.into(),request.reason.into(),profile.model.into()]).await?;
+    let mut values = vec![
+        id.clone().into(),
+        crate::media::digest(token.as_bytes()).into(),
+        request.character_id.into(),
+        (request.character_revision as i32).into(),
+        (request.voice_revision as i32).into(),
+        reference.asset_id.clone().into(),
+        (reference.revision as i32).into(),
+        serde_json::to_value(descriptor)
+            .map_err(|_| AppError::Unavailable)?
+            .into(),
+        serde_json::to_value(reference)
+            .map_err(|_| AppError::Unavailable)?
+            .into(),
+        actor.into(),
+        request.reason.into(),
+        profile.model.into(),
+    ];
+    let sql = if let Some(product) = backend.product {
+        values.push(product.as_str().into());
+        "INSERT INTO voice_reference_grants(id,token_hash,character_id,character_revision,voice_revision,asset_id,asset_revision,descriptor,reference,actor_id,reason,model,single_speaker_confirmed,expires_at,product_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,CURRENT_TIMESTAMP+interval '15 minutes',$13)"
+    } else {
+        "INSERT INTO voice_reference_grants(id,token_hash,character_id,character_revision,voice_revision,asset_id,asset_revision,descriptor,reference,actor_id,reason,model,single_speaker_confirmed,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,true,CURRENT_TIMESTAMP+interval '15 minutes')"
+    };
+    exec(&tx, sql, values).await?;
     let row = one(
         &tx,
-        &format!("{PROJECTION} WHERE g.id=$1"),
+        &format!(
+            "{} WHERE g.id=$1{}",
+            projection(backend.product),
+            product_filter(backend.product, "g.product_id")
+        ),
         vec![id.clone().into()],
     )
     .await?
@@ -245,6 +316,12 @@ async fn revoke(
     Json(request): Json<brioche_course_contract::AdminRevokeTokenRequest>,
 ) -> Result<Json<AdminReferenceGrant>, AppError> {
     let operator = auth.require_operator().await?;
+    if backend
+        .product
+        .is_some_and(|product| product != operator.product)
+    {
+        return Err(AppError::Forbidden);
+    }
     if !hex(&id, 32) {
         return Err(AppError::InvalidInput);
     }
@@ -258,14 +335,20 @@ async fn revoke(
     operator.lock_content(&tx).await?;
     one(
         &tx,
-        "SELECT id FROM voice_reference_grants WHERE id=$1 FOR UPDATE",
+        &format!(
+            "SELECT id FROM voice_reference_grants WHERE id=$1{} FOR UPDATE",
+            product_filter(backend.product, "product_id")
+        ),
         vec![id.clone().into()],
     )
     .await?
     .ok_or(AppError::NotFound)?;
     if one(
         &tx,
-        "SELECT grant_id FROM voice_reference_revocations WHERE grant_id=$1",
+        &format!(
+            "SELECT grant_id FROM voice_reference_revocations WHERE grant_id=$1{}",
+            product_filter(backend.product, "product_id")
+        ),
         vec![id.clone().into()],
     )
     .await?
@@ -273,15 +356,25 @@ async fn revoke(
     {
         return Err(AppError::Conflict);
     }
-    exec(
+    let mut values = vec![id.clone().into(), actor.into(), request.reason.into()];
+    let sql = if let Some(product) = backend.product {
+        values.push(product.as_str().into());
+        "INSERT INTO voice_reference_revocations(grant_id,actor_id,reason,product_id) VALUES($1,$2,$3,$4)"
+    } else {
+        "INSERT INTO voice_reference_revocations(grant_id,actor_id,reason) VALUES($1,$2,$3)"
+    };
+    exec(&tx, sql, values).await?;
+    let row = one(
         &tx,
-        "INSERT INTO voice_reference_revocations(grant_id,actor_id,reason) VALUES($1,$2,$3)",
-        vec![id.clone().into(), actor.into(), request.reason.into()],
+        &format!(
+            "{} WHERE g.id=$1{}",
+            projection(backend.product),
+            product_filter(backend.product, "g.product_id")
+        ),
+        vec![id.into()],
     )
-    .await?;
-    let row = one(&tx, &format!("{PROJECTION} WHERE g.id=$1"), vec![id.into()])
-        .await?
-        .ok_or(AppError::Unavailable)?;
+    .await?
+    .ok_or(AppError::Unavailable)?;
     let result = grant(&row)?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(Json(result))
@@ -290,6 +383,7 @@ async fn revoke(
 async fn download(
     State(backend): State<Store>,
     Path((id, token)): Path<(String, String)>,
+    Query(_query): Query<ReferenceQuery>,
     axum::Extension(root): axum::Extension<PathBuf>,
     axum::Extension(permits): axum::Extension<Arc<Semaphore>>,
     headers: HeaderMap,
@@ -299,7 +393,7 @@ async fn download(
     }
     let token_hash = crate::media::digest(token.as_bytes());
     // Unknown bearer URLs must not serialize unrelated account administration.
-    if one(&backend.db,"SELECT id FROM voice_reference_grants WHERE id=$1 AND token_hash=$2 AND expires_at>clock_timestamp()",
+    if one(&backend.db,&format!("SELECT id FROM voice_reference_grants WHERE id=$1 AND token_hash=$2 AND expires_at>clock_timestamp(){}",product_filter(backend.product,"product_id")),
         vec![id.clone().into(),token_hash.clone().into()]).await?.is_none(){return Err(AppError::NotFound);}
     let tx = backend
         .db
@@ -313,7 +407,7 @@ async fn download(
         vec![],
     )
     .await?;
-    let row=one(&tx,"SELECT descriptor,actor_id FROM voice_reference_grants g WHERE id=$1 AND token_hash=$2 AND expires_at>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id) AND (SELECT count(*) FROM voice_reference_reads a WHERE a.grant_id=g.id)<32 FOR UPDATE",
+    let row=one(&tx,&format!("SELECT descriptor,actor_id FROM voice_reference_grants g WHERE id=$1 AND token_hash=$2 AND expires_at>clock_timestamp(){} AND NOT EXISTS(SELECT 1 FROM voice_reference_revocations r WHERE r.grant_id=g.id{}) AND (SELECT count(*) FROM voice_reference_reads a WHERE a.grant_id=g.id{})<32 FOR UPDATE",product_filter(backend.product,"g.product_id"),if backend.product.is_some(){" AND r.product_id=g.product_id"}else{""},if backend.product.is_some(){" AND a.product_id=g.product_id"}else{""}),
         vec![id.clone().into(),token_hash.into()]).await?.ok_or(AppError::NotFound)?;
     let actor: i64 = field(&row, "actor_id")?;
     let authorized = if let Some(identity) = &backend.identity {
@@ -333,7 +427,10 @@ async fn download(
     // Expiry is rechecked after file processing, with the database clock rather than transaction start.
     if one(
         &tx,
-        "SELECT id FROM voice_reference_grants WHERE id=$1 AND expires_at>clock_timestamp()",
+        &format!(
+            "SELECT id FROM voice_reference_grants WHERE id=$1 AND expires_at>clock_timestamp(){}",
+            product_filter(backend.product, "product_id")
+        ),
         vec![id.clone().into()],
     )
     .await?
@@ -347,12 +444,14 @@ async fn download(
         bytes,
         headers,
     )?;
-    exec(
-        &tx,
-        "INSERT INTO voice_reference_reads(grant_id) VALUES($1)",
-        vec![id.into()],
-    )
-    .await?;
+    let mut values = vec![id.into()];
+    let sql = if let Some(product) = backend.product {
+        values.push(product.as_str().into());
+        "INSERT INTO voice_reference_reads(grant_id,product_id) VALUES($1,$2)"
+    } else {
+        "INSERT INTO voice_reference_reads(grant_id) VALUES($1)"
+    };
+    exec(&tx, sql, values).await?;
     tx.commit().await.map_err(|_| AppError::Unavailable)?;
     Ok(response)
 }

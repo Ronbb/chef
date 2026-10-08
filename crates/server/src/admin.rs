@@ -73,7 +73,7 @@ pub(crate) fn content_router<S: Clone + Send + Sync + 'static>(
         .merge(crate::admin_assets::router(db.clone(), product))
         .merge(crate::admin_recordings::router(db.clone(), product))
         .merge(crate::character_voices::router(db.clone(), product))
-        .merge(crate::voice_references::router(db.clone()))
+        .merge(crate::voice_references::router(db.clone(), product))
         .merge(crate::voice_jobs::router(db.clone()))
         .merge(crate::voice_auditions::router(db.clone()))
         .merge(crate::admin_speech_plans::router(db.clone()))

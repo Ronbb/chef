@@ -3731,6 +3731,94 @@ async fn identity_schema_moves_preserving_sessions_and_learning_foreign_keys() {
         serde_json::json!({})
     );
     owner.execute_unprepared("INSERT INTO audio_assets(product_id,asset_id,revision,descriptor,provenance,sha256,extension,byte_size,duration_ms,sample_rate,channels) SELECT 'hargow','foreign-course-recording',1,jsonb_set(descriptor,'{assetId}','\"foreign-course-recording\"'),jsonb_set(provenance,'{assetId}','\"foreign-course-recording\"'),sha256,extension,byte_size,duration_ms,sample_rate,channels FROM audio_assets WHERE asset_id='layout-recording-fixture' AND revision=1").await.unwrap();
+    let (status, references_before) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/voice-references",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{references_before}");
+    let foreign_token = "a".repeat(64);
+    let foreign_hash = format!("{:x}", Sha256::digest(foreign_token.as_bytes()));
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO voice_reference_grants(product_id,id,token_hash,character_id,character_revision,voice_revision,asset_id,asset_revision,descriptor,reference,actor_id,reason,model,single_speaker_confirmed,expires_at) SELECT 'hargow',lpad(to_hex(i),32,'0'),CASE WHEN i=1 THEN $1 ELSE md5(i::text)||md5(i::text) END,'aaa-foreign-character-'||i,1,1,'foreign-course-recording',1,'{}','{}',$2,'Poisoned foreign reference','qwen-audio-3.1-tts-flash',true,CURRENT_TIMESTAMP+interval '5 minutes' FROM generate_series(1,25) i",[foreign_hash.into(),account.into()])).await.unwrap();
+    owner.execute_unprepared("INSERT INTO voice_reference_reads(product_id,grant_id) VALUES('hargow',lpad(to_hex(1),32,'0'))").await.unwrap();
+    owner.execute_raw(Statement::from_sql_and_values(DbBackend::Postgres,"INSERT INTO voice_reference_revocations(product_id,grant_id,actor_id,reason) VALUES('hargow',lpad(to_hex(2),32,'0'),$1,'Synthetic foreign revocation')",[account.into()])).await.unwrap();
+    let (status, references_after) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/voice-references",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 200, "{references_after}");
+    assert_eq!(
+        references_before, references_after,
+        "foreign grants cannot consume pagination or affect own read/revoke projection"
+    );
+    let (status, body) = request(
+        &content_app,
+        "GET",
+        "/api/v1/operator/voice-references?product=hargow",
+        None,
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    let before=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_reference_grants)+(SELECT count(*) FROM voice_reference_revocations)+(SELECT count(*) FROM voice_reference_reads) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    let (status,body)=request(&content_app,"POST","/api/v1/operator/voice-references",Some(serde_json::json!({"characterId":"aaa-foreign-character-1","characterRevision":1,"voiceRevision":1,"singleSpeakerConfirmed":true,"reason":"Must not issue a foreign reference"})),&mut cookie,&mut csrf).await;
+    assert_eq!(status, 404, "{body}");
+    let foreign_path = format!("/api/v1/voice-references/{:032x}/{foreign_token}", 1);
+    // The valid foreign token must fail before acquiring the account-admin lock.
+    let held = owner.begin().await.unwrap();
+    held.execute_unprepared("SELECT pg_advisory_xact_lock(hashtextextended('account-admin',0))")
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        content_app.clone().oneshot(
+            Request::builder()
+                .uri(&foreign_path)
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("foreign bearer precheck must not wait on account administration")
+    .unwrap();
+    assert_eq!(response.status().as_u16(), 404);
+    held.rollback().await.unwrap();
+    let (status, body) = request(
+        &content_app,
+        "POST",
+        &format!("/api/v1/operator/voice-references/{:032x}/revoke", 1),
+        Some(serde_json::json!({"reason":"Must not revoke a foreign reference"})),
+        &mut cookie,
+        &mut csrf,
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let response = content_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{foreign_path}?product=hargow"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+    let after=owner.query_one_raw(Statement::from_string(DbBackend::Postgres,"SELECT (SELECT count(*) FROM voice_reference_grants)+(SELECT count(*) FROM voice_reference_revocations)+(SELECT count(*) FROM voice_reference_reads) AS n")).await.unwrap().unwrap().try_get::<i64>("","n").unwrap();
+    assert_eq!(
+        before, after,
+        "foreign issue, revoke and download leave authorization/read audit unchanged"
+    );
     let mut foreign_reference = voice.clone();
     foreign_reference["expectedVoiceRevision"] = 3.into();
     foreign_reference["profile"]["referenceAudio"] = serde_json::json!({"assetId":"foreign-course-recording","revision":1,"transcript":"Bonjour.","cloningPermission":"Synthetic fixture only"});
