@@ -8,7 +8,7 @@ import {
   synthesize,
   normalizeWav,
   characterFor,
-} from "../qwen-tts.mjs";
+} from "../qwen-tts.ts";
 const env = {
   DASHSCOPE_API_KEY: "private-test-key",
   QWEN_WORKSPACE_ID: "test-space",
@@ -117,7 +117,7 @@ test("French role voices, emotion, and AI provenance use the documented new API"
   assert.notEqual(a.body.input.voice, b.body.input.voice);
   assert.match(a.body.input.instruction, /Friendly greeting/);
   assert.equal(a.body.input.enable_aigc_tag, true);
-  assert.equal(a.body.input.instructions, undefined);
+  assert.equal(("instructions" in a.body.input ? a.body.input.instructions : undefined), undefined);
 });
 test("plan is offline; generation fails before I/O without credentials", async () => {
   assert.match(await run(["--plan"], {}), /未请求 API/);

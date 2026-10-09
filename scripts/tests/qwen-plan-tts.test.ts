@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { validatePlan, rustJson } from "../qwen-plan-tts.mjs";
+import { validatePlan, rustJson } from "../qwen-plan-tts.ts";
 const hash = (value) =>
   createHash("sha256").update(rustJson(value)).digest("hex");
 function fixture() {

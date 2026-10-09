@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { selectSources } from './check-curriculum.mjs';
+import { selectSources } from './check-curriculum.ts';
 
 test('release selects exact revisions and rejects missing or divergent immutable sources', async t => {
   const root = await mkdtemp(join(tmpdir(), 'chef-course-test-'));

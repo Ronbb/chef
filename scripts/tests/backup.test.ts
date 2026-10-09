@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { argumentsFor, verifyBackup } from "../backup.mjs";
+import { argumentsFor, verifyBackup } from "../backup.ts";
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 test("operator arguments require explicit targets and reject ambiguous options", () => {
   const valid = argumentsFor([

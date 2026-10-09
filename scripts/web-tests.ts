@@ -16,11 +16,11 @@ const directory = fileURLToPath(
   new URL(`../packages/web/${suite}/`, import.meta.url),
 );
 const files = (await readdir(directory))
-  .filter((file) => /\.test\.(ts|mjs)$/.test(file))
+  .filter((file) => /\.test\.ts$/.test(file))
   .map((file) => resolve(directory, file));
 const child = spawn(
   process.execPath,
-  ["--experimental-strip-types", "--test", ...process.argv.slice(4), ...files],
+  ["--import", "tsx", "--test", ...process.argv.slice(4), ...files],
   {
     stdio: "inherit",
     env: {

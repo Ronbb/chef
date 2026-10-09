@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { qwenVoiceCall } from "./qwen-api.mjs";
+import { qwenVoiceCall } from "./qwen-api.ts";
 
 const statuses = new Set(["DEPLOYING", "OK", "UNDEPLOYED"]);
 function voiceId(value) {
@@ -122,7 +122,7 @@ export async function run(args, env = process.env) {
   if (args.length === 2 && args[0] === "--list" && /^\d{1,5}$/.test(args[1]))
     return listVoices({ pageIndex: Number(args[1]) }, env);
   throw Error(
-    "用法：qwen-voices.mjs --query <voice-id> 或 --list <从0开始的页码>",
+    "用法：qwen-voices.ts --query <voice-id> 或 --list <从0开始的页码>",
   );
 }
 if (

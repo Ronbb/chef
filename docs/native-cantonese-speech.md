@@ -4,7 +4,7 @@
 
 管理员选项的新入口为 `/api/v2/operator/lessons/{id}/revisions/{revision}/speech-options`，由 Rust 导出中立 DTO，Web 不解析法语字段。旧选项入口保持 1.0，拒绝把 2.0 降级。
 
-`scripts/qwen-plan-tts.mjs --plan <compiled-plan.json> --output <new-private-directory> --confirm-cost` 消费固定计划。每次付费前写入不可覆盖的 attempt，保留供应商原始 WAV、修复 RIFF 后的 WAV、参数和哈希收据；不自动重试。端点只来自私有环境配置，不能由课源指定。该本机流程不登记数据库配音任务。
+`scripts/qwen-plan-tts.ts --plan <compiled-plan.json> --output <new-private-directory> --confirm-cost` 消费固定计划。每次付费前写入不可覆盖的 attempt，保留供应商原始 WAV、修复 RIFF 后的 WAV、参数和哈希收据；不自动重试。端点只来自私有环境配置，不能由课源指定。该本机流程不登记数据库配音任务。
 
 固定 Qwen3 ForcedAligner 使用公开 chat template，以每个作者语块作为一个文本单元。保留实际 80ms 时间类别，禁止插值或均分字数。打包同时核对原始预测、词段映射、音频字节和解码时长；粤语不允许法语数字别名。
 

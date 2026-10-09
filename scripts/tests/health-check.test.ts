@@ -8,7 +8,7 @@ import {
   argumentsFor,
   assessContainers,
   checkHealth,
-} from "../health-check.mjs";
+} from "../health-check.ts";
 
 const options = () => argumentsFor(["--project", "brioche-test"]);
 const rows = () =>
@@ -167,7 +167,8 @@ test("invalid CLI options exit 2 without reporting supplied credentials", () => 
   const result = spawnSync(
     process.execPath,
     [
-      fileURLToPath(new URL("../health-check.mjs", import.meta.url)),
+      ...process.execArgv,
+      fileURLToPath(new URL("../health-check.ts", import.meta.url)),
       "--project",
       "brioche",
       "--origin",
@@ -257,7 +258,7 @@ test("real HTTP redirects, invalid JSON, wrong readiness and oversized streams f
   try {
     const config = {
       ...options(),
-      origin: `http://127.0.0.1:${server.address().port}`,
+      origin: `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`,
     };
     for (mode of ["redirect", "large", "invalid", "wrong"]) {
       const report = await checkHealth(config, { run });
@@ -286,7 +287,7 @@ test("HTTP request timeout is bounded and Docker discovery uses only the explici
     const config = {
       ...options(),
       timeoutMs: 100,
-      origin: `http://127.0.0.1:${server.address().port}`,
+      origin: `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`,
     };
     const result = await checkHealth(config, {
       run: async (args) => {

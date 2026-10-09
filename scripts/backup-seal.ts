@@ -18,7 +18,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform, Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
-import { validateBackupManifest, verifyBackup } from "./backup.mjs";
+import { validateBackupManifest, verifyBackup } from "./backup.ts";
 
 const format = "brioche-sealed-backup-v1";
 const magic = Buffer.from("BRISEAL1");
@@ -110,7 +110,7 @@ async function encryptFile(source, target, key, id, slot, record) {
     await file.close();
   }
 }
-async function decryptFile(source, key, id, slot, maximum, sink, record) {
+async function decryptFile(source, key, id, slot, maximum, sink, record = undefined) {
   const info = await ordinary(source, maximum + 36);
   check(info.size > 36, "Truncated encrypted object");
   const file = await open(source, "r");
@@ -200,7 +200,7 @@ export async function sealBackup({ input, output, keyFile }) {
     const bytes = await readFile(join(input, "manifest.json"));
     // Re-read validation prevents publishing a manifest changed during encryption.
     check(
-      JSON.stringify(JSON.parse(bytes)) === JSON.stringify(manifest),
+      JSON.stringify(JSON.parse(bytes.toString("utf8"))) === JSON.stringify(manifest),
       "Source manifest changed during encryption",
     );
     await encryptFile(
@@ -294,7 +294,7 @@ export function argumentsFor(args) {
       : operation === "verify"
         ? ["key-file", "input"]
         : ["key-file", "input", "output"];
-  const options = {};
+  const options: Record<string, string> = {};
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i]?.slice(2);
     check(

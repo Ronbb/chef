@@ -1,4 +1,4 @@
-import { productWebUrl, browserCliUrl } from "../test-product.mjs";
+import { productWebUrl, browserCliUrl } from "../test-product.ts";
 import { before, beforeEach, after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";

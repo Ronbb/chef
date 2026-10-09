@@ -30,7 +30,10 @@ jobs:
         with:
           node-version: 24.20.0
           package-manager-cache: false
-      - run: node --test scripts/tests/*.test.mjs
+      - run: npm install -g pnpm@11.11.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck:scripts
+      - run: pnpm test:ops
         env:
           BRIOCHE_BACKUP_DOCKER_TEST: "1"
       - run: python3 -m unittest discover -s scripts/alignment -p test_align.py -v
@@ -48,7 +51,7 @@ jobs:
           package-manager-cache: false
       - run: npm install -g pnpm@11.11.0
       - run: pnpm install --frozen-lockfile
-      - run: node --test scripts/check-curriculum.test.mjs
+      - run: pnpm exec tsx --test scripts/check-curriculum.test.ts
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test:web

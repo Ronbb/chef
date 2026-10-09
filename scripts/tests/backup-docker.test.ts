@@ -23,8 +23,8 @@ test(
     const root = await mkdtemp(join(tmpdir(), "brioche-backup-docker-"));
     const image =
       "postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650";
-    const run = (command, args, allowFailure = false, input) =>
-      new Promise((resolveRun, reject) => {
+    const run = (command, args, allowFailure = false, input?: string | Buffer) =>
+      new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveRun, reject) => {
         const child = spawn(command, args, {
           shell: false,
           stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
@@ -45,7 +45,7 @@ test(
         });
         if (input) child.stdin.end(input);
       });
-    const docker = (args, allowFailure, input) =>
+    const docker = (args: string[], allowFailure = false, input?: string | Buffer) =>
       run("docker", args, allowFailure, input);
     const sql = (database, statement) =>
       docker([
@@ -66,7 +66,7 @@ test(
     const cli = (args, allowFailure = false) =>
       run(
         process.execPath,
-        [fileURLToPath(new URL("../backup.mjs", import.meta.url)), ...args],
+        [...process.execArgv, fileURLToPath(new URL("../backup.ts", import.meta.url)), ...args],
         allowFailure,
       );
     try {

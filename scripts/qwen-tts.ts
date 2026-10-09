@@ -3,8 +3,8 @@ import { mkdir, writeFile, open } from "node:fs/promises";
 import defaultLibrary from "../docs/characters/voices.json" with { type: "json" };
 import { resolve, relative, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
-import { qwenBase } from "./qwen-api.mjs";
-import { validateReference, verifyClonedVoice } from "./qwen-voices.mjs";
+import { qwenBase } from "./qwen-api.ts";
+import { validateReference, verifyClonedVoice } from "./qwen-voices.ts";
 
 const roleCharacters = {
   customer: "character-camille",
@@ -307,14 +307,14 @@ export function normalizeWav(source) {
   throw new Error("提供方 WAV 数据长度无法安全修正。");
 }
 
-export async function run(args, env = process.env, fetcher = fetch) {
+export async function run(args: string[], env = process.env, fetcher = fetch) {
   if (
     ![1, 3].includes(args.length) ||
     !["--plan", "--generate"].includes(args[0]) ||
     (args.length === 3 && args[1] !== "--profiles")
   )
     throw new Error(
-      "用法：qwen-tts.mjs --plan 或 --generate [--profiles <角色档案.json>]",
+      "用法：qwen-tts.ts --plan 或 --generate [--profiles <角色档案.json>]",
     );
   let library = defaultLibrary;
   if (args.length === 3) {

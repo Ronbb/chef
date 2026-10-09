@@ -2,7 +2,7 @@
 
 ## 从无 ACL 备份恢复后的权限步骤
 
-`scripts/backup.mjs restore` 使用 `--no-owner --no-acl`，新目标保持离线。这不会恢复生产角色及授权；特别是 PostgreSQL 会给恢复的函数默认 PUBLIC EXECUTE，包含四个 SECURITY DEFINER 内容锁函数。不能仅启动服务就视为权限恢复。
+`scripts/backup.ts restore` 使用 `--no-owner --no-acl`，新目标保持离线。这不会恢复生产角色及授权；特别是 PostgreSQL 会给恢复的函数默认 PUBLIC EXECUTE，包含四个 SECURITY DEFINER 内容锁函数。不能仅启动服务就视为权限恢复。
 
 所有者先对两个恢复的应用 schema 执行 `infra/database/restore-boundaries.sql`，移除 PUBLIC 对 schema、表、序列和函数的权限，然后创建独立非所有者运行登录并应用相应模板：
 

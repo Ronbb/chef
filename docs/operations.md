@@ -1,10 +1,10 @@
 # 双产品运行检查
 
-通用检查工具为 `scripts/health-check.mjs`，产品仓库通过固定 Chef 引用使用它。对正式独立部署显式选择 `--layout product`，并填入共享 PostgreSQL 所属的 Compose 项目：
+通用检查工具为 `scripts/health-check.ts`，产品仓库通过固定 Chef 引用使用它。对正式独立部署显式选择 `--layout product`，并填入共享 PostgreSQL 所属的 Compose 项目：
 
 ```text
-node scripts/health-check.mjs --project chef-hargow --layout product --database-project brioche --origin https://<hargow-host> --disk-path <backup-disk-path> --minimum-free-gib 5
-node scripts/health-check.mjs --project chef-brioche --layout product --database-project brioche --origin https://<brioche-host> --disk-path <backup-disk-path> --minimum-free-gib 5
+pnpm exec tsx scripts/health-check.ts --project chef-hargow --layout product --database-project brioche --origin https://<hargow-host> --disk-path <backup-disk-path> --minimum-free-gib 5
+pnpm exec tsx scripts/health-check.ts --project chef-brioche --layout product --database-project brioche --origin https://<brioche-host> --disk-path <backup-disk-path> --minimum-free-gib 5
 ```
 
 域名、路径和数据库项目必须换成本机实际配置。磁盘检查只检查指定路径所在文件系统的可用空间，不能证明备份在异盘；生产 Docker 数据可能位于不同文件系统，需分别检查。

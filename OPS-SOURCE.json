@@ -1,11 +1,11 @@
 {
   "paths": [
-    "scripts/backup.mjs",
-    "scripts/backup-seal.mjs",
-    "scripts/health-check.mjs",
-    "scripts/qwen-api.mjs",
-    "scripts/qwen-tts.mjs",
-    "scripts/qwen-voices.mjs",
+    "scripts/backup.ts",
+    "scripts/backup-seal.ts",
+    "scripts/health-check.ts",
+    "scripts/qwen-api.ts",
+    "scripts/qwen-tts.ts",
+    "scripts/qwen-voices.ts",
     "scripts/tests",
     "scripts/alignment"
   ],

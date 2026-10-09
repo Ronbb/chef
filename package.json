@@ -3,18 +3,23 @@
   "private": true,
   "packageManager": "pnpm@11.11.0",
   "scripts": {
-    "test:ops": "node --test scripts/tests/*.test.mjs",
-    "health:check": "node scripts/health-check.mjs",
+    "test:ops": "tsx --test scripts/tests/*.test.ts",
+    "health:check": "tsx scripts/health-check.ts",
     "build": "pnpm --filter @chef/web-fixture build",
-    "typecheck": "pnpm --filter @chef/web-fixture typecheck",
-    "test:web": "node scripts/web-tests.mjs unit",
-    "test:ssr": "node scripts/web-tests.mjs ssr",
-    "test:browser": "node scripts/web-tests.mjs browser",
-    "test:browser:ssr": "node scripts/web-tests.mjs browser-ssr",
-    "typecheck:contracts": "pnpm --filter @chef/web-fixture exec tsc -p ../../packages/contracts/tsconfig.json"
+    "typecheck": "pnpm typecheck:scripts && pnpm --filter @chef/web-fixture typecheck",
+    "test:web": "tsx scripts/web-tests.ts unit",
+    "test:ssr": "tsx scripts/web-tests.ts ssr",
+    "test:browser": "tsx scripts/web-tests.ts browser",
+    "test:browser:ssr": "tsx scripts/web-tests.ts browser-ssr",
+    "typecheck:contracts": "pnpm --filter @chef/web-fixture exec tsc -p ../../packages/contracts/tsconfig.json",
+    "typecheck:scripts": "tsc -p scripts/tsconfig.json"
   },
   "devDependencies": {
+    "@types/node": "24.10.13",
     "agent-browser": "0.27.0",
-    "prettier": "3.9.9"
-  }
+    "prettier": "3.9.9",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  },
+  "type": "module"
 }

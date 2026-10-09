@@ -27,5 +27,6 @@
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true
-  }
+  },
+  "exclude": ["../../packages/web/**/*.test.ts"]
 }

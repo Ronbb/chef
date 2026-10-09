@@ -17,8 +17,8 @@ import {
   generateKey,
   sealBackup,
   openBackup,
-} from "../backup-seal.mjs";
-import { verifyBackup } from "../backup.mjs";
+} from "../backup-seal.ts";
+import { verifyBackup } from "../backup.ts";
 
 async function fixture(run) {
   const root = await mkdtemp(join(tmpdir(), "brioche-seal-test-"));
@@ -92,7 +92,7 @@ test("wrong key and modified bundle identity fail before publishing plaintext", 
     );
     await assert.rejects(access(clear));
     const metadata = JSON.parse(
-      await readFile(join(options.output, "envelope.json")),
+      await readFile(join(options.output, "envelope.json"), "utf8"),
     );
     metadata.id = "00000000-0000-0000-0000-000000000000";
     await writeFile(

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createServer } from "vite";
 import tailwindcss from "@tailwindcss/vite";
-import { productWebUrl, browserCliUrl } from "../test-product.mjs";
+import { productWebUrl, browserCliUrl } from "../test-product.ts";
 
 const execute = promisify(execFile),
   session = "chef-product-isolation-" + randomUUID();
@@ -16,7 +16,7 @@ let server,
 async function browser(...args) {
   const { stdout } = await execute(
     process.execPath,
-    [fileURLToPath(browserCliUrl()), "--session", session, "--json", ...args],
+    [...process.execArgv, fileURLToPath(browserCliUrl()), "--session", session, "--json", ...args],
     { timeout: 30000, maxBuffer: 2 * 1024 * 1024 },
   );
   const result = JSON.parse(stdout);

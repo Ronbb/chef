@@ -9,8 +9,8 @@ const limit = 512 * 1024;
 function requireCondition(value) {
   if (!value) throw new Error("Invalid health-check options");
 }
-export function argumentsFor(args) {
-  const options = {};
+export function argumentsFor(args: string[]) {
+  const options: Record<string, string> = {};
   const allowed = [
     "project",
     "origin",
@@ -257,7 +257,7 @@ async function endpoint(options, path, expected, fetcher) {
 }
 export async function checkHealth(
   options,
-  { run = dockerOutput, fetcher = fetch, filesystem = statfs } = {},
+  { run = dockerOutput, fetcher = fetch, filesystem = statfs }: { run?: typeof dockerOutput; fetcher?: typeof fetch; filesystem?: (path: string, options: { bigint: true }) => Promise<{ bavail: bigint; bsize: bigint }>; } = {},
 ) {
   const [inventory, database, http] = await Promise.all([
     containers(options, run),

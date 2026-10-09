@@ -63,7 +63,7 @@ if (process.argv[2] === "fixture") {
       `type=bind,src=${dirname(fileURLToPath(import.meta.url))},dst=/smoke,readonly`,
       image,
       "node",
-      "/smoke/product-web-smoke.mjs",
+      "/smoke/product-web-smoke.ts",
       "fixture",
     );
     await docker(

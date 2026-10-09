@@ -1,5 +1,5 @@
 // Credentials may only reach the explicitly supported Beijing workspace API.
-export function qwenBase(env) {
+export function qwenBase(env: NodeJS.ProcessEnv) {
   if (!env.DASHSCOPE_API_KEY)
     throw Error("请在 .local/tts.env 配置北京地域 DASHSCOPE_API_KEY。");
   let base;
@@ -41,7 +41,7 @@ export function qwenBase(env) {
   return base.origin;
 }
 
-export async function qwenVoiceCall(input, env, fetcher = fetch) {
+export async function qwenVoiceCall(input: Record<string, string | number>, env: NodeJS.ProcessEnv, fetcher = fetch) {
   const endpoint = `${qwenBase(env)}/api/v1/services/audio/tts/customization`;
   let response;
   try {

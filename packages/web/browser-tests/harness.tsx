@@ -36,7 +36,7 @@ import Practice from "../app/routes/practice";
 import type { Block } from "@brioche/contracts/Block";
 import { Scrollbar } from "../app/components/scrollbar";
 import type { NeutralPreviewRelease } from "@brioche/contracts/NeutralPreviewRelease";
-import { neutralFixture } from "../test-neutral.mjs";
+import { neutralFixture } from "../test-neutral.ts";
 import type { ReviewHistoryPage } from "@brioche/contracts/ReviewHistoryPage";
 import type { Catalog } from "@brioche/contracts/Catalog";
 import type { StudyDashboard } from "@brioche/contracts/StudyDashboard";

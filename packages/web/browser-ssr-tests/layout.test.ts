@@ -16,8 +16,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { createRequestHandler } from "react-router";
-import { productWebUrl, browserCliUrl } from "../test-product.mjs";
-import { neutralFixture } from "../test-neutral.mjs";
+import { productWebUrl, browserCliUrl } from "../test-product.ts";
+import { neutralFixture } from "../test-neutral.ts";
 const build = await import(productWebUrl("build/server/index.js"));
 
 const execute = promisify(execFile);

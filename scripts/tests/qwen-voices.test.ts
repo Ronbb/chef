@@ -9,8 +9,8 @@ import {
   verifyClonedVoice,
   validateReference,
   run as voiceRun,
-} from "../qwen-voices.mjs";
-import { synthesize, characterFor, sample, run } from "../qwen-tts.mjs";
+} from "../qwen-voices.ts";
+import { synthesize, characterFor, sample, run } from "../qwen-tts.ts";
 
 const env = {
   DASHSCOPE_API_KEY: "private-key",
@@ -250,12 +250,12 @@ test("query transport, provider errors and malformed or excessive responses are 
   ]) {
     let count = 0;
     await assert.rejects(
-      queryVoice("clone-123", env, async (...args) => {
+      queryVoice("clone-123", env, async () => {
         count++;
-        return fetcher(...args);
+        return fetcher();
       }),
       (error) =>
-        !/private-key|secret=reference/.test(error.message) &&
+        error instanceof Error && !/private-key|secret=reference/.test(error.message) &&
         /提供方/.test(error.message),
     );
     assert.equal(count, 1);

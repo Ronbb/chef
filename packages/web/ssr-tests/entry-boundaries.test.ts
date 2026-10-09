@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { createRequestHandler } from "react-router";
-import { productWebUrl, browserCliUrl } from "../test-product.mjs";
-import { neutralFixture } from "../test-neutral.mjs";
+import { productWebUrl, browserCliUrl } from "../test-product.ts";
+import { neutralFixture } from "../test-neutral.ts";
 const build = await import(productWebUrl("build/server/index.js"));
+const product = (await import(productWebUrl("product.ts"))).default;
+const sessionNamespace = product.sessionNamespace ?? "brioche";
 
 const source = JSON.parse(
   await readFile(
@@ -347,7 +349,7 @@ const request = (path) =>
   handler(
     new Request("http://brioche.test" + path, {
       headers: authenticated
-        ? { cookie: "brioche.sid=controlled-ssr-session; unrelated=omit" }
+        ? { cookie: `${sessionNamespace}.sid=controlled-ssr-session; unrelated=omit` }
         : {},
     }),
   );
@@ -379,7 +381,7 @@ test("admin history SSR authorizes before reading and only forwards cursor field
     const forwarded = requests.find((item) =>
       item.path.startsWith("/api/v1/operator/history"),
     );
-    assert.equal(forwarded.cookie, "brioche.sid=controlled-ssr-session");
+    assert.equal(forwarded.cookie, `${sessionNamespace}.sid=controlled-ssr-session`);
     const query = new URL(forwarded.path, "http://controlled.test")
       .searchParams;
     assert.deepEqual([...query.keys()], ["beforeTime", "beforeKey"]);
@@ -418,7 +420,7 @@ test("admin account SSR gates identity, filters cursors and never renders genera
       forwarded.path,
       "/api/v1/operator/accounts?q=controlled&afterId=0",
     );
-    assert.equal(forwarded.cookie, "brioche.sid=controlled-ssr-session");
+    assert.equal(forwarded.cookie, `${sessionNamespace}.sid=controlled-ssr-session`);
     const html = await response.text();
     assert.match(html, /测试账号/);
     assert.match(html, /设为管理员/);
@@ -460,7 +462,7 @@ test("admin session SSR authorizes before reading and forwards only the bounded 
       read.path,
       "/api/v1/operator/accounts/1/sessions?afterId=" + "b".repeat(64),
     );
-    assert.equal(read.cookie, "brioche.sid=controlled-ssr-session");
+    assert.equal(read.cookie, `${sessionNamespace}.sid=controlled-ssr-session`);
     const html = await response.text();
     assert.match(html, /撤销此会话/);
     assert.match(html, /中国时间/);
@@ -556,7 +558,7 @@ test("author SSR requires an operator and reads only the selected release member
     );
     assert.ok(
       privateReads.every(
-        (entry) => entry.cookie === "brioche.sid=controlled-ssr-session",
+        (entry) => entry.cookie === `${sessionNamespace}.sid=controlled-ssr-session`,
       ),
     );
     requests.length = 0;
@@ -619,7 +621,7 @@ test("production history SSR forwards encoded cursors privately and distinguishe
     );
     assert.ok(
       reads.every(
-        (entry) => entry.cookie === "brioche.sid=controlled-ssr-session",
+        (entry) => entry.cookie === `${sessionNamespace}.sid=controlled-ssr-session`,
       ),
     );
     assert.ok(requests.every((entry) => entry.method === "GET"));
@@ -683,7 +685,7 @@ test("profile SSR renders logout only for the server-authorized identity without
     assert.match(response.headers.get("Cache-Control"), /private, no-store/);
     assert.equal(
       requests.find((entry) => entry.path === "/api/v1/me")?.cookie,
-      "brioche.sid=controlled-ssr-session",
+      `${sessionNamespace}.sid=controlled-ssr-session`,
     );
     authenticated = false;
     response = await request("/profile");
@@ -753,7 +755,7 @@ test("signed-in legacy review redirects to the private queue and forwards only i
     const privateRead = requests.find(
       (entry) => entry.path === "/api/v2/me/reviews",
     );
-    assert.equal(privateRead?.cookie, "brioche.sid=controlled-ssr-session");
+    assert.equal(privateRead?.cookie, `${sessionNamespace}.sid=controlled-ssr-session`);
     assert.ok(requests.every((entry) => entry.method === "GET"));
   } finally {
     authenticated = false;
@@ -1265,7 +1267,7 @@ test("native learning SSR uses the v2 session and forwards only its authorized o
     const read = requests.find(
       (r) => r.path === "/api/v2/learning-sessions/native-session",
     );
-    assert.equal(read?.cookie, "brioche.sid=controlled-ssr-session");
+    assert.equal(read?.cookie, `${sessionNamespace}.sid=controlled-ssr-session`);
     assert.ok(
       !requests.some((r) => r.path.startsWith("/api/v1/learning-sessions")),
     );

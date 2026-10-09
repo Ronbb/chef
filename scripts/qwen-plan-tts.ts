@@ -1,10 +1,27 @@
+import type { CharacterVoiceProfile } from "../packages/contracts/src/generated/CharacterVoiceProfile.ts";
+
+type SpeechRequest = {
+  compilerVersion: string;
+  profile: CharacterVoiceProfile;
+  voice: unknown;
+  wordUnits: { text: string; start: number; end: number }[];
+  parameters: {
+    model: string;
+    input: {
+      voice: string; format: string; sample_rate: number; rate: number;
+      seed: number; enable_aigc_tag: boolean; text: string;
+      instruction: string; language_hints?: string[];
+    };
+  };
+};
+
 // Private, explicit paid generation from an offline Chef speech plan. Never publishes.
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, relative, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
-import { qwenBase } from "./qwen-api.mjs";
-import { synthesizeRequest } from "./qwen-tts.mjs";
+import { qwenBase } from "./qwen-api.ts";
+import { synthesizeRequest } from "./qwen-tts.ts";
 import { QWEN_FRENCH_SYSTEM_VOICES as multilingualVoices } from "../packages/contracts/src/generated/tts-voices.ts";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -37,7 +54,7 @@ export function validatePlan(plan) {
     /^[a-f0-9]{64}$/.test(plan.planHash), "Invalid fixed source/plan hash.");
   require(hash({ ...plan, planHash: "" }) ===
     plan.planHash, "Plan hash mismatch; recompile source.");
-  const requests = Object.entries(plan.requests ?? {});
+  const requests = Object.entries<SpeechRequest>(plan.requests ?? {});
   require(requests.length > 0 &&
     requests.length <= 1000 &&
     Array.isArray(plan.targets), "Invalid request coverage.");
@@ -113,7 +130,7 @@ export function validatePlan(plan) {
     ), "Wrong character budget or target coverage.");
   return requests;
 }
-export async function run(args, env = process.env, fetcher = fetch) {
+export async function run(args: string[], env = process.env, fetcher = fetch) {
   require(args.length === 5 &&
     args[0] === "--plan" &&
     args[2] === "--output" &&

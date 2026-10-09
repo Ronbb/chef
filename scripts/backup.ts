@@ -23,7 +23,7 @@ const extensions = new Map([
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
 }
-export function argumentsFor(args) {
+export function argumentsFor(args: string[]) {
   const [operation, ...rest] = args;
   requireCondition(
     ["backup", "restore", "verify"].includes(operation),
@@ -35,7 +35,7 @@ export function argumentsFor(args) {
       : operation === "backup"
         ? ["database-container", "database", "user", "media-volume", "output"]
         : ["database-container", "database", "user", "media-volume", "input"];
-  const options = {};
+  const options: Record<string, string> = {};
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i]?.slice(2);
     requireCondition(
@@ -79,7 +79,7 @@ function child(args, input = false) {
   });
   // Do not echo SQL, connection credentials, or dump contents from tool stderr.
   process.stderr.resume();
-  const completed = new Promise((resolveExit, reject) => {
+  const completed = new Promise<void>((resolveExit, reject) => {
     process.once("error", () =>
       reject(new Error("Docker command could not start")),
     );
