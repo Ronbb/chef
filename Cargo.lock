@@ -501,47 +501,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chef-engine"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "async-trait",
- "axum",
- "axum-login",
- "brioche-course-contract",
- "brioche-migration",
- "dotenvy",
- "getrandom 0.4.3",
- "http-body-util",
- "image",
- "jiff",
- "quick-xml",
- "reqwest",
- "rustls",
- "schemars",
- "sea-orm",
- "sea-orm-migration",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "sha2 0.10.9",
- "subtle",
- "symphonia",
- "tar",
- "time",
- "tokio",
- "tower",
- "tower-http",
- "tower-sessions",
- "tracing",
- "tracing-subscriber",
- "unicode-normalization",
- "unicode-segmentation",
- "url",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -602,6 +561,47 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "chef-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "async-trait",
+ "axum",
+ "axum-login",
+ "brioche-course-contract",
+ "brioche-migration",
+ "dotenvy",
+ "getrandom 0.4.3",
+ "http-body-util",
+ "image",
+ "jiff",
+ "quick-xml",
+ "reqwest",
+ "rustls",
+ "schemars",
+ "sea-orm",
+ "sea-orm-migration",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sha2 0.10.9",
+ "subtle",
+ "symphonia",
+ "tar",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tower-sessions",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-normalization",
+ "unicode-segmentation",
+ "url",
 ]
 
 [[package]]
@@ -2492,9 +2492,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",
